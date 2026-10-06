@@ -1,3 +1,5 @@
+import { fetch as expoFetch } from 'expo/fetch';
+
 export type ApiUser = {
   id: string;
   businessId: string;
@@ -33,7 +35,7 @@ function getApiBaseUrl() {
 async function request<T>(path: string, accessToken?: string, init?: RequestInit): Promise<T> {
   let response: Response;
   try {
-    response = await fetch(`${getApiBaseUrl()}/${path.replace(/^\//, '')}`, {
+    response = await expoFetch(`${getApiBaseUrl()}/${path.replace(/^\//, '')}`, {
       ...init,
       headers: {
         Accept: 'application/json',

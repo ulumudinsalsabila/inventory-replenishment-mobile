@@ -1,16 +1,17 @@
 import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { router } from 'expo-router';
-import { Banknote, ClipboardList, PackagePlus, PackageSearch, ReceiptText, ShoppingCart, SlidersHorizontal, Truck } from 'lucide-react-native';
+import { Banknote, ClipboardList, House, PackagePlus, PackageSearch, ReceiptText, ShoppingCart, SlidersHorizontal, Truck, UserRound } from 'lucide-react-native';
 import { useAuth } from '../../../auth/auth-provider';
 
-type FeatureIconName = 'ShoppingCart' | 'ReceiptText' | 'PackageSearch' | 'PackagePlus' | 'Truck' | 'ClipboardList' | 'SlidersHorizontal' | 'Banknote';
+type FeatureIconName = 'House' | 'ShoppingCart' | 'ReceiptText' | 'PackageSearch' | 'PackagePlus' | 'Truck' | 'ClipboardList' | 'SlidersHorizontal' | 'Banknote' | 'UserRound';
 function FeatureIcon({ name }: { name: FeatureIconName }) {
-  const icons = { ShoppingCart, ReceiptText, PackageSearch, PackagePlus, Truck, ClipboardList, SlidersHorizontal, Banknote };
+  const icons = { House, ShoppingCart, ReceiptText, PackageSearch, PackagePlus, Truck, ClipboardList, SlidersHorizontal, Banknote, UserRound };
   const Icon = icons[name];
   return <Icon size={23} color="#c70d17" />;
 }
 
 const features = [
+  { title: 'Dashboard', description: 'Ringkasan aktivitas dan stok', icon: 'House' },
   { title: 'POS', description: 'Transaksi penjualan di kasir', permission: 'order.create', icon: 'ShoppingCart' },
   { title: 'Pesanan', description: 'Riwayat transaksi dan pembayaran', permission: 'order.read', icon: 'ReceiptText' },
   { title: 'Cek stok', description: 'Cari ketersediaan produk di gudang', permission: 'inventory.read', icon: 'PackageSearch' },
@@ -19,12 +20,13 @@ const features = [
   { title: 'Stock opname', description: 'Hitung fisik persediaan', permission: 'inventory.read', icon: 'ClipboardList' },
   { title: 'Adjustment stok', description: 'Catat koreksi atau pengurangan stok', permission: 'inventory.adjust', icon: 'SlidersHorizontal' },
   { title: 'Kas masuk / keluar', description: 'Catat transaksi dan lakukan penutupan kas', permission: 'cash_closing.read', icon: 'Banknote' },
+  { title: 'Akun', description: 'Profil, peran, akses, dan keluar', icon: 'UserRound' },
 ];
 
 export default function OperationsScreen() {
   const { user } = useAuth();
   const visibleFeatures = features.filter(({ permission, title }) =>
-    user?.permissions.includes(permission) || (title === 'Permintaan stok' && user?.permissions.includes('stock_request.review')) || (title === 'Kas masuk / keluar' && (user?.permissions.includes('cash_transaction.create') || user?.permissions.includes('cash_closing.create'))),
+    !permission || user?.permissions.includes(permission) || (title === 'Permintaan stok' && user?.permissions.includes('stock_request.review')) || (title === 'Kas masuk / keluar' && (user?.permissions.includes('cash_transaction.create') || user?.permissions.includes('cash_closing.create'))),
   );
   return (
     <ScrollView contentContainerStyle={styles.page}>
@@ -33,7 +35,7 @@ export default function OperationsScreen() {
       <Text style={styles.subtitle}>Buka alur kerja yang tersedia sesuai akses akun Anda.</Text>
       <View style={styles.list}>{visibleFeatures.map((feature) => {
         const available = true;
-        const destination = feature.title === 'Cek stok' ? '/(app)/inventory' : feature.title === 'Permintaan stok' ? '/(app)/stock-requests' : feature.title === 'Transfer gudang' ? '/(app)/transfers' : feature.title === 'Stock opname' ? '/(app)/opnames' : feature.title === 'Adjustment stok' ? '/(app)/adjustments' : feature.title === 'Pesanan' ? '/(app)/orders' : feature.title === 'Kas masuk / keluar' ? '/(app)/cash' : '/(app)/pos';
+        const destination = feature.title === 'Dashboard' ? '/(app)/(tabs)' : feature.title === 'Akun' ? '/(app)/(tabs)/account' : feature.title === 'Cek stok' ? '/(app)/inventory' : feature.title === 'Permintaan stok' ? '/(app)/stock-requests' : feature.title === 'Transfer gudang' ? '/(app)/transfers' : feature.title === 'Stock opname' ? '/(app)/opnames' : feature.title === 'Adjustment stok' ? '/(app)/adjustments' : feature.title === 'Pesanan' ? '/(app)/orders' : feature.title === 'Kas masuk / keluar' ? '/(app)/cash' : '/(app)/pos';
         return <Pressable accessibilityRole="button" onPress={() => router.push(destination)} key={`${feature.title}-${feature.permission}`} style={({ pressed }) => [styles.card, pressed && styles.cardPressed]}>
         <View style={styles.icon}><FeatureIcon name={feature.icon as FeatureIconName} /></View>
         <View style={styles.content}><Text style={styles.cardTitle}>{feature.title}</Text><Text style={styles.cardDescription}>{feature.description}</Text></View>

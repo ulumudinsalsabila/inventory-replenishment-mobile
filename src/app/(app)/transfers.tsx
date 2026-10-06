@@ -1,14 +1,19 @@
 import { useEffect, useState } from 'react';
-import { ActivityIndicator, Image, Modal, Pressable, RefreshControl, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
+import { ActivityIndicator, Image, Modal, Platform, Pressable, RefreshControl, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
+import { File } from 'expo-file-system';
 import * as ImagePicker from 'expo-image-picker';
 import { router } from 'expo-router';
+import { Minus, Plus, RefreshCw, X } from 'lucide-react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useAuth } from '../../auth/auth-provider';
 import { ApiError } from '../../lib/api';
 
+type Actor = { id: string; name: string };
 type TransferSummary = {
   id: string; transferNumber: string; status: string; createdAt: string; sentAt: string | null;
   sourceWarehouse: { name: string }; destinationWarehouse: { name: string };
   _count: { items: number }; availableActions: string[];
+  createdBy?: Actor | null; preparedBy?: Actor | null; sentBy?: Actor | null; receivedBy?: Actor | null;
 };
 type TransferItem = {
   id: string; sentQty: string; receivedQty: string | null; discrepancyQty: string | null;
@@ -27,6 +32,7 @@ const moneyless = (value: string | number) => Number(value).toLocaleString('id-I
 
 export default function TransfersScreen() {
   const { user, authorizedRequest } = useAuth();
+  const insets = useSafeAreaInsets();
   const canRead = user?.permissions.includes('inventory.read') ?? false;
   const [rows, setRows] = useState<TransferSummary[]>([]);
   const [page, setPage] = useState(1);
@@ -99,6 +105,14 @@ export default function TransfersScreen() {
     finally { setReceiving(false); }
   }
 
+  function changeReceivedQuantity(itemId: string, fallback: string, delta: number) {
+    setReceiveLines((current) => {
+      const line = current[itemId] ?? { receivedQty: fallback, discrepancyReason: 'MISSING', discrepancyNote: '' };
+      const next = Math.max(0, (Number(line.receivedQty) || 0) + delta);
+      return { ...current, [itemId]: { ...line, receivedQty: String(next) } };
+    });
+  }
+
   async function addEvidence(useCamera: boolean) {
     if (!selected) return;
     const permission = useCamera
@@ -115,8 +129,12 @@ export default function TransfersScreen() {
       result.assets.forEach((asset, index) => {
         const uriParts = asset.uri.split('/');
         const name = asset.fileName ?? uriParts[uriParts.length - 1] ?? `evidence-${index}.jpg`;
-        const type = asset.mimeType ?? 'image/jpeg';
-        form.append('images', { uri: asset.uri, name, type } as unknown as Blob);
+        if (Platform.OS === 'web') {
+          if (!asset.file) throw new Error('File foto dari browser tidak tersedia.');
+          form.append('images', asset.file, name);
+        } else {
+          form.append('images', new File(asset.uri), name);
+        }
       });
       await authorizedRequest<TransferEvidence[]>(`warehouse-transfers/${selected.id}/evidence`, { method: 'POST', body: form });
       await openTransfer(selected.id);
@@ -126,7 +144,7 @@ export default function TransfersScreen() {
 
   return (
     <View style={styles.screen}>
-      <ScrollView contentContainerStyle={styles.page} refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => { setRefreshing(true); setReloadKey((key) => key + 1); }} tintColor="#087f5b" />}>
+      <ScrollView contentContainerStyle={[styles.page, { paddingTop: insets.top + 16 }]} refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => { setRefreshing(true); setReloadKey((key) => key + 1); }} tintColor="#087f5b" />}>
         <Pressable accessibilityRole="button" onPress={() => router.back()} style={styles.back}><Text style={styles.backText}>‹  Operasional</Text></Pressable>
         <Text style={styles.eyebrow}>PERSEDIAAN ANTAR GUDANG</Text><Text style={styles.title}>Transfer gudang</Text><Text style={styles.subtitle}>Pantau pengiriman dan konfirmasi barang yang diterima.</Text>
         <View style={styles.searchRow}><TextInput accessibilityLabel="Cari nomor transfer" returnKeyType="search" onSubmitEditing={() => { setPage(1); setSearch(searchInput.trim()); }} value={searchInput} onChangeText={setSearchInput} placeholder="Cari nomor transfer" placeholderTextColor="#8a968f" style={styles.searchInput} /><Pressable accessibilityRole="button" onPress={() => { setPage(1); setSearch(searchInput.trim()); }} style={styles.searchButton}><Text style={styles.searchButtonText}>Cari</Text></Pressable></View>
@@ -137,16 +155,18 @@ export default function TransfersScreen() {
         {rows.map((row) => <Pressable accessibilityRole="button" key={row.id} onPress={() => void openTransfer(row.id)} style={({ pressed }) => [styles.card, pressed && styles.pressed]}>
           <View style={styles.rowTop}><View style={styles.rowTitle}><Text style={styles.transferNumber}>{row.transferNumber}</Text><Text style={styles.date}>{new Date(row.createdAt).toLocaleDateString('id-ID', { dateStyle: 'medium' })} · {row._count.items} produk</Text></View><Text style={[styles.status, row.status === 'RECEIVED' ? styles.statusDone : row.status === 'CANCELLED' ? styles.statusMuted : styles.statusActive]}>{statusLabels[row.status] ?? row.status}</Text></View>
           <Text style={styles.route}>{row.sourceWarehouse.name}  →  {row.destinationWarehouse.name}</Text>
+          <Text style={styles.actorLine}>Dibuat: {row.createdBy?.name ?? '-'} · Diterima: {row.receivedBy?.name ?? '-'}</Text>
           <Text style={styles.openHint}>Buka detail  ›</Text>
         </Pressable>)}
         {rows.length > 0 ? <View style={styles.pagination}><Pressable disabled={page <= 1} onPress={() => setPage((value) => value - 1)} style={[styles.pageButton, page <= 1 && styles.disabled]}><Text style={styles.pageText}>‹ Sebelumnya</Text></Pressable><Text style={styles.pageCount}>{page} / {totalPages}</Text><Pressable disabled={page >= totalPages} onPress={() => setPage((value) => value + 1)} style={[styles.pageButton, page >= totalPages && styles.disabled]}><Text style={styles.pageText}>Berikutnya ›</Text></Pressable></View> : null}
       </ScrollView>
 
       <Modal animationType="slide" visible={detailLoading || selected !== null} onRequestClose={() => setSelected(null)}>
-        <View style={styles.modalScreen}><View style={styles.modalHeader}><Pressable onPress={() => setSelected(null)}><Text style={styles.backText}>Tutup</Text></Pressable><Text style={styles.modalTitle}>Detail transfer</Text><Pressable onPress={() => void refreshSelected()}><Text style={styles.backText}>↻</Text></Pressable></View>
-          {detailLoading ? <ActivityIndicator style={styles.loader} color="#087f5b" size="large" /> : selected ? <ScrollView contentContainerStyle={styles.detailPage}>
+        <View style={styles.modalScreen}><View style={[styles.modalHeader, { minHeight: 58 + insets.top, paddingTop: insets.top }]}><Pressable accessibilityLabel="Tutup detail transfer" accessibilityRole="button" hitSlop={8} onPress={() => setSelected(null)} style={({ pressed }) => [styles.headerAction, pressed && styles.headerActionPressed]}><X color="#087f5b" size={20} /><Text style={styles.headerActionText}>Tutup</Text></Pressable><Text numberOfLines={1} style={styles.modalTitle}>Detail transfer</Text><Pressable accessibilityLabel="Muat ulang detail transfer" accessibilityRole="button" disabled={detailLoading} hitSlop={8} onPress={() => void refreshSelected()} style={({ pressed }) => [styles.headerIconButton, pressed && styles.headerActionPressed]}><RefreshCw color="#087f5b" size={19} /></Pressable></View>
+          {detailLoading ? <ActivityIndicator style={styles.loader} color="#087f5b" size="large" /> : selected ? <ScrollView contentContainerStyle={[styles.detailPage, { paddingBottom: insets.bottom + 32 }]}>
             <Text style={styles.eyebrow}>{selected.transferNumber}</Text><Text style={styles.detailStatus}>{statusLabels[selected.status] ?? selected.status}</Text>
             <View style={styles.routeCard}><Text style={styles.routeLabel}>Gudang asal</Text><Text style={styles.routeValue}>{selected.sourceWarehouse.name}</Text><Text style={styles.routeArrow}>↓</Text><Text style={styles.routeLabel}>Gudang tujuan</Text><Text style={styles.routeValue}>{selected.destinationWarehouse.name}</Text></View>
+            <View style={styles.actorCard}><Text style={styles.actorText}>Dibuat: {selected.createdBy?.name ?? '-'}</Text><Text style={styles.actorText}>Disiapkan: {selected.preparedBy?.name ?? '-'}</Text><Text style={styles.actorText}>Dikirim: {selected.sentBy?.name ?? '-'}</Text><Text style={styles.actorText}>Diterima: {selected.receivedBy?.name ?? '-'}</Text></View>
             {selected.note ? <Text style={styles.noteText}>Catatan: {selected.note}</Text> : null}
             <Text style={styles.sectionTitle}>Foto bukti penerimaan</Text>
             <View style={styles.evidenceActions}>
@@ -159,7 +179,7 @@ export default function TransfersScreen() {
             {selected.items.map((item) => { const line = receiveLines[item.id]; const differs = line && Number(line.receivedQty) !== Number(item.sentQty); return <View key={item.id} style={styles.itemCard}>
               <Text style={styles.productName}>{item.product.name}</Text><Text style={styles.sku}>{item.product.sku}</Text>
               <View style={styles.qtyRow}><Text style={styles.qtyLabel}>Dikirim</Text><Text style={styles.qtyValue}>{moneyless(item.sentQty)}</Text></View>
-              {selected.availableActions.includes('RECEIVE') ? <><View style={styles.receiveRow}><Text style={styles.qtyLabel}>Diterima</Text><TextInput accessibilityLabel={`Jumlah diterima ${item.product.name}`} keyboardType="decimal-pad" value={line?.receivedQty ?? item.sentQty} onChangeText={(value) => setReceiveLines((current) => ({ ...current, [item.id]: { ...current[item.id], receivedQty: value.replace(',', '.') } }))} style={styles.receiveInput} /></View>
+              {selected.availableActions.includes('RECEIVE') ? <><View style={styles.receiveRow}><Text style={styles.qtyLabel}>Diterima</Text><View style={styles.quantityControl}><Pressable accessibilityLabel={`Kurangi jumlah diterima ${item.product.name}`} accessibilityRole="button" onPress={() => changeReceivedQuantity(item.id, item.sentQty, -1)} style={styles.quantityButton}><Minus size={16} color="#087f5b" /></Pressable><TextInput accessibilityLabel={`Jumlah diterima ${item.product.name}`} keyboardType="decimal-pad" value={line?.receivedQty ?? item.sentQty} onChangeText={(value) => setReceiveLines((current) => ({ ...current, [item.id]: { ...current[item.id], receivedQty: value.replace(',', '.') } }))} style={styles.receiveInput} /><Pressable accessibilityLabel={`Tambah jumlah diterima ${item.product.name}`} accessibilityRole="button" onPress={() => changeReceivedQuantity(item.id, item.sentQty, 1)} style={styles.quantityButton}><Plus size={16} color="#087f5b" /></Pressable></View></View>
                 {differs ? <><Pressable onPress={() => setReceiveLines((current) => ({ ...current, [item.id]: { ...current[item.id], discrepancyReason: reasons[(reasons.indexOf(current[item.id].discrepancyReason) + 1) % reasons.length] } }))} style={styles.reasonButton}><Text style={styles.reasonText}>Alasan selisih: {reasonLabels[line.discrepancyReason] ?? line.discrepancyReason} · Ubah</Text></Pressable>{line.discrepancyReason === 'OTHER' ? <TextInput value={line.discrepancyNote} onChangeText={(value) => setReceiveLines((current) => ({ ...current, [item.id]: { ...current[item.id], discrepancyNote: value } }))} placeholder="Catatan wajib untuk alasan Lainnya" placeholderTextColor="#8a968f" style={styles.discrepancyNote} /> : null}</> : null}</> : item.receivedQty !== null ? <View style={styles.qtyRow}><Text style={styles.qtyLabel}>Diterima</Text><Text style={styles.qtyValue}>{moneyless(item.receivedQty)}</Text></View> : null}
               {item.discrepancyReason ? <Text style={styles.discrepancy}>{reasonLabels[item.discrepancyReason] ?? item.discrepancyReason}{item.discrepancyNote ? ` · ${item.discrepancyNote}` : ''}</Text> : null}
             </View>; })}
@@ -178,6 +198,7 @@ const styles = StyleSheet.create({
   searchRow: { flexDirection: 'row', gap: 8, marginTop: 19, marginBottom: 8 }, searchInput: { height: 47, flex: 1, paddingHorizontal: 13, borderWidth: 1, borderColor: '#dce4df', borderRadius: 13, backgroundColor: '#fff', color: '#172820', fontSize: 13 }, searchButton: { minWidth: 62, alignItems: 'center', justifyContent: 'center', borderRadius: 13, backgroundColor: '#087f5b' }, searchButtonText: { color: '#fff', fontSize: 12, fontWeight: '800' },
   evidenceActions: { flexDirection: 'row', gap: 8, marginBottom: 9 }, evidenceButton: { paddingHorizontal: 12, paddingVertical: 9, borderRadius: 10, backgroundColor: '#e7f5ee' }, evidenceButtonText: { color: '#087f5b', fontSize: 11, fontWeight: '800' }, evidenceList: { gap: 8, paddingVertical: 4 }, evidenceImage: { width: 88, height: 88, borderRadius: 12, backgroundColor: '#edf1ee' }, hint: { color: '#89958e', fontSize: 11, paddingVertical: 8 },
   card: { marginTop: 10, padding: 14, borderWidth: 1, borderColor: '#e6ece8', borderRadius: 16, backgroundColor: '#fff' }, pressed: { backgroundColor: '#f8fcfa' }, rowTop: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start' }, rowTitle: { flex: 1 }, transferNumber: { color: '#26372e', fontSize: 14, fontWeight: '900' }, date: { marginTop: 4, color: '#89958e', fontSize: 10 }, status: { marginLeft: 8, paddingHorizontal: 8, paddingVertical: 5, borderRadius: 8, fontSize: 9, fontWeight: '900' }, statusActive: { backgroundColor: '#fff2d8', color: '#a86200' }, statusDone: { backgroundColor: '#e7f5ee', color: '#087f5b' }, statusMuted: { backgroundColor: '#f1f4f2', color: '#78857e' }, route: { marginTop: 13, color: '#59685f', fontSize: 11 }, openHint: { marginTop: 11, color: '#087f5b', fontSize: 10, fontWeight: '800', textAlign: 'right' },
+  actorLine: { marginTop: 7, color: '#718078', fontSize: 10 }, actorCard: { gap: 5, marginTop: 12, padding: 12, borderRadius: 12, backgroundColor: '#e7f5ee' }, actorText: { color: '#365548', fontSize: 10, fontWeight: '700' },
   pagination: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginTop: 17 }, pageButton: { paddingHorizontal: 10, paddingVertical: 9, borderRadius: 10, backgroundColor: '#e7f5ee' }, pageText: { color: '#087f5b', fontSize: 10, fontWeight: '800' }, pageCount: { color: '#68766e', fontSize: 11, fontWeight: '700' }, disabled: { opacity: 0.5 }, errorCard: { marginTop: 14, padding: 13, borderWidth: 1, borderColor: '#f1c8c5', borderRadius: 14, backgroundColor: '#fff6f5' }, errorText: { color: '#a3332a', fontSize: 12, lineHeight: 18 }, retry: { marginTop: 7, color: '#087f5b', fontSize: 12, fontWeight: '800' }, loader: { padding: 24 }, empty: { alignItems: 'center', marginTop: 18, padding: 22, borderRadius: 15, backgroundColor: '#fff' }, emptyTitle: { color: '#28372f', fontSize: 14, fontWeight: '800' }, emptyText: { marginTop: 6, color: '#819087', fontSize: 12, lineHeight: 18, textAlign: 'center' },
-  modalScreen: { flex: 1, backgroundColor: '#f5f7f6' }, modalHeader: { height: 58, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 20, borderBottomWidth: 1, borderBottomColor: '#e6ece8', backgroundColor: '#fff' }, modalTitle: { color: '#172820', fontSize: 15, fontWeight: '900' }, detailPage: { padding: 20, paddingBottom: 40 }, detailStatus: { marginTop: 7, color: '#26372e', fontSize: 19, fontWeight: '900' }, routeCard: { marginTop: 18, padding: 15, borderRadius: 15, backgroundColor: '#fff' }, routeLabel: { color: '#89958e', fontSize: 10, fontWeight: '700' }, routeValue: { marginTop: 4, color: '#26372e', fontSize: 13, fontWeight: '800' }, routeArrow: { marginVertical: 5, color: '#087f5b', fontSize: 17, fontWeight: '900' }, noteText: { marginTop: 12, color: '#59685f', fontSize: 11, lineHeight: 17 }, sectionTitle: { marginTop: 22, marginBottom: 10, color: '#26372e', fontSize: 15, fontWeight: '900' }, itemCard: { marginBottom: 9, padding: 13, borderWidth: 1, borderColor: '#e6ece8', borderRadius: 14, backgroundColor: '#fff' }, productName: { color: '#26372e', fontSize: 13, fontWeight: '800' }, sku: { marginTop: 4, color: '#89958e', fontSize: 10 }, qtyRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginTop: 12 }, qtyLabel: { color: '#718078', fontSize: 11, fontWeight: '700' }, qtyValue: { color: '#26372e', fontSize: 12, fontWeight: '900' }, receiveRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginTop: 9 }, receiveInput: { width: 98, height: 39, paddingHorizontal: 10, borderWidth: 1, borderColor: '#dce4df', borderRadius: 10, backgroundColor: '#fff', color: '#172820', textAlign: 'right', fontSize: 13, fontWeight: '800' }, reasonButton: { alignSelf: 'flex-start', marginTop: 9, paddingHorizontal: 9, paddingVertical: 7, borderRadius: 9, backgroundColor: '#fff2d8' }, reasonText: { color: '#a86200', fontSize: 10, fontWeight: '800' }, discrepancyNote: { minHeight: 39, marginTop: 7, paddingHorizontal: 10, borderWidth: 1, borderColor: '#dce4df', borderRadius: 9, color: '#26372e', fontSize: 11 }, discrepancy: { marginTop: 8, color: '#a86200', fontSize: 10, lineHeight: 15 }, primaryAction: { minHeight: 48, alignItems: 'center', justifyContent: 'center', marginTop: 10, paddingHorizontal: 14, borderRadius: 13, backgroundColor: '#087f5b' }, primaryActionText: { color: '#fff', fontSize: 12, fontWeight: '900' }, secondaryAction: { minHeight: 45, alignItems: 'center', justifyContent: 'center', marginTop: 8, paddingHorizontal: 14, borderWidth: 1, borderColor: '#dce4df', borderRadius: 13, backgroundColor: '#fff' }, secondaryActionText: { color: '#68766e', fontSize: 12, fontWeight: '800' },
+  modalScreen: { flex: 1, backgroundColor: '#f5f7f6' }, modalHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 16, borderBottomWidth: 1, borderBottomColor: '#e6ece8', backgroundColor: '#fff', elevation: 2, shadowColor: '#000', shadowOpacity: 0.05, shadowRadius: 4, shadowOffset: { width: 0, height: 2 } }, headerAction: { width: 76, height: 42, flexDirection: 'row', alignItems: 'center', gap: 5, borderRadius: 12 }, headerIconButton: { width: 76, height: 42, alignItems: 'flex-end', justifyContent: 'center', borderRadius: 12 }, headerActionPressed: { opacity: 0.55 }, headerActionText: { color: '#087f5b', fontSize: 12, fontWeight: '800' }, modalTitle: { flex: 1, color: '#172820', textAlign: 'center', fontSize: 15, fontWeight: '900' }, detailPage: { padding: 20 }, detailStatus: { marginTop: 7, color: '#26372e', fontSize: 19, fontWeight: '900' }, routeCard: { marginTop: 18, padding: 15, borderRadius: 15, backgroundColor: '#fff' }, routeLabel: { color: '#89958e', fontSize: 10, fontWeight: '700' }, routeValue: { marginTop: 4, color: '#26372e', fontSize: 13, fontWeight: '800' }, routeArrow: { marginVertical: 5, color: '#087f5b', fontSize: 17, fontWeight: '900' }, noteText: { marginTop: 12, color: '#59685f', fontSize: 11, lineHeight: 17 }, sectionTitle: { marginTop: 22, marginBottom: 10, color: '#26372e', fontSize: 15, fontWeight: '900' }, itemCard: { marginBottom: 9, padding: 13, borderWidth: 1, borderColor: '#e6ece8', borderRadius: 14, backgroundColor: '#fff' }, productName: { color: '#26372e', fontSize: 13, fontWeight: '800' }, sku: { marginTop: 4, color: '#89958e', fontSize: 10 }, qtyRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginTop: 12 }, qtyLabel: { color: '#718078', fontSize: 11, fontWeight: '700' }, qtyValue: { color: '#26372e', fontSize: 12, fontWeight: '900' }, receiveRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 10, marginTop: 9 }, quantityControl: { flexDirection: 'row', alignItems: 'center', gap: 6 }, quantityButton: { width: 38, height: 39, alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: '#b8ddcd', borderRadius: 10, backgroundColor: '#f6fcf8' }, receiveInput: { width: 70, height: 39, paddingHorizontal: 6, borderWidth: 1, borderColor: '#dce4df', borderRadius: 10, backgroundColor: '#fff', color: '#172820', textAlign: 'center', fontSize: 13, fontWeight: '800' }, reasonButton: { alignSelf: 'flex-start', marginTop: 9, paddingHorizontal: 9, paddingVertical: 7, borderRadius: 9, backgroundColor: '#fff2d8' }, reasonText: { color: '#a86200', fontSize: 10, fontWeight: '800' }, discrepancyNote: { minHeight: 39, marginTop: 7, paddingHorizontal: 10, borderWidth: 1, borderColor: '#dce4df', borderRadius: 9, color: '#26372e', fontSize: 11 }, discrepancy: { marginTop: 8, color: '#a86200', fontSize: 10, lineHeight: 15 }, primaryAction: { minHeight: 48, alignItems: 'center', justifyContent: 'center', marginTop: 10, paddingHorizontal: 14, borderRadius: 13, backgroundColor: '#087f5b' }, primaryActionText: { color: '#fff', fontSize: 12, fontWeight: '900' }, secondaryAction: { minHeight: 45, alignItems: 'center', justifyContent: 'center', marginTop: 8, paddingHorizontal: 14, borderWidth: 1, borderColor: '#dce4df', borderRadius: 13, backgroundColor: '#fff' }, secondaryActionText: { color: '#68766e', fontSize: 12, fontWeight: '800' },
 });
