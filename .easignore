@@ -1,0 +1,13 @@
+.git/
+node_modules/
+.expo/
+dist/
+web-build/
+.claude/
+.env
+.env.*
+!.env.example
+*.tsbuildinfo
+
+credentials.json
+credentials/

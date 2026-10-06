@@ -1,0 +1,70 @@
+{
+  "expo": {
+    "name": "Inventory Replenishment",
+    "slug": "inventory-replenishment-mobile",
+    "scheme": "invreplenishment",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "light",
+    "plugins": [
+      "expo-router",
+      "expo-secure-store",
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "Izinkan Inventory Replenishment memilih foto bukti transfer.",
+          "cameraPermission": "Izinkan Inventory Replenishment mengambil foto bukti transfer.",
+          "microphonePermission": false
+        }
+      ],
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "Izinkan Inventory Replenishment menggunakan kamera untuk scan barcode.",
+          "microphonePermission": false,
+          "recordAudioAndroid": false,
+          "barcodeScannerEnabled": true
+        }
+      ],
+      [
+        "expo-notifications",
+        {
+          "color": "#087f5b",
+          "defaultChannel": "operations"
+        }
+      ]
+    ],
+    "experiments": {
+      "typedRoutes": true
+    },
+    "ios": {
+      "bundleIdentifier": "com.storemanagement.inventoryreplenishment",
+      "supportsTablet": true
+    },
+    "android": {
+      "package": "com.storemanagement.inventoryreplenishment",
+      "permissions": [
+        "android.permission.BLUETOOTH_CONNECT",
+        "android.permission.CAMERA"
+      ],
+      "adaptiveIcon": {
+        "backgroundColor": "#E6F4FE",
+        "foregroundImage": "./assets/android-icon-foreground.png",
+        "backgroundImage": "./assets/android-icon-background.png",
+        "monochromeImage": "./assets/android-icon-monochrome.png"
+      },
+      "predictiveBackGestureEnabled": false
+    },
+    "web": {
+      "favicon": "./assets/favicon.png"
+    },
+    "extra": {
+      "router": {},
+      "eas": {
+        "projectId": "5dfe7a72-54b4-4766-81d3-4823996773ab"
+      }
+    },
+    "owner": "dagoraapp-team"
+  }
+}
