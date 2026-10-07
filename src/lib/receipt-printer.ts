@@ -1,6 +1,7 @@
 import * as SecureStore from 'expo-secure-store';
 import { PermissionsAndroid, Platform } from 'react-native';
 import RNBluetoothClassic from 'react-native-bluetooth-classic';
+import { formatDate, formatStatus } from './display';
 
 export type PairedPrinter = { name: string; address: string };
 export type ReceiptLine = {
@@ -112,7 +113,7 @@ function receiptText(order: ReceiptOrder, width: number) {
     ...(order.branch?.code ? [fit(order.branch.code, width)] : []),
     rule,
     fit(order.orderNumber, width),
-    ...(date ? [fit(new Date(date).toLocaleString('id-ID'), width)] : []),
+    ...(date ? [fit(formatDate(date), width)] : []),
     ...(order.customerName ? wrap(`Pelanggan: ${order.customerName}`, width) : []),
     rule,
   ];
@@ -130,7 +131,7 @@ function receiptText(order: ReceiptOrder, width: number) {
   if (Number(order.serviceCharge ?? 0) > 0) lines.push(columns('Layanan', rupiah(Number(order.serviceCharge)), width));
   lines.push(columns('TOTAL', rupiah(Number(order.grandTotal)), width));
   for (const payment of order.payments ?? []) {
-    lines.push(columns(payment.method, rupiah(Number(payment.amount)), width));
+    lines.push(columns(formatStatus(payment.method), rupiah(Number(payment.amount)), width));
     if (payment.receivedAmount) lines.push(columns('Diterima', rupiah(Number(payment.receivedAmount)), width));
     if (Number(payment.changeAmount ?? 0) > 0) lines.push(columns('Kembalian', rupiah(Number(payment.changeAmount)), width));
   }

@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { ActivityIndicator, KeyboardAvoidingView, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
+import { ActivityIndicator, Image, KeyboardAvoidingView, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { Redirect } from 'expo-router';
 import { useAuth } from '../auth/auth-provider';
 import { ApiError } from '../lib/api';
@@ -29,7 +29,7 @@ export default function LoginScreen() {
   return (
     <KeyboardAvoidingView style={styles.page} behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
       <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled" keyboardDismissMode="on-drag">
-      <View style={styles.brandMark}><Text style={styles.brandInitials}>IR</Text></View>
+      <View style={styles.brandMark}><Image accessibilityLabel="Logo Inventory Replenishment" source={require('../../assets/brand-splash.png')} style={styles.brandImage} resizeMode="contain" /></View>
       <Text style={styles.eyebrow}>INVENTORY REPLENISHMENT</Text>
       <Text style={styles.title}>Masuk ke akun</Text>
       <Text style={styles.subtitle}>Kelola operasional toko dari perangkat Anda.</Text>
@@ -54,8 +54,8 @@ const styles = StyleSheet.create({
   page: { flex: 1, backgroundColor: '#f5f7f6' },
   content: { flexGrow: 1, justifyContent: 'center', paddingHorizontal: 28, paddingVertical: 28 },
   loading: { flex: 1, alignItems: 'center', justifyContent: 'center' },
-  brandMark: { width: 54, height: 54, alignItems: 'center', justifyContent: 'center', borderRadius: 18, backgroundColor: '#087f5b', marginBottom: 28 },
-  brandInitials: { color: '#fff', fontSize: 20, fontWeight: '800' },
+  brandMark: { width: 64, height: 64, alignItems: 'center', justifyContent: 'center', borderRadius: 20, backgroundColor: '#ecfdf5', marginBottom: 28, padding: 7 },
+  brandImage: { width: '100%', height: '100%' },
   eyebrow: { color: '#087f5b', fontSize: 11, fontWeight: '800', letterSpacing: 1.4 },
   title: { marginTop: 8, color: '#13241d', fontSize: 30, fontWeight: '800', letterSpacing: -0.8 },
   subtitle: { marginTop: 8, color: '#66736d', fontSize: 15, lineHeight: 22 },

@@ -3,6 +3,7 @@ import { ActivityIndicator, Pressable, RefreshControl, ScrollView, StyleSheet, T
 import { router } from 'expo-router';
 import { useAuth } from '../../auth/auth-provider';
 import { ApiError } from '../../lib/api';
+import { formatDate, formatStatus } from '../../lib/display';
 
 type Warehouse = { id: string; name: string; code: string };
 type Product = { id: string; sku: string; name: string; unit: { code: string } };
@@ -80,7 +81,7 @@ export default function AdjustmentsScreen() {
       {stock.map((item) => <View key={item.product.id} style={styles.productRow}><View style={styles.productInfo}><Text style={styles.productName}>{item.product.name}</Text><Text style={styles.muted}>{item.product.sku} · Stok {qty(item.onHand)} {item.product.unit.code}</Text></View><TextInput accessibilityLabel={`Perubahan stok ${item.product.name}`} value={deltas[item.product.id] ?? ''} onChangeText={(value) => setDeltas((current) => ({ ...current, [item.product.id]: value }))} keyboardType="numbers-and-punctuation" placeholder="± jumlah" style={styles.qtyInput} /></View>)}
       <Pressable disabled={saving} onPress={() => void submit()} style={[styles.primary, saving && styles.dim]}>{saving ? <ActivityIndicator color="#fff" /> : <Text style={styles.primaryText}>Simpan adjustment</Text>}</Pressable></View>
       <Text style={styles.sectionTitle}>Riwayat adjustment</Text>
-      {rows.map((row) => <View key={row.id} style={styles.card}><Text style={styles.adjustmentNo}>{row.adjustmentNumber}</Text><Text style={styles.muted}>{labels[row.reason] ?? row.reason} · {row.warehouse.name} · {new Date(row.createdAt).toLocaleDateString('id-ID')}</Text><Text style={styles.muted}>{row.items.map((item) => `${item.product.name}: ${Number(item.quantityDelta) > 0 ? '+' : ''}${qty(item.quantityDelta)}`).join('  ·  ')}</Text><Text style={styles.muted}>{row.note}</Text></View>)}
+      {rows.map((row) => <View key={row.id} style={styles.card}><Text style={styles.adjustmentNo}>{row.adjustmentNumber}</Text><Text style={styles.muted}>{labels[row.reason] ?? formatStatus(row.reason)} · {row.warehouse.name} · {formatDate(row.createdAt)}</Text><Text style={styles.muted}>{row.items.map((item) => `${item.product.name}: ${Number(item.quantityDelta) > 0 ? '+' : ''}${qty(item.quantityDelta)}`).join('  ·  ')}</Text><Text style={styles.muted}>{row.note}</Text></View>)}
       {!rows.length && !loading ? <Text style={styles.empty}>Belum ada adjustment.</Text> : null}
     </> : null}
   </ScrollView></View>;

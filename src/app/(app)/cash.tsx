@@ -3,6 +3,7 @@ import { ActivityIndicator, Pressable, RefreshControl, ScrollView, StyleSheet, T
 import { router } from 'expo-router';
 import { useAuth } from '../../auth/auth-provider';
 import { ApiError } from '../../lib/api';
+import { formatStatus } from '../../lib/display';
 
 type Branch = { id: string; name: string; code: string };
 type Page<T> = { data: T[]; meta?: { totalPages: number } };
@@ -87,7 +88,7 @@ export default function CashScreen() {
       <Pressable accessibilityRole="button" disabled={saving || !preview?.transactionCount} onPress={() => void submitClosing()} style={[styles.primary, (saving || !preview?.transactionCount) && styles.dim]}>{saving ? <ActivityIndicator color="#fff" /> : <Text style={styles.primaryText}>Tutup kas</Text>}</Pressable>
     </View> : null}
     {canRead ? <><Text style={styles.sectionTitle}>Transaksi terbaru</Text>{transactions.length ? transactions.map((row) => <View key={row.id} style={styles.row}><View style={styles.rowText}><Text style={styles.rowTitle}>{row.category} · {row.type === 'CASH_IN' ? 'Masuk' : 'Keluar'}</Text><Text style={styles.detail}>{row.reason}</Text></View><Text style={styles.rowAmount}>{money(row.amount)}</Text></View>) : <Text style={styles.empty}>Belum ada transaksi kas.</Text>}
-      <Text style={styles.sectionTitle}>Penutupan terbaru</Text>{closings.length ? closings.map((row) => <View key={row.id} style={styles.row}><View style={styles.rowText}><Text style={styles.rowTitle}>{row.closingNumber} · {row.status}</Text><Text style={styles.detail}>Aktual {money(row.actualCash)} · Seharusnya {money(row.expectedCash)}</Text></View><Text style={[styles.rowAmount, { color: Number(row.difference) === 0 ? '#087f5b' : '#aa6b00' }]}>{money(row.difference)}</Text></View>) : <Text style={styles.empty}>Belum ada penutupan kas.</Text>}</> : null}
+      <Text style={styles.sectionTitle}>Penutupan terbaru</Text>{closings.length ? closings.map((row) => <View key={row.id} style={styles.row}><View style={styles.rowText}><Text style={styles.rowTitle}>{row.closingNumber} · {formatStatus(row.status ?? '-')}</Text><Text style={styles.detail}>Aktual {money(row.actualCash)} · Seharusnya {money(row.expectedCash)}</Text></View><Text style={[styles.rowAmount, { color: Number(row.difference) === 0 ? '#087f5b' : '#aa6b00' }]}>{money(row.difference)}</Text></View>) : <Text style={styles.empty}>Belum ada penutupan kas.</Text>}</> : null}
   </ScrollView></View>;
 }
 

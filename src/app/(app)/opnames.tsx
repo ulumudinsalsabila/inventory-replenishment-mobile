@@ -3,6 +3,7 @@ import { ActivityIndicator, Pressable, RefreshControl, ScrollView, StyleSheet, T
 import { router } from 'expo-router';
 import { useAuth } from '../../auth/auth-provider';
 import { ApiError } from '../../lib/api';
+import { formatDate, formatStatus } from '../../lib/display';
 
 type Warehouse = { id: string; name: string; code: string };
 type WarehousePage = { data: Warehouse[] };
@@ -99,7 +100,7 @@ export default function OpnamesScreen() {
     {loading && !selected && !creating ? <ActivityIndicator style={styles.loader} color="#087f5b" size="large" /> : null}
     {selected ? <>
       <Pressable onPress={() => setSelected(null)} style={styles.back}><Text style={styles.backText}>‹  Daftar opname</Text></Pressable>
-      <View style={styles.summary}><Text style={styles.number}>{selected.opnameNumber}</Text><Text style={styles.status}>{statusLabels[selected.status] ?? selected.status}</Text><Text style={styles.muted}>{selected.warehouse.name} · {new Date(selected.createdAt).toLocaleString('id-ID')}</Text></View>
+      <View style={styles.summary}><Text style={styles.number}>{selected.opnameNumber}</Text><Text style={styles.status}>{statusLabels[selected.status] ?? formatStatus(selected.status)}</Text><Text style={styles.muted}>{selected.warehouse.name} · {formatDate(selected.createdAt)}</Text></View>
       <Text style={styles.sectionTitle}>Hasil hitung</Text>
       {selected.items.map((item) => <View key={item.id} style={styles.itemCard}><Text style={styles.product}>{item.product.name}</Text><Text style={styles.muted}>{item.product.sku}{item.product.unit?.code ? ` · ${item.product.unit.code}` : ''}</Text><View style={styles.qtyRow}><Text style={styles.muted}>Sistem {qty(item.systemQtySnapshot)} · Fisik {qty(item.physicalQty)}</Text><Text style={[styles.diff, Number(item.differenceQty) !== 0 && styles.diffChanged]}>{Number(item.differenceQty) > 0 ? '+' : ''}{qty(item.differenceQty)}</Text></View></View>)}
       {canCreate && selected.status === 'DRAFT' ? <><Pressable disabled={saving} onPress={() => void runAction('submit')} style={[styles.primary, saving && styles.disabled]}>{saving ? <ActivityIndicator color="#fff" /> : <Text style={styles.primaryText}>Ajukan opname</Text>}</Pressable><Pressable disabled={saving} onPress={() => void runAction('cancel')} style={styles.secondary}><Text style={styles.secondaryText}>Batalkan draft</Text></Pressable></> : null}
@@ -114,7 +115,7 @@ export default function OpnamesScreen() {
       <Pressable disabled={saving || !canCreate} onPress={() => void createOpname()} style={[styles.primary, (saving || !canCreate) && styles.disabled]}>{saving ? <ActivityIndicator color="#fff" /> : <Text style={styles.primaryText}>Simpan draft ({Object.values(counts).filter((value) => value.trim() !== '').length} produk)</Text>}</Pressable>
     </> : <>
       {canCreate ? <Pressable accessibilityRole="button" onPress={() => { setSearch(''); setCreating(true); }} style={styles.primary}><Text style={styles.primaryText}>+ Buat stock opname</Text></Pressable> : null}
-      {rows.map((row) => <Pressable accessibilityRole="button" key={row.id} onPress={() => void openOpname(row.id)} style={styles.itemCard}><View style={styles.row}><View style={styles.flex}><Text style={styles.number}>{row.opnameNumber}</Text><Text style={styles.muted}>{row.warehouse.name} · {row.items.length} produk · {new Date(row.createdAt).toLocaleDateString('id-ID')}</Text></View><Text style={styles.status}>{statusLabels[row.status] ?? row.status}</Text></View></Pressable>)}
+      {rows.map((row) => <Pressable accessibilityRole="button" key={row.id} onPress={() => void openOpname(row.id)} style={styles.itemCard}><View style={styles.row}><View style={styles.flex}><Text style={styles.number}>{row.opnameNumber}</Text><Text style={styles.muted}>{row.warehouse.name} · {row.items.length} produk · {formatDate(row.createdAt)}</Text></View><Text style={styles.status}>{statusLabels[row.status] ?? formatStatus(row.status)}</Text></View></Pressable>)}
       {!loading && !rows.length ? <View style={styles.empty}><Text style={styles.product}>Belum ada stock opname</Text><Text style={styles.muted}>Opname yang dibuat akan tampil di sini.</Text></View> : null}
     </>}
   </ScrollView></View>;

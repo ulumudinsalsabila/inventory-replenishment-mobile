@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { ActivityIndicator, Pressable, RefreshControl, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { router } from 'expo-router';
 import { useAuth } from '../../../auth/auth-provider';
+import { formatDate } from '../../../lib/display';
 import { ApiError } from '../../../lib/api';
 
 type Dashboard = {
@@ -73,7 +74,7 @@ export default function DashboardScreen() {
         {!loading && data?.lowStock.length === 0 ? <View style={styles.emptyCard}><Text style={styles.emptyTitle}>Stok aman</Text><Text style={styles.emptyText}>Tidak ada produk di bawah batas stok minimum.</Text></View> : null}
         {(data?.lowStock ?? []).map((row) => <View key={`${row.product?.id}-${row.warehouse?.name}`} style={styles.stockRow}><View style={styles.stockIcon}><Text style={styles.stockIconText}>!</Text></View><View style={styles.stockInfo}><Text numberOfLines={1} style={styles.stockName}>{row.product?.name ?? 'Produk'}</Text><Text style={styles.stockMeta}>{row.product?.sku ?? '—'} · {row.warehouse?.name ?? 'Gudang'}</Text></View><Text style={styles.stockCount}>{row.onHand}<Text style={styles.stockUnit}> / {row.reorderPoint}</Text></Text></View>)}
       </> : <View style={styles.emptyCard}><Text style={styles.emptyTitle}>Selamat datang</Text><Text style={styles.emptyText}>Ringkasan akan tampil jika akun memiliki akses laporan.</Text></View>}
-      <Text style={styles.dateLabel}>{data?.date ? `Data per ${new Date(`${data.date}T00:00:00`).toLocaleDateString('id-ID', { dateStyle: 'long' })}` : 'Inventory Replenishment Mobile'}</Text>
+      <Text style={styles.dateLabel}>{data?.date ? `Data per ${formatDate(data.date)}` : 'Inventory Replenishment Mobile'}</Text>
     </ScrollView>
   );
 }

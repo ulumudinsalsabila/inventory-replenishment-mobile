@@ -5,6 +5,7 @@ import { ChevronDown, ChevronRight, Minus, Package, PackagePlus, Plus, Search, X
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useAuth } from '../../auth/auth-provider';
 import { ApiError } from '../../lib/api';
+import { formatDate, formatStatus } from '../../lib/display';
 
 type NamedOption = { id: string; name: string; code?: string; branchId?: string | null };
 type ProductOption = { id: string; name: string; sku: string; unit: { code: string }; category?: { name: string } | null };
@@ -209,7 +210,7 @@ export default function StockRequestsScreen() {
         {loading ? <ActivityIndicator style={styles.loader} color="#c70d17" size="large" /> : null}
         {canRead && !loading && !error && requests.length === 0 ? <View style={styles.empty}><Text style={styles.emptyTitle}>Belum ada permintaan</Text><Text style={styles.emptyText}>{canCreate ? 'Buat pengajuan pertama untuk mengisi ulang stok cabang.' : 'Permintaan stok akan tampil di sini.'}</Text></View> : null}
         {requests.map((request) => <View key={request.id} style={styles.requestCard}>
-          <View style={styles.requestTop}><View style={styles.requestTitle}><Text style={styles.requestNumber}>{request.requestNumber}</Text><Text style={styles.requestDate}>{new Date(request.createdAt).toLocaleDateString('id-ID', { dateStyle: 'medium' })} · {request._count.items} produk</Text></View><Text style={[styles.status, request.status === 'REJECTED' || request.status === 'CANCELLED' ? styles.statusMuted : request.status === 'APPROVED' || request.status === 'FULFILLED' ? styles.statusSuccess : styles.statusPending]}>{STATUS_LABEL[request.status] ?? request.status}</Text></View>
+          <View style={styles.requestTop}><View style={styles.requestTitle}><Text style={styles.requestNumber}>{request.requestNumber}</Text><Text style={styles.requestDate}>{formatDate(request.createdAt)} · {request._count.items} produk</Text></View><Text style={[styles.status, request.status === 'REJECTED' || request.status === 'CANCELLED' ? styles.statusMuted : request.status === 'APPROVED' || request.status === 'FULFILLED' ? styles.statusSuccess : styles.statusPending]}>{STATUS_LABEL[request.status] ?? formatStatus(request.status)}</Text></View>
           <Text style={styles.route}>{request.branch.name} · {request.sourceWarehouse.name} → {request.destinationWarehouse.name}</Text>
           <Text style={styles.actorLine}>Pemohon: {request.requestedBy?.name ?? '-'} · Approver: {request.reviewedBy?.name ?? '-'}</Text>
           {request.reviewNote ? <Text style={styles.reviewNote}>Catatan: {request.reviewNote}</Text> : null}
@@ -244,7 +245,7 @@ export default function StockRequestsScreen() {
         <View style={styles.modalScreen}>
           <View style={[styles.modalHeader, { paddingTop: insets.top + 8, height: 66 + insets.top }]}><Pressable onPress={() => { setDetailId(null); setDetail(null); }} style={styles.headerAction}><X size={19} color="#c70d17" /><Text style={styles.backText}>Tutup</Text></Pressable><Text style={styles.modalTitle}>Review permintaan</Text><View style={{ width: 46 }} /></View>
           {detailLoading || !detail ? <ActivityIndicator style={styles.loader} color="#c70d17" size="large" /> : <ScrollView contentContainerStyle={styles.formPage} keyboardShouldPersistTaps="handled">
-            <Text style={styles.requestNumber}>{detail.requestNumber}</Text><Text style={styles.route}>{detail.branch.name} · {detail.sourceWarehouse.name} → {detail.destinationWarehouse.name}</Text><Text style={styles.status}>{STATUS_LABEL[detail.status] ?? detail.status}</Text>
+            <Text style={styles.requestNumber}>{detail.requestNumber}</Text><Text style={styles.route}>{detail.branch.name} · {detail.sourceWarehouse.name} → {detail.destinationWarehouse.name}</Text><Text style={styles.status}>{STATUS_LABEL[detail.status] ?? formatStatus(detail.status)}</Text>
             <View style={styles.actorCard}><View><Text style={styles.actorLabel}>PEMOHON</Text><Text style={styles.actorName}>{detail.requestedBy?.name ?? '-'}</Text></View><View><Text style={styles.actorLabel}>REVIEW / APPROVAL</Text><Text style={styles.actorName}>{detail.reviewedBy?.name ?? '-'}</Text></View></View>
             <Text style={styles.fieldLabel}>Barang diminta dan jumlah persetujuan</Text>
             {detail.items.map((item) => <View key={item.id} style={styles.reviewItem}><View style={styles.reviewProduct}><Text style={styles.selectText}>{item.product.name}</Text><Text style={styles.sku}>{item.product.sku} · diminta {item.requestedQty} {item.product.unit?.code ?? ''}</Text></View>{detail.availableActions.includes('APPROVE') ? <TextInput accessibilityLabel={`Jumlah disetujui ${item.product.name}`} keyboardType="decimal-pad" value={approvalValues[item.id] ?? item.requestedQty} onChangeText={(value) => setApprovalValues((current) => ({ ...current, [item.id]: value.replace(',', '.') }))} style={styles.qtyInput} /> : item.approvedQty ? <Text style={styles.approvedQty}>Disetujui {item.approvedQty}</Text> : null}</View>)}
