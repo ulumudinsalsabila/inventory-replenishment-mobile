@@ -1,33 +1,28 @@
 import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { router, type Href } from 'expo-router';
-import { Banknote, ChevronRight, ClipboardList, FileText, House, PackageSearch, ReceiptText, ShoppingCart, UserRound } from 'lucide-react-native';
+import { Banknote, ChevronRight, ClipboardList, FileText, PackageSearch, ReceiptText, UserRound } from 'lucide-react-native';
 import { useAuth } from '../../../auth/auth-provider';
 
-type FeatureIconName = 'House' | 'ShoppingCart' | 'ReceiptText' | 'PackageSearch' | 'ClipboardList' | 'Banknote' | 'FileText' | 'UserRound';
+type FeatureIconName = 'ReceiptText' | 'PackageSearch' | 'ClipboardList' | 'Banknote' | 'FileText' | 'UserRound';
 function FeatureIcon({ name }: { name: FeatureIconName }) {
-  const icons = { House, ShoppingCart, ReceiptText, PackageSearch, ClipboardList, Banknote, FileText, UserRound };
+  const icons = { ReceiptText, PackageSearch, ClipboardList, Banknote, FileText, UserRound };
   const Icon = icons[name];
   return <Icon size={23} color="#c70d17" />;
 }
 
 type Feature = { section: string; title: string; description: string; destination: Href; permission?: string; icon: FeatureIconName };
 const adminFeatures: Feature[] = [
-  { section: 'Menu utama', title: 'Dashboard', description: 'Ringkasan aktivitas dan penjualan', destination: '/(app)/(tabs)', permission: 'report.read', icon: 'House' },
-  { section: 'Menu utama', title: 'Pesanan', description: 'Riwayat transaksi dan pembayaran', destination: '/(app)/(tabs)/orders', permission: 'order.read', icon: 'ReceiptText' },
-  { section: 'Menu utama', title: 'Permintaan stok', description: 'Ajukan atau tinjau permintaan', destination: '/(app)/(tabs)/requests', permission: 'inventory.read', icon: 'ClipboardList' },
-  { section: 'Menu utama', title: 'Pembelian distributor', description: 'Daftar pembelian dan penerimaan', destination: '/(app)/(tabs)/purchases', permission: 'purchase.read', icon: 'FileText' },
   { section: 'Stok & Gudang', title: 'Stok', description: 'Ketersediaan produk per gudang', destination: '/(app)/inventory', permission: 'inventory.read', icon: 'PackageSearch' },
   { section: 'Stok & Gudang', title: 'Pergerakan stok', description: 'Riwayat barang masuk dan keluar', destination: '/(app)/movements', permission: 'inventory.read', icon: 'ClipboardList' },
+  { section: 'Stok & Gudang', title: 'Permintaan stok', description: 'Ajukan atau tinjau permintaan stok', destination: '/(app)/stock-requests', permission: 'inventory.read', icon: 'ClipboardList' },
   { section: 'Kas', title: 'Cash closing', description: 'Rekonsiliasi dan penutupan kas', destination: '/(app)/cash', permission: 'cash_closing.read', icon: 'Banknote' },
   { section: 'Akun', title: 'Akun / profil', description: 'Peran, akses, dan pengaturan akun', destination: '/(app)/(tabs)/account', icon: 'UserRound' },
 ];
 const employeeFeatures: Feature[] = [
-  { section: 'Menu utama', title: 'Dashboard', description: 'Ringkasan aktivitas dan penjualan', destination: '/(app)/(tabs)', permission: 'report.read', icon: 'House' },
-  { section: 'Menu utama', title: 'POS', description: 'Buat transaksi penjualan', destination: '/(app)/(tabs)/kasir', permission: 'order.create', icon: 'ShoppingCart' },
-  { section: 'Menu utama', title: 'Permintaan stok', description: 'Ajukan dan pantau permintaan', destination: '/(app)/(tabs)/requests', permission: 'stock_request.create', icon: 'ClipboardList' },
-  { section: 'Menu utama', title: 'Cash closing', description: 'Tinjau dan tutup kas', destination: '/(app)/(tabs)/cash', permission: 'cash_closing.read', icon: 'Banknote' },
+  { section: 'Transaksi', title: 'Pesanan', description: 'Riwayat transaksi dan pembayaran', destination: '/(app)/(tabs)/orders', permission: 'order.read', icon: 'ReceiptText' },
   { section: 'Stok & Gudang', title: 'Stok', description: 'Ketersediaan produk di gudang', destination: '/(app)/inventory', permission: 'inventory.read', icon: 'PackageSearch' },
   { section: 'Stok & Gudang', title: 'Pergerakan stok', description: 'Riwayat barang masuk dan keluar', destination: '/(app)/movements', permission: 'inventory.read', icon: 'ClipboardList' },
+  { section: 'Stok & Gudang', title: 'Permintaan stok', description: 'Ajukan dan pantau permintaan stok', destination: '/(app)/stock-requests', permission: 'inventory.read', icon: 'ClipboardList' },
   { section: 'Kas', title: 'Cash in/out', description: 'Catat kas masuk atau keluar', destination: '/(app)/cash', permission: 'cash_transaction.create', icon: 'Banknote' },
   { section: 'Akun', title: 'Akun / profil', description: 'Peran, akses, dan pengaturan akun', destination: '/(app)/(tabs)/account', icon: 'UserRound' },
 ];
