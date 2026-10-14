@@ -6,7 +6,26 @@ export default function AppLayout() {
   const { loading, accessToken } = useAuth();
   if (loading) return <View style={styles.loading}><ActivityIndicator color="#087f5b" size="large" /></View>;
   if (!accessToken) return <Redirect href="/login" />;
-  return <Stack screenOptions={{ headerShown: false }} />;
+  return <Stack screenOptions={{
+    headerShown: true,
+    headerStyle: { backgroundColor: '#fff' },
+    headerTintColor: '#172338',
+    headerTitleStyle: { fontSize: 15, fontWeight: '800' },
+    headerBackButtonDisplayMode: 'minimal',
+    headerShadowVisible: false,
+  }}>
+    <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
+    <Stack.Screen name="pos" options={{ headerShown: false }} />
+    <Stack.Screen name="inventory" options={{ title: 'Stok' }} />
+    <Stack.Screen name="movements" options={{ title: 'Pergerakan Stok' }} />
+    <Stack.Screen name="orders" options={{ title: 'Pesanan' }} />
+    <Stack.Screen name="purchases" options={{ title: 'Pembelian Distributor' }} />
+    <Stack.Screen name="cash" options={{ title: 'Cash Closing' }} />
+    <Stack.Screen name="stock-requests" options={{ title: 'Permintaan Stok' }} />
+    <Stack.Screen name="transfers" options={{ title: 'Transfer Gudang' }} />
+    <Stack.Screen name="adjustments" options={{ title: 'Adjustment Stok' }} />
+    <Stack.Screen name="opnames" options={{ title: 'Stock Opname' }} />
+  </Stack>;
 }
 
 const styles = StyleSheet.create({ loading: { flex: 1, alignItems: 'center', justifyContent: 'center' } });

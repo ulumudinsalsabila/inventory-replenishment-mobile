@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { ActivityIndicator, Modal, Pressable, RefreshControl, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { router } from 'expo-router';
 import { ChevronDown, ChevronRight, Minus, Package, PackagePlus, Plus, Search, X } from 'lucide-react-native';
@@ -8,8 +8,9 @@ import { ApiError } from '../../lib/api';
 import { formatDate, formatStatus } from '../../lib/display';
 
 type NamedOption = { id: string; name: string; code?: string; branchId?: string | null };
-type ProductOption = { id: string; name: string; sku: string; unit: { code: string }; category?: { name: string } | null };
-type RequestOptions = { branches: NamedOption[]; sourceWarehouses: NamedOption[]; destinationWarehouses: NamedOption[]; products: ProductOption[] };
+type ProductUnit = { unitId: string; conversionFactor: string; unit: { id: string; code: string; name: string } };
+type ProductOption = { id: string; name: string; sku: string; unitId: string; unit: { id: string; code: string; name: string }; unitConversions: ProductUnit[]; category?: { name: string } | null };
+type RequestOptions = { branches: NamedOption[]; sourceWarehouses: NamedOption[]; destinationWarehouses: NamedOption[]; products: ProductOption[]; sourceStock: { warehouseId: string; productId: string; available: string }[] };
 type Actor = { id: string; name: string };
 type StockRequest = {
   id: string; requestNumber: string; status: string; note: string | null; reviewNote?: string | null; createdAt: string;
@@ -19,7 +20,7 @@ type StockRequest = {
 };
 type RequestPage = { data: StockRequest[]; meta: { total: number } };
 type RequestDetail = StockRequest & { items: { id: string; productId: string; requestedQty: string; approvedQty?: string | null; allocatedQty: string; remainingTransferQty: string; sourceAvailable: string; product: { id: string; name: string; sku: string; unit?: { code: string } } }[] };
-type RequestItem = { productId: string; requestedQty: string; note?: string };
+type RequestItem = { productId: string; unitId?: string; requestedQty: string; note?: string };
 type Selector = 'branch' | 'source' | 'destination' | 'product' | null;
 
 const STATUS_LABEL: Record<string, string> = {
@@ -63,7 +64,9 @@ export default function StockRequestsScreen() {
   const [transferNote, setTransferNote] = useState('');
   const [transferError, setTransferError] = useState('');
   const [transferSaving, setTransferSaving] = useState(false);
+  const previousSourceWarehouseId = useRef('');
 
+  // eslint-disable-next-line react-hooks/set-state-in-effect
   useEffect(() => {
     let active = true;
     if (!canRead) return;
@@ -98,6 +101,44 @@ export default function StockRequestsScreen() {
   const selectedProducts = options?.products ?? [];
   const availableProducts = selectedProducts;
   const filteredProducts = useMemo(() => availableProducts.filter((product) => `${product.name} ${product.sku}`.toLowerCase().includes(productSearch.trim().toLowerCase())), [availableProducts, productSearch]);
+  const sourceAvailable = (productId: string, warehouseId = sourceWarehouseId) => Number(options?.sourceStock.find((stock) => stock.productId === productId && stock.warehouseId === warehouseId)?.available ?? 0);
+  const quantityLabel = (value: number) => value.toLocaleString('id-ID', { maximumFractionDigits: 3 });
+
+  useEffect(() => {
+    const previousId = previousSourceWarehouseId.current;
+    previousSourceWarehouseId.current = sourceWarehouseId;
+    if (previousId && sourceWarehouseId && previousId !== sourceWarehouseId && items.length) {
+      setItems([]);
+      setNotice('Gudang asal berubah. Pilih ulang barang agar jumlah sesuai stok gudang tersebut.');
+    }
+  }, [items, sourceWarehouseId]);
+
+  function addRequestProduct(product: ProductOption) {
+    const maximum = sourceAvailable(product.id);
+    if (maximum <= 0) { setError(`Stok gudang asal untuk ${product.name} kosong.`); return; }
+    setError('');
+    setItems((current) => current.some((item) => item.productId === product.id) ? current : [...current, { productId: product.id, requestedQty: String(Math.min(1, maximum)) }]);
+  }
+
+  function updateRequestQuantity(productId: string, value: string) {
+    const normalized = value.replace(',', '.');
+    const maximum = sourceAvailable(productId);
+    if (normalized !== '' && Number.isFinite(Number(normalized)) && Number(normalized) > maximum) {
+      setError(`Jumlah melebihi stok tersedia. Maksimal ${quantityLabel(maximum)}.`);
+      setItems((current) => current.map((item) => item.productId === productId ? { ...item, requestedQty: String(maximum) } : item));
+      return;
+    }
+    setError('');
+    setItems((current) => current.map((item) => item.productId === productId ? { ...item, requestedQty: normalized } : item));
+  }
+
+  function incrementRequestQuantity(productId: string) {
+    const maximum = sourceAvailable(productId);
+    const current = Number(items.find((item) => item.productId === productId)?.requestedQty ?? 0);
+    if (current >= maximum) { setError(`Jumlah sudah mencapai stok tersedia (${quantityLabel(maximum)}).`); return; }
+    setError('');
+    setItems((lines) => lines.map((item) => item.productId === productId ? { ...item, requestedQty: String(Math.min(current + 1, maximum)) } : item));
+  }
 
   function openCreateForm() {
     setError(''); setNotice(''); setItems([]); setNote(''); setFormVisible(true);
@@ -113,6 +154,8 @@ export default function StockRequestsScreen() {
     if (!branchId || !sourceWarehouseId || !destinationWarehouseId || !items.length || items.some((item) => !Number.isFinite(Number(item.requestedQty)) || Number(item.requestedQty) <= 0)) {
       setError('Lengkapi cabang, gudang asal/tujuan, dan jumlah barang yang valid.'); return;
     }
+    const overStock = items.find((item) => Number(item.requestedQty) > sourceAvailable(item.productId) + 0.000001);
+    if (overStock) { setError(`Jumlah ${selectedProducts.find((product) => product.id === overStock.productId)?.name ?? 'barang'} melebihi stok gudang asal yang tersedia.`); return; }
     setSaving(true); setError('');
     try {
       await authorizedRequest<StockRequest>('stock-requests', { method: 'POST', body: JSON.stringify({ branchId, sourceWarehouseId, destinationWarehouseId, note: note.trim() || undefined, items }) });
@@ -200,9 +243,7 @@ export default function StockRequestsScreen() {
   return (
     <View style={styles.screen}>
       <ScrollView contentContainerStyle={styles.page} refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => { setRefreshing(true); setReloadKey((key) => key + 1); }} tintColor="#c70d17" />}>
-        <Pressable accessibilityRole="button" onPress={() => router.back()} style={styles.back}><Text style={styles.backText}>‹  Operasional</Text></Pressable>
-        <Text style={styles.eyebrow}>REPLENISHMENT</Text>
-        <View style={styles.headingRow}><View style={styles.heading}><Text style={styles.title}>{canReview ? 'Review permintaan stok' : 'Permintaan stok saya'}</Text><Text style={styles.subtitle}>{canReview ? 'Tinjau pengajuan pegawai dan putuskan jumlah yang disetujui.' : 'Buat draft, lalu ajukan agar admin atau owner dapat meninjau.'}</Text></View>{canCreate ? <Pressable accessibilityRole="button" onPress={openCreateForm} style={styles.createButton}><Text style={styles.createButtonText}>＋ Buat</Text></Pressable> : null}</View>
+        <View style={styles.headingRow}><View style={styles.heading}><Text style={styles.subtitle}>{canReview ? 'Tinjau pengajuan pegawai dan putuskan jumlah yang disetujui.' : 'Buat draft, lalu ajukan agar admin atau owner dapat meninjau.'}</Text></View>{canCreate ? <Pressable accessibilityRole="button" onPress={openCreateForm} style={styles.createButton}><Text style={styles.createButtonText}>＋ Buat</Text></Pressable> : null}</View>
         {canReview ? <View style={styles.flowHint}><Text style={styles.flowHintTitle}>Alur admin / owner</Text><Text style={styles.flowHintText}>Buka permintaan berstatus Diajukan → Mulai review → atur jumlah → Setujui → buat transfer gudang.</Text></View> : canCreate ? <View style={styles.flowHint}><Text style={styles.flowHintTitle}>Alur pegawai</Text><Text style={styles.flowHintText}>Buat draft → tekan Ajukan. Admin atau owner akan menerima permintaan untuk ditinjau.</Text></View> : null}
         {notice ? <View style={styles.notice}><Text style={styles.noticeText}>{notice}</Text></View> : null}
         {error ? <View style={styles.errorCard}><Text style={styles.errorText}>{error}</Text><Pressable accessibilityRole="button" onPress={() => { setLoading(true); setReloadKey((key) => key + 1); }}><Text style={styles.retry}>Coba lagi</Text></Pressable></View> : null}
@@ -221,7 +262,7 @@ export default function StockRequestsScreen() {
 
       <Modal animationType="slide" visible={formVisible} onRequestClose={() => setFormVisible(false)}>
         <View style={styles.modalScreen}>
-          <View style={[styles.modalHeader, { paddingTop: insets.top + 8, height: 66 + insets.top }]}><Pressable accessibilityRole="button" onPress={() => setFormVisible(false)} style={styles.headerAction}><X size={19} color="#c70d17" /><Text style={styles.backText}>Batal</Text></Pressable><Text style={styles.modalTitle}>Pengajuan stok</Text><View style={{ width: 46 }} /></View>
+          <View style={[styles.modalHeader, { paddingTop: insets.top + 8, minHeight: 66 + insets.top }]}><Pressable accessibilityRole="button" onPress={() => setFormVisible(false)} style={styles.headerAction}><X size={19} color="#c70d17" /><Text style={styles.backText}>Batal</Text></Pressable><Text style={styles.modalTitle}>Pengajuan stok</Text><View style={{ width: 46 }} /></View>
           <ScrollView contentContainerStyle={styles.formPage} keyboardShouldPersistTaps="handled">
             <View style={styles.formIntro}><View style={styles.formIntroIcon}><PackagePlus size={22} color="#c70d17" /></View><View style={styles.formIntroCopy}><Text style={styles.formIntroTitle}>Ajukan kebutuhan stok</Text><Text style={styles.formIntroText}>Tentukan cabang tujuan, lalu cari dan tambah barang seperti saat berbelanja di POS.</Text></View></View>
             <View style={styles.locationCard}>
@@ -232,7 +273,23 @@ export default function StockRequestsScreen() {
             <Text style={styles.fieldLabel}>Gudang asal</Text><Pressable onPress={() => setSelector('source')} style={styles.selectField}><Text numberOfLines={1} style={styles.selectText}>{selectedSource?.name ?? 'Pilih gudang asal'}</Text><ChevronDown size={18} color="#718078" /></Pressable>
             <View style={styles.catalogHeading}><View><Text style={styles.catalogTitle}>Pilih barang</Text><Text style={styles.catalogSubtitle}>{items.length ? items.length + ' jenis barang dipilih' : 'Cari produk yang ingin diajukan'}</Text></View><View style={styles.catalogBadge}><ShoppingBagIcon /></View></View>
             <View style={styles.productSearchRow}><Search size={19} color="#84918b" /><TextInput value={productSearch} onChangeText={setProductSearch} placeholder="Cari nama barang atau SKU..." placeholderTextColor="#87948c" style={styles.productSearchInput} /></View>
-            <View style={styles.productGrid}>{filteredProducts.map((product) => { const selected = items.find((item) => item.productId === product.id); return <View key={product.id} style={[styles.stockProductCard, selected && styles.stockProductSelected]}><View style={styles.stockProductArtwork}><PackagePlus size={29} color="#8b45d6" /></View><Text numberOfLines={1} style={styles.stockProductSku}>{product.sku}</Text><Text numberOfLines={2} style={styles.stockProductName}>{product.name}</Text><Text style={styles.stockProductUnit}>Satuan: {product.unit.code}</Text><View style={styles.stockProductBottom}>{selected ? <><Pressable accessibilityRole="button" accessibilityLabel={'Kurangi jumlah ' + product.name} style={styles.quantityButton} onPress={() => setItems((current) => current.flatMap((line) => line.productId !== product.id ? [line] : Number(line.requestedQty) <= 1 ? [] : [{ ...line, requestedQty: String(Number(line.requestedQty) - 1) }]))}><Minus size={16} color="#c70d17" /></Pressable><TextInput accessibilityLabel={'Jumlah ' + product.name} keyboardType="decimal-pad" value={selected.requestedQty} onChangeText={(value) => setItems((current) => current.map((line) => line.productId === product.id ? { ...line, requestedQty: value.replace(',', '.') } : line))} style={styles.catalogQtyInput} /><Pressable accessibilityRole="button" accessibilityLabel={'Tambah jumlah ' + product.name} style={styles.quantityButtonActive} onPress={() => setItems((current) => current.map((line) => line.productId === product.id ? { ...line, requestedQty: String((Number(line.requestedQty) || 0) + 1) } : line))}><Plus size={16} color="#fff" /></Pressable></> : <Pressable accessibilityRole="button" accessibilityLabel={'Tambah ' + product.name} style={styles.addProductCircle} onPress={() => setItems((current) => [...current, { productId: product.id, requestedQty: '1' }])}><Plus size={21} color="#fff" /></Pressable>}</View></View>; })}</View>
+            <View style={styles.productGrid}>{filteredProducts.map((product) => {
+              const selected = items.find((item) => item.productId === product.id);
+              const maximum = sourceAvailable(product.id);
+              const atLimit = !sourceWarehouseId || maximum <= 0 || Number(selected?.requestedQty ?? 0) >= maximum;
+              return <View key={product.id} style={[styles.stockProductCard, selected && styles.stockProductSelected]}>
+                <View style={styles.stockProductArtwork}><PackagePlus size={29} color="#8b45d6" /></View>
+                <Text numberOfLines={1} style={styles.stockProductSku}>{product.sku}</Text>
+                <Text numberOfLines={2} style={styles.stockProductName}>{product.name}</Text>
+                <Text style={styles.stockProductUnit}>Satuan: {product.unit.code}</Text>
+                <Text style={styles.stockProductUnit}>Tersedia: {quantityLabel(maximum)} {product.unit.code}</Text>
+                <View style={styles.stockProductBottom}>{selected ? <>
+                  <Pressable accessibilityRole="button" accessibilityLabel={'Kurangi jumlah ' + product.name} style={styles.quantityButton} onPress={() => setItems((current) => current.flatMap((line) => line.productId !== product.id ? [line] : Number(line.requestedQty) <= 1 ? [] : [{ ...line, requestedQty: String(Number(line.requestedQty) - 1) }]))}><Minus size={16} color="#c70d17" /></Pressable>
+                  <TextInput accessibilityLabel={'Jumlah ' + product.name} keyboardType="decimal-pad" value={selected.requestedQty} onChangeText={(value) => updateRequestQuantity(product.id, value)} style={styles.catalogQtyInput} />
+                  <Pressable accessibilityRole="button" accessibilityLabel={'Tambah jumlah ' + product.name} disabled={atLimit} style={[styles.quantityButtonActive, atLimit && styles.disabled]} onPress={() => incrementRequestQuantity(product.id)}><Plus size={16} color="#fff" /></Pressable>
+                </> : <Pressable accessibilityRole="button" accessibilityLabel={'Tambah ' + product.name} disabled={!sourceWarehouseId || maximum <= 0} style={[styles.addProductCircle, (!sourceWarehouseId || maximum <= 0) && styles.disabled]} onPress={() => addRequestProduct(product)}><Plus size={21} color="#fff" /></Pressable>}</View>
+              </View>;
+            })}</View>
             {!filteredProducts.length ? <Text style={styles.noItems}>{productSearch ? 'Barang tidak ditemukan.' : 'Tidak ada barang yang tersedia.'}</Text> : null}
             <View style={styles.noteCard}><Text style={styles.fieldLabel}>Catatan (opsional)</Text><TextInput multiline value={note} onChangeText={setNote} placeholder="Alasan atau informasi tambahan" placeholderTextColor="#8a968f" style={styles.noteInput} /></View>
             <Text style={styles.formHint}>Pengajuan disimpan sebagai draft. Periksa kembali sebelum mengajukannya untuk ditinjau.</Text>
@@ -243,7 +300,7 @@ export default function StockRequestsScreen() {
 
       <Modal animationType="slide" visible={Boolean(detailId) && !transferVisible} onRequestClose={() => { setDetailId(null); setDetail(null); }}>
         <View style={styles.modalScreen}>
-          <View style={[styles.modalHeader, { paddingTop: insets.top + 8, height: 66 + insets.top }]}><Pressable onPress={() => { setDetailId(null); setDetail(null); }} style={styles.headerAction}><X size={19} color="#c70d17" /><Text style={styles.backText}>Tutup</Text></Pressable><Text style={styles.modalTitle}>Review permintaan</Text><View style={{ width: 46 }} /></View>
+          <View style={[styles.modalHeader, { paddingTop: insets.top + 8, minHeight: 66 + insets.top }]}><Pressable onPress={() => { setDetailId(null); setDetail(null); }} style={styles.headerAction}><X size={19} color="#c70d17" /><Text style={styles.backText}>Tutup</Text></Pressable><Text style={styles.modalTitle}>Review permintaan</Text><View style={{ width: 46 }} /></View>
           {detailLoading || !detail ? <ActivityIndicator style={styles.loader} color="#c70d17" size="large" /> : <ScrollView contentContainerStyle={styles.formPage} keyboardShouldPersistTaps="handled">
             <Text style={styles.requestNumber}>{detail.requestNumber}</Text><Text style={styles.route}>{detail.branch.name} · {detail.sourceWarehouse.name} → {detail.destinationWarehouse.name}</Text><Text style={styles.status}>{STATUS_LABEL[detail.status] ?? formatStatus(detail.status)}</Text>
             <View style={styles.actorCard}><View><Text style={styles.actorLabel}>PEMOHON</Text><Text style={styles.actorName}>{detail.requestedBy?.name ?? '-'}</Text></View><View><Text style={styles.actorLabel}>REVIEW / APPROVAL</Text><Text style={styles.actorName}>{detail.reviewedBy?.name ?? '-'}</Text></View></View>
@@ -261,7 +318,7 @@ export default function StockRequestsScreen() {
 
       <Modal animationType="slide" visible={transferVisible} onRequestClose={() => setTransferVisible(false)}>
         <View style={styles.modalScreen}>
-          <View style={[styles.modalHeader, { paddingTop: insets.top + 8, height: 66 + insets.top }]}><Pressable accessibilityRole="button" onPress={() => setTransferVisible(false)} style={styles.headerAction}><X size={19} color="#087f5b" /><Text style={styles.transferBackText}>Batal</Text></Pressable><Text style={styles.modalTitle}>Buat transfer gudang</Text><View style={{ width: 46 }} /></View>
+          <View style={[styles.modalHeader, { paddingTop: insets.top + 8, minHeight: 66 + insets.top }]}><Pressable accessibilityRole="button" onPress={() => setTransferVisible(false)} style={styles.headerAction}><X size={19} color="#087f5b" /><Text style={styles.transferBackText}>Batal</Text></Pressable><Text style={styles.modalTitle}>Buat transfer gudang</Text><View style={{ width: 46 }} /></View>
           {!detail ? null : <><ScrollView contentContainerStyle={styles.formPage} keyboardShouldPersistTaps="handled">
             <Text style={styles.formHint}>Transfer dibuat dari jumlah yang sudah disetujui dan belum dialokasikan.</Text>
             <View style={styles.transferRouteCard}><View style={styles.transferRouteColumn}><Text style={styles.locationLabel}>DARI GUDANG</Text><Text style={styles.transferRouteValue}>{detail.sourceWarehouse.name}</Text></View><Text style={styles.transferArrow}>→</Text><View style={styles.transferRouteColumn}><Text style={styles.locationLabel}>KE GUDANG</Text><Text style={styles.transferRouteValue}>{detail.destinationWarehouse.name}</Text></View></View>

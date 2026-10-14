@@ -1,4 +1,5 @@
 export function formatStatus(status: string) {
+  if (status === 'GOBIZ') return 'GoBiz';
   return status.replaceAll('_', ' ');
 }
 

@@ -74,8 +74,7 @@ export default function CashScreen() {
   };
 
   return <View style={styles.screen}><ScrollView contentContainerStyle={styles.page} keyboardShouldPersistTaps="handled" refreshControl={<RefreshControl refreshing={loading} onRefresh={() => setReload((n) => n + 1)} tintColor="#087f5b" />}>
-    <Pressable accessibilityRole="button" onPress={() => router.back()} style={styles.back}><Text style={styles.backText}>‹  Operasional</Text></Pressable>
-    <Text style={styles.eyebrow}>KONTROL KAS</Text><Text style={styles.title}>Kas masuk / keluar</Text><Text style={styles.subtitle}>Catat pergerakan kas dan rekonsiliasi hasil penjualan.</Text>
+    <Text style={styles.subtitle}>Catat pergerakan kas dan rekonsiliasi hasil penjualan.</Text>
     {branches.length ? <View style={styles.card}><Text style={styles.label}>Cabang</Text><View style={styles.chips}>{branches.map((b) => <Pressable key={b.id} onPress={() => setBranchId(b.id)} style={[styles.chip, branchId === b.id && styles.chipActive]}><Text style={[styles.chipText, branchId === b.id && styles.chipTextActive]}>{b.name}</Text></Pressable>)}</View></View> : null}
     {error ? <View style={styles.error}><Text style={styles.errorText}>{error}</Text></View> : null}
     {loading ? <ActivityIndicator style={styles.loader} color="#087f5b" size="large" /> : null}

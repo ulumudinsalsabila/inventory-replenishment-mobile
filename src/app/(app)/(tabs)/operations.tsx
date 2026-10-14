@@ -1,48 +1,63 @@
 import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
-import { router } from 'expo-router';
-import { Banknote, ClipboardList, House, PackagePlus, PackageSearch, ReceiptText, ShoppingCart, SlidersHorizontal, Truck, UserRound } from 'lucide-react-native';
+import { router, type Href } from 'expo-router';
+import { Banknote, ChevronRight, ClipboardList, FileText, House, PackageSearch, ReceiptText, ShoppingCart, UserRound } from 'lucide-react-native';
 import { useAuth } from '../../../auth/auth-provider';
 
-type FeatureIconName = 'House' | 'ShoppingCart' | 'ReceiptText' | 'PackageSearch' | 'PackagePlus' | 'Truck' | 'ClipboardList' | 'SlidersHorizontal' | 'Banknote' | 'UserRound';
+type FeatureIconName = 'House' | 'ShoppingCart' | 'ReceiptText' | 'PackageSearch' | 'ClipboardList' | 'Banknote' | 'FileText' | 'UserRound';
 function FeatureIcon({ name }: { name: FeatureIconName }) {
-  const icons = { House, ShoppingCart, ReceiptText, PackageSearch, PackagePlus, Truck, ClipboardList, SlidersHorizontal, Banknote, UserRound };
+  const icons = { House, ShoppingCart, ReceiptText, PackageSearch, ClipboardList, Banknote, FileText, UserRound };
   const Icon = icons[name];
   return <Icon size={23} color="#c70d17" />;
 }
 
-const features = [
-  { title: 'Dashboard', description: 'Ringkasan aktivitas dan stok', icon: 'House' },
-  { title: 'POS', description: 'Transaksi penjualan di kasir', permission: 'order.create', icon: 'ShoppingCart' },
-  { title: 'Pesanan', description: 'Riwayat transaksi dan pembayaran', permission: 'order.read', icon: 'ReceiptText' },
-  { title: 'Cek stok', description: 'Cari ketersediaan produk di gudang', permission: 'inventory.read', icon: 'PackageSearch' },
-  { title: 'Permintaan stok', description: 'Ajukan dan pantau permintaan barang', permission: 'stock_request.create', icon: 'PackagePlus' },
-  { title: 'Transfer gudang', description: 'Pantau dan terima kiriman barang', permission: 'inventory.read', icon: 'Truck' },
-  { title: 'Stock opname', description: 'Hitung fisik persediaan', permission: 'inventory.read', icon: 'ClipboardList' },
-  { title: 'Adjustment stok', description: 'Catat koreksi atau pengurangan stok', permission: 'inventory.adjust', icon: 'SlidersHorizontal' },
-  { title: 'Kas masuk / keluar', description: 'Catat transaksi dan lakukan penutupan kas', permission: 'cash_closing.read', icon: 'Banknote' },
-  { title: 'Akun', description: 'Profil, peran, akses, dan keluar', icon: 'UserRound' },
+type Feature = { section: string; title: string; description: string; destination: Href; permission?: string; icon: FeatureIconName };
+const adminFeatures: Feature[] = [
+  { section: 'Menu utama', title: 'Dashboard', description: 'Ringkasan aktivitas dan penjualan', destination: '/(app)/(tabs)', permission: 'report.read', icon: 'House' },
+  { section: 'Menu utama', title: 'Pesanan', description: 'Riwayat transaksi dan pembayaran', destination: '/(app)/(tabs)/orders', permission: 'order.read', icon: 'ReceiptText' },
+  { section: 'Menu utama', title: 'Permintaan stok', description: 'Ajukan atau tinjau permintaan', destination: '/(app)/(tabs)/requests', permission: 'inventory.read', icon: 'ClipboardList' },
+  { section: 'Menu utama', title: 'Pembelian distributor', description: 'Daftar pembelian dan penerimaan', destination: '/(app)/(tabs)/purchases', permission: 'purchase.read', icon: 'FileText' },
+  { section: 'Stok & Gudang', title: 'Stok', description: 'Ketersediaan produk per gudang', destination: '/(app)/inventory', permission: 'inventory.read', icon: 'PackageSearch' },
+  { section: 'Stok & Gudang', title: 'Pergerakan stok', description: 'Riwayat barang masuk dan keluar', destination: '/(app)/movements', permission: 'inventory.read', icon: 'ClipboardList' },
+  { section: 'Kas', title: 'Cash closing', description: 'Rekonsiliasi dan penutupan kas', destination: '/(app)/cash', permission: 'cash_closing.read', icon: 'Banknote' },
+  { section: 'Akun', title: 'Akun / profil', description: 'Peran, akses, dan pengaturan akun', destination: '/(app)/(tabs)/account', icon: 'UserRound' },
+];
+const employeeFeatures: Feature[] = [
+  { section: 'Menu utama', title: 'Dashboard', description: 'Ringkasan aktivitas dan penjualan', destination: '/(app)/(tabs)', permission: 'report.read', icon: 'House' },
+  { section: 'Menu utama', title: 'POS', description: 'Buat transaksi penjualan', destination: '/(app)/(tabs)/kasir', permission: 'order.create', icon: 'ShoppingCart' },
+  { section: 'Menu utama', title: 'Permintaan stok', description: 'Ajukan dan pantau permintaan', destination: '/(app)/(tabs)/requests', permission: 'stock_request.create', icon: 'ClipboardList' },
+  { section: 'Menu utama', title: 'Cash closing', description: 'Tinjau dan tutup kas', destination: '/(app)/(tabs)/cash', permission: 'cash_closing.read', icon: 'Banknote' },
+  { section: 'Stok & Gudang', title: 'Stok', description: 'Ketersediaan produk di gudang', destination: '/(app)/inventory', permission: 'inventory.read', icon: 'PackageSearch' },
+  { section: 'Stok & Gudang', title: 'Pergerakan stok', description: 'Riwayat barang masuk dan keluar', destination: '/(app)/movements', permission: 'inventory.read', icon: 'ClipboardList' },
+  { section: 'Kas', title: 'Cash in/out', description: 'Catat kas masuk atau keluar', destination: '/(app)/cash', permission: 'cash_transaction.create', icon: 'Banknote' },
+  { section: 'Akun', title: 'Akun / profil', description: 'Peran, akses, dan pengaturan akun', destination: '/(app)/(tabs)/account', icon: 'UserRound' },
 ];
 
 export default function OperationsScreen() {
   const { user } = useAuth();
+  const isEmployee = user?.roles.some((role) => role.toUpperCase() === 'PEGAWAI') ?? false;
+  const features = isEmployee ? employeeFeatures : adminFeatures;
   const visibleFeatures = features.filter(({ permission, title }) =>
-    !permission || user?.permissions.includes(permission) || (title === 'Permintaan stok' && user?.permissions.includes('stock_request.review')) || (title === 'Kas masuk / keluar' && (user?.permissions.includes('cash_transaction.create') || user?.permissions.includes('cash_closing.create'))),
+    !permission || user?.permissions.includes(permission) ||
+    (title === 'Permintaan stok' && (user?.permissions.includes('stock_request.create') || user?.permissions.includes('stock_request.review'))) ||
+    (title === 'Cash closing' && user?.permissions.includes('cash_closing.create')),
   );
+  const sections = [...new Set(visibleFeatures.map((feature) => feature.section))];
   return (
     <ScrollView contentContainerStyle={styles.page}>
-      <Text style={styles.eyebrow}>OPERASIONAL HARIAN</Text>
-      <Text style={styles.title}>Operasional</Text>
-      <Text style={styles.subtitle}>Buka alur kerja yang tersedia sesuai akses akun Anda.</Text>
-      <View style={styles.list}>{visibleFeatures.map((feature) => {
-        const available = true;
-        const destination = feature.title === 'Dashboard' ? '/(app)/(tabs)' : feature.title === 'Akun' ? '/(app)/(tabs)/account' : feature.title === 'Cek stok' ? '/(app)/inventory' : feature.title === 'Permintaan stok' ? '/(app)/stock-requests' : feature.title === 'Transfer gudang' ? '/(app)/transfers' : feature.title === 'Stock opname' ? '/(app)/opnames' : feature.title === 'Adjustment stok' ? '/(app)/adjustments' : feature.title === 'Pesanan' ? '/(app)/orders' : feature.title === 'Kas masuk / keluar' ? '/(app)/cash' : '/(app)/pos';
-        return <Pressable accessibilityRole="button" onPress={() => router.push(destination)} key={`${feature.title}-${feature.permission}`} style={({ pressed }) => [styles.card, pressed && styles.cardPressed]}>
-        <View style={styles.icon}><FeatureIcon name={feature.icon as FeatureIconName} /></View>
-        <View style={styles.content}><Text style={styles.cardTitle}>{feature.title}</Text><Text style={styles.cardDescription}>{feature.description}</Text></View>
-        <Text style={[styles.status, available && styles.availableStatus]}>{available ? 'Buka' : 'Segera'}</Text>
-      </Pressable>; })}</View>
+      <Text style={styles.subtitle}>Menu sesuai peran dan izin akun Anda.</Text>
+      {sections.map((section) => {
+        const sectionFeatures = visibleFeatures.filter((feature) => feature.section === section);
+        if (!sectionFeatures.length) return null;
+        return <View key={section} style={styles.section}>
+          <Text style={styles.sectionTitle}>{section}</Text>
+          <View style={styles.list}>{sectionFeatures.map((feature) => <Pressable accessibilityRole="button" onPress={() => router.push(feature.destination)} key={feature.title} style={({ pressed }) => [styles.card, pressed && styles.cardPressed]}>
+            <View style={styles.icon}><FeatureIcon name={feature.icon as FeatureIconName} /></View>
+            <View style={styles.content}><Text style={styles.cardTitle}>{feature.title}</Text><Text style={styles.cardDescription}>{feature.description}</Text></View>
+            <ChevronRight size={19} color="#9aa59f" />
+          </Pressable>)}</View>
+        </View>;
+      })}
       {!visibleFeatures.length ? <View style={styles.empty}><Text style={styles.cardTitle}>Belum ada menu tersedia</Text><Text style={styles.cardDescription}>Minta admin memeriksa akses akun Anda.</Text></View> : null}
-      <Text style={styles.note}>Menu yang tampil mengikuti izin pada akun Anda.</Text>
     </ScrollView>
   );
 }
@@ -52,16 +67,14 @@ const styles = StyleSheet.create({
   eyebrow: { color: '#087f5b', fontSize: 10, fontWeight: '800', letterSpacing: 1.2 },
   title: { marginTop: 7, color: '#172820', fontSize: 26, fontWeight: '800' },
   subtitle: { marginTop: 6, color: '#718078', fontSize: 13 },
-  list: { marginTop: 22, gap: 10 },
-  card: { minHeight: 72, flexDirection: 'row', alignItems: 'center', padding: 13, borderWidth: 1, borderColor: '#e8eeea', borderRadius: 16, backgroundColor: '#fff' },
-  cardPressed: { borderColor: '#a8d7c2', backgroundColor: '#f6fcf8' },
-  icon: { width: 42, height: 42, alignItems: 'center', justifyContent: 'center', borderRadius: 14, backgroundColor: '#e7f5ee' },
-  iconText: { color: '#087f5b', fontSize: 17, fontWeight: '800' },
-  content: { flex: 1, marginLeft: 12 },
+  section: { marginTop: 26 },
+  sectionTitle: { marginBottom: 10, color: '#53635a', fontSize: 12, fontWeight: '800' },
+  list: { gap: 8 },
+  card: { minHeight: 70, flexDirection: 'row', alignItems: 'center', paddingHorizontal: 12, paddingVertical: 11, borderWidth: 1, borderColor: '#e8eeea', borderRadius: 14, backgroundColor: '#fff' },
+  cardPressed: { borderColor: '#e5a5a8', backgroundColor: '#fff8f8' },
+  icon: { width: 42, height: 42, alignItems: 'center', justifyContent: 'center', borderRadius: 13, backgroundColor: '#fff0f0' },
+  content: { flex: 1, minWidth: 0, marginHorizontal: 12 },
   cardTitle: { color: '#28372f', fontSize: 14, fontWeight: '800' },
-  cardDescription: { marginTop: 4, color: '#8a968f', fontSize: 11 },
-  status: { marginLeft: 8, paddingHorizontal: 8, paddingVertical: 5, borderRadius: 9, backgroundColor: '#f1f4f2', color: '#84918b', fontSize: 9, fontWeight: '800' },
-  availableStatus: { backgroundColor: '#e7f5ee', color: '#087f5b' },
-  empty: { marginTop: 22, padding: 18, borderRadius: 16, backgroundColor: '#fff' },
-  note: { marginTop: 18, color: '#95a099', fontSize: 11, lineHeight: 17, textAlign: 'center' },
+  cardDescription: { marginTop: 4, color: '#8a968f', fontSize: 11, lineHeight: 15 },
+  empty: { marginTop: 22, padding: 18, borderWidth: 1, borderColor: '#e8eeea', borderRadius: 14, backgroundColor: '#fff' },
 });

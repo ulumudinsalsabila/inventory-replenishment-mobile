@@ -5,6 +5,7 @@ import { ActivityIndicator, Image, Modal, Platform, Pressable, ScrollView, Style
 import * as Print from 'expo-print';
 import { useAuth } from '../../auth/auth-provider';
 import { BarcodeScanner } from '../../components/barcode-scanner';
+import { PosCatalogScreen, PosCheckoutFlow, PosReceiptScreen, type PosLine, type PosMethod, type PosProduct } from '../../components/pos-flow';
 import { getPairedPrinters, getSavedPrinter, openAndroidBluetoothSettings, printThermalReceipt, savePrinter, type PairedPrinter, type ReceiptOrder } from '../../lib/receipt-printer';
 import { formatDate, formatStatus } from '../../lib/display';
 
@@ -12,10 +13,11 @@ type Branch = { id: string; name: string; address?: string | null };
 type Warehouse = { id: string; name: string; branchId: string | null };
 type Variant = { id: string; name: string; priceDelta: string };
 type Addon = { id: string; name: string; basePrice: string };
-type Product = { id: string; sku: string; barcode?: string | null; name: string; basePrice: string; available: string; trackInventory: boolean; category?: { name: string } | null; unit?: { code: string } | null; variants?: Variant[]; addons?: Addon[] };
+type SellingUnit = { unitId: string; conversionFactor: string; sellingPrice: string; unit: { id: string; code: string; name: string } };
+type Product = PosProduct & { barcode?: string | null };
 type Order = ReceiptOrder;
-type Line = { key: string; product: Product; quantity: number; variantId: string; addonIds: string[] };
-type Method = 'CASH' | 'QRIS' | 'TRANSFER';
+type Line = PosLine & { product: Product };
+type Method = PosMethod;
 const money = (amount: number) => `Rp ${Math.max(0, amount).toLocaleString('id-ID', { maximumFractionDigits: 0 })}`;
 
 export default function PosScreen() {
@@ -29,6 +31,7 @@ export default function PosScreen() {
   const [cart, setCart] = useState<Line[]>([]);
   const [optionProduct, setOptionProduct] = useState<Product | null>(null);
   const [optionVariant, setOptionVariant] = useState('');
+  const [optionUnit, setOptionUnit] = useState('');
   const [optionAddons, setOptionAddons] = useState<string[]>([]);
   const [search, setSearch] = useState('');
   const [customer, setCustomer] = useState('');
@@ -97,28 +100,48 @@ export default function PosScreen() {
 
   const categories = useMemo(() => ['Semua', ...new Set(products.map((product) => product.category?.name).filter((name): name is string => Boolean(name)))], [products]);
   const visible = useMemo(() => products.filter((p) => (selectedCategory === 'Semua' || p.category?.name === selectedCategory) && `${p.name} ${p.sku} ${p.barcode ?? ''} ${p.category?.name ?? ''}`.toLowerCase().includes(search.toLowerCase())), [products, search, selectedCategory]);
-  const priceFor = (line: Line) => Number(line.product.basePrice) + Number(line.product.variants?.find((v) => v.id === line.variantId)?.priceDelta ?? 0) + line.addonIds.reduce((sum, id) => sum + Number(line.product.addons?.find((a) => a.id === id)?.basePrice ?? 0), 0);
+  const priceFor = (line: Line) => Number(line.product.sellingUnits.find((unit) => unit.unitId === line.unitId)?.sellingPrice ?? line.product.basePrice) + Number(line.product.variants?.find((v) => v.id === line.variantId)?.priceDelta ?? 0) + line.addonIds.reduce((sum, id) => sum + Number(line.product.addons?.find((a) => a.id === id)?.basePrice ?? 0), 0);
   const subtotal = cart.reduce((sum, line) => sum + priceFor(line) * line.quantity, 0);
   const discountAmount = Math.min(Math.max(Number(discount) || 0, 0), subtotal);
   const total = subtotal - discountAmount;
   const cash = Number(received) || 0;
 
+  function conversionFactor(product: Product, unitId: string) {
+    return Number(product.sellingUnits.find((unit) => unit.unitId === unitId)?.conversionFactor ?? 1);
+  }
+  function canAddUnit(product: Product, unitId = product.unit?.id ?? product.sellingUnits[0]?.unitId ?? '') {
+    if (!product.trackInventory) return true;
+    const usedBaseQuantity = cart.filter((line) => line.product.id === product.id).reduce((sum, line) => sum + line.quantity * conversionFactor(product, line.unitId), 0);
+    return usedBaseQuantity + conversionFactor(product, unitId) <= Math.max(Number(product.available) || 0, 0) + 0.000001;
+  }
+  function reportStockLimit(product: Product, unitId: string) {
+    const usedBaseQuantity = cart.filter((line) => line.product.id === product.id).reduce((sum, line) => sum + line.quantity * conversionFactor(product, line.unitId), 0);
+    const remainingBaseQuantity = Math.max(Number(product.available) - usedBaseQuantity, 0);
+    const maxUnitQuantity = remainingBaseQuantity / conversionFactor(product, unitId);
+    const unit = product.sellingUnits.find((entry) => entry.unitId === unitId)?.unit.code ?? product.unit?.code ?? '';
+    setError(`Stok ${product.name} tidak cukup. Sisa maksimal ${maxUnitQuantity.toLocaleString('id-ID', { maximumFractionDigits: 3 })} ${unit}.`);
+  }
+
   function add(product: Product) {
-    if ((product.variants?.length ?? 0) > 0 || (product.addons?.length ?? 0) > 0) {
-      setOptionProduct(product); setOptionVariant(''); setOptionAddons([]); setError('');
+    if ((product.sellingUnits?.length ?? 0) > 1 || (product.variants?.length ?? 0) > 0 || (product.addons?.length ?? 0) > 0) {
+      setOptionProduct(product); setOptionUnit(product.sellingUnits[0]?.unitId ?? product.unit?.id ?? ''); setOptionVariant(''); setOptionAddons([]); setError('');
       return;
     }
-    addConfigured(product, '', []);
+    addConfigured(product, product.sellingUnits[0]?.unitId ?? product.unit?.id ?? '', '', []);
   }
-  function addConfigured(product: Product, variantId: string, addonIds: string[]) {
-    const key = `${product.id}:${variantId}:${[...addonIds].sort().join(',')}`;
+  function addConfigured(product: Product, unitId: string, variantId: string, addonIds: string[]) {
+    if (!canAddUnit(product, unitId)) { reportStockLimit(product, unitId); return; }
+    const key = `${product.id}:${unitId}:${variantId}:${[...addonIds].sort().join(',')}`;
     setError('');
     setCart((current) => {
       const found = current.find((line) => line.key === key);
-      return found ? current.map((line) => line.key === key ? { ...line, quantity: line.quantity + 1 } : line) : [...current, { key, product, quantity: 1, variantId, addonIds }];
+      return found ? current.map((line) => line.key === key ? { ...line, quantity: line.quantity + 1 } : line) : [...current, { key, product, unitId, quantity: 1, variantId, addonIds }];
     });
   }
   function quantity(lineKey: string, delta: number) {
+    const line = cart.find((entry) => entry.key === lineKey);
+    if (delta > 0 && line && !canAddUnit(line.product, line.unitId)) { reportStockLimit(line.product, line.unitId); return; }
+    setError('');
     setCart((current) => current.flatMap((line) => line.key !== lineKey ? [line] : line.quantity + delta <= 0 ? [] : [{ ...line, quantity: line.quantity + delta }]));
   }
   async function checkout() {
@@ -130,7 +153,7 @@ export default function PosScreen() {
     try {
       let order = pendingOrder;
       if (!order) {
-        order = await authorizedRequest<Order>('orders', { method: 'POST', body: JSON.stringify({ branchId, warehouseId, customerName: customer.trim(), discountAmount: String(discountAmount), items: cart.map((line) => ({ productId: line.product.id, variantId: line.variantId || undefined, quantity: String(line.quantity), addons: line.addonIds.map((addonId) => ({ addonId, quantity: '1' })) })) }) });
+        order = await authorizedRequest<Order>('orders', { method: 'POST', body: JSON.stringify({ branchId, warehouseId, customerName: customer.trim(), discountAmount: String(discountAmount), items: cart.map((line) => ({ productId: line.product.id, unitId: line.unitId, variantId: line.variantId || undefined, quantity: String(line.quantity), addons: line.addonIds.map((addonId) => ({ addonId, quantity: '1' })) })) }) });
         setPendingOrder(order);
       }
       const paid = order.status === 'PAID' ? order : await authorizedRequest<Order>(`orders/${order.id}/pay`, { method: 'POST', body: JSON.stringify({ payments: [{ method, amount: order.grandTotal, ...(method === 'CASH' ? { receivedAmount: String(cash) } : {}) }] }) });
@@ -152,7 +175,7 @@ export default function PosScreen() {
     setPrinting(true);
     const esc = (value: string) => value.replace(/[&<>"']/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[char]!);
     const date = receipt.completedAt ?? receipt.createdAt;
-    const rows = (receipt.items ?? []).map((item) => `<div class="item"><div class="row"><span>${esc(item.productNameSnapshot)}${item.variantNameSnapshot ? ` (${esc(item.variantNameSnapshot)})` : ''}</span><span>${money(Number(item.totalPrice))}</span></div><div class="sub">${Number(item.quantity)} x ${money(Number(item.unitPrice))}</div>${(item.addons ?? []).map((addon) => `<div class="sub">+ ${esc(addon.addonNameSnapshot)} x ${Number(addon.quantity)} (${money(Number(addon.totalPrice))})</div>`).join('')}</div>`).join('');
+    const rows = (receipt.items ?? []).map((item) => `<div class="item"><div class="row"><span>${esc(item.productNameSnapshot)}${item.variantNameSnapshot ? ` (${esc(item.variantNameSnapshot)})` : ''}</span><span>${money(Number(item.totalPrice))}</span></div><div class="sub">${Number(item.inputQuantity ?? item.quantity)} ${esc(item.unit?.code ?? '')} x ${money(Number(item.unitPrice))}</div>${(item.addons ?? []).map((addon) => `<div class="sub">+ ${esc(addon.addonNameSnapshot)} x ${Number(addon.quantity)} (${money(Number(addon.totalPrice))})</div>`).join('')}</div>`).join('');
     const html = `<!doctype html><html><head><meta name="viewport" content="width=device-width, initial-scale=1"><style>@page{margin:5mm}*{box-sizing:border-box}body{font:12px Arial,sans-serif;color:#111;width:72mm;margin:0 auto}.center{text-align:center}.title{font-size:18px;font-weight:bold}.muted{color:#555;font-size:10px}.line{border-top:1px dashed #555;margin:9px 0}.row{display:flex;justify-content:space-between;gap:8px}.item{margin:8px 0}.sub{color:#555;font-size:10px;margin-top:3px}.total{font-weight:bold;font-size:15px}</style></head><body><div class="center"><div class="title">${esc(receipt.branch?.name ?? 'NOTA PEMBELIAN')}</div>${receipt.branch?.code ? `<div class="muted">${esc(receipt.branch.code)}</div>` : ''}<div class="line"></div><div>${esc(receipt.orderNumber)}</div><div class="muted">${date ? formatDate(date) : ''}</div>${receipt.customerName ? `<div>Pelanggan: ${esc(receipt.customerName)}</div>` : ''}</div><div class="line"></div>${rows}<div class="line"></div><div class="row"><span>Subtotal</span><span>${money(Number(receipt.subtotal))}</span></div><div class="row"><span>Diskon</span><span>-${money(Number(receipt.discountAmount))}</span></div>${Number(receipt.taxAmount ?? 0) ? `<div class="row"><span>Pajak</span><span>${money(Number(receipt.taxAmount))}</span></div>` : ''}${Number(receipt.serviceCharge ?? 0) ? `<div class="row"><span>Layanan</span><span>${money(Number(receipt.serviceCharge))}</span></div>` : ''}<div class="row total"><span>TOTAL</span><span>${money(Number(receipt.grandTotal))}</span></div>${(receipt.payments ?? []).map((payment) => `<div class="row"><span>${esc(formatStatus(payment.method))}</span><span>${money(Number(payment.amount))}</span></div>${payment.receivedAmount ? `<div class="row"><span>Diterima</span><span>${money(Number(payment.receivedAmount))}</span></div>` : ''}${payment.changeAmount ? `<div class="row"><span>Kembalian</span><span>${money(Number(payment.changeAmount))}</span></div>` : ''}`).join('')}<div class="line"></div><div class="center">Terima kasih</div></body></html>`;
     try { await Print.printAsync({ html }); }
     catch (e) { setPrintError(e instanceof Error ? e.message : 'Nota gagal dicetak.'); }
@@ -185,12 +208,98 @@ export default function PosScreen() {
     finally { setPrinterLoading(false); setPrintAfterPrinterSelection(false); }
   }
 
+
+  if (receipt && receipt.orderNumber.length > 0) return <PosReceiptScreen
+    order={receipt}
+    topInset={insets.top + 8}
+    cashierName={user?.name ?? 'Kasir'}
+    printing={printing}
+    printError={printError}
+    printer={printer}
+    printerPickerVisible={printerPickerVisible}
+    printerDevices={printerDevices}
+    printerLoading={printerLoading}
+    onPrint={() => void printReceipt()}
+    onNewOrder={() => { setReceipt(null); setPendingOrder(null); setPrintError(''); setError(''); }}
+    onChoosePrinter={(target) => void choosePrinter(target)}
+    onClosePrinterPicker={() => setPrinterPickerVisible(false)}
+    onOpenBluetoothSettings={openAndroidBluetoothSettings}
+  />;
+
+  if (cartVisible) return <PosCheckoutFlow
+    lines={cart}
+    topInset={insets.top + 8}
+    paymentStep={paymentStep}
+    onPaymentStepChange={setPaymentStep}
+    customer={customer}
+    onCustomerChange={setCustomer}
+    discount={discount}
+    onDiscountChange={setDiscount}
+    method={method}
+    onMethodChange={setMethod}
+    received={received}
+    onReceivedChange={setReceived}
+    total={total}
+    subtotal={subtotal}
+    discountAmount={discountAmount}
+    cash={cash}
+    priceFor={priceFor}
+    onQuantity={quantity}
+    canIncrease={(line) => canAddUnit(line.product, line.unitId)}
+    onCheckout={() => void checkout()}
+    onClear={() => { setCart([]); setPendingOrder(null); setPaymentStep(false); setError(''); }}
+    onClose={() => { setCartVisible(false); setPaymentStep(false); }}
+    submitting={submitting}
+    error={error}
+    onError={setError}
+    takeaway={takeaway}
+    onTakeawayChange={setTakeaway}
+    bottomInset={insets.bottom}
+  />;
+    if (!receipt && !cartVisible) return <PosCatalogScreen
+      branches={branches}
+      warehouses={warehouses}
+      branchId={branchId}
+      warehouseId={warehouseId}
+      userBranchId={user?.branchId ?? null}
+      products={products}
+      categories={categories}
+      selectedCategory={selectedCategory}
+      search={search}
+      visibleProducts={visible}
+      cart={cart}
+      total={total}
+      loading={loading}
+      error={error}
+      optionProduct={optionProduct}
+      optionUnit={optionUnit}
+      optionVariant={optionVariant}
+      optionAddons={optionAddons}
+      topInset={insets.top}
+      bottomInset={insets.bottom}
+      onBranchChange={setBranchId}
+      onWarehouseChange={setWarehouseId}
+      onCategoryChange={setSelectedCategory}
+      onSearchChange={setSearch}
+      onAdd={add}
+      onQuantity={quantity}
+      canAdd={(product, unitId) => canAddUnit(product as Product, unitId)}
+      priceFor={priceFor}
+      onOpenCart={() => { setPaymentStep(false); setCartVisible(true); }}
+      onScan={(value) => { const match = products.find((product) => product.barcode === value || product.sku === value); if (match) add(match); else { setSearch(value); setError('Barcode tidak ditemukan pada katalog gudang ini.'); } }}
+      onCloseOption={() => setOptionProduct(null)}
+      onOptionUnitChange={setOptionUnit}
+      onOptionVariantChange={setOptionVariant}
+      onOptionAddonsChange={setOptionAddons}
+      onAddConfigured={() => { if (optionProduct) addConfigured(optionProduct, optionUnit, optionVariant, optionAddons); setOptionProduct(null); }}
+  />;
   if (receipt) return <ScrollView style={styles.screen} contentContainerStyle={[styles.page, { paddingTop: 18 + insets.top }]}><Text style={styles.eyebrow}>TRANSAKSI BERHASIL</Text><Text style={styles.title}>Nota pembayaran</Text><View style={styles.receiptCard}><Text style={styles.receiptStore}>{receipt.branch?.name ?? 'Inventory Replenishment'}</Text><Text style={styles.muted}>{receipt.orderNumber}{receipt.createdAt ? ` Â· ${formatDate(receipt.createdAt)}` : ''}</Text>{receipt.customerName ? <Text style={styles.receiptCustomer}>Pelanggan: {receipt.customerName}</Text> : null}<View style={styles.receiptDivider} />{receipt.items?.map((item, index) => <View key={`${item.productNameSnapshot}-${index}`} style={styles.receiptItem}><View style={styles.receiptRow}><Text style={styles.receiptItemName}>{item.productNameSnapshot}{item.variantNameSnapshot ? ` (${item.variantNameSnapshot})` : ''}</Text><Text style={styles.receiptItemPrice}>{money(Number(item.totalPrice))}</Text></View><Text style={styles.muted}>{Number(item.quantity)} Ã— {money(Number(item.unitPrice))}</Text>{item.addons?.map((addon, addIndex) => <Text key={`${addon.addonNameSnapshot}-${addIndex}`} style={styles.muted}>+ {addon.addonNameSnapshot} Ã— {Number(addon.quantity)} Â· {money(Number(addon.totalPrice))}</Text>)}</View>)}<View style={styles.receiptDivider} /><Text style={styles.receiptRow}>Subtotal<Text>{money(Number(receipt.subtotal))}</Text></Text><Text style={styles.receiptRow}>Diskon<Text>-{money(Number(receipt.discountAmount))}</Text></Text>{Number(receipt.taxAmount ?? 0) > 0 ? <Text style={styles.receiptRow}>Pajak<Text>{money(Number(receipt.taxAmount))}</Text></Text> : null}{Number(receipt.serviceCharge ?? 0) > 0 ? <Text style={styles.receiptRow}>Layanan<Text>{money(Number(receipt.serviceCharge))}</Text></Text> : null}<Text style={styles.receiptTotal}>TOTAL<Text>{money(Number(receipt.grandTotal))}</Text></Text>{receipt.payments?.map((payment, index) => <View key={`${payment.method}-${index}`}><Text style={styles.receiptRow}>{formatStatus(payment.method)}<Text>{money(Number(payment.amount))}</Text></Text>{payment.receivedAmount ? <Text style={styles.receiptRow}>Diterima<Text>{money(Number(payment.receivedAmount))}</Text></Text> : null}{payment.changeAmount && Number(payment.changeAmount) > 0 ? <Text style={styles.receiptRow}>Kembalian<Text>{money(Number(payment.changeAmount))}</Text></Text> : null}</View>)}<View style={styles.receiptDivider} /><Text style={styles.receiptThanks}>Terima kasih</Text></View>{Platform.OS === 'android' ? <View style={styles.printerBox}><View style={styles.productInfo}><Text style={styles.label}>Printer Bluetooth</Text><Text style={styles.printerName}>{printer?.name ?? 'Belum dipilih'}</Text></View><Pressable onPress={() => void showPrinterPicker(false)} style={styles.scanButton}><Text style={styles.scanText}>{printer ? 'Ganti' : 'Pilih'}</Text></Pressable></View> : null}{printError ? <View style={styles.errorBox}><Text style={styles.errorText}>{printError}</Text></View> : null}<Pressable disabled={printing} style={[styles.primary, printing && styles.disabled]} onPress={() => void printReceipt()}><Text style={styles.primaryText}>{printing ? 'Mencetak nota...' : 'Cetak nota'}</Text></Pressable><Text style={styles.printHint}>{Platform.OS === 'android' ? 'Printer tersimpan akan tersambung otomatis saat cetak. Pastikan printer sudah dipasangkan di pengaturan Bluetooth Android.' : 'Buka layanan cetak yang tersedia untuk mencetak atau menyimpan nota.'}</Text><Pressable style={styles.secondary} onPress={() => { setReceipt(null); setPrintError(''); }}><Text style={styles.secondaryText}>Transaksi baru</Text></Pressable><Modal visible={printerPickerVisible} animationType="slide" transparent onRequestClose={() => { setPrinterPickerVisible(false); setPrintAfterPrinterSelection(false); }}><View style={styles.modalBackdrop}><View style={styles.optionPanel}><Text style={styles.sectionTitle}>Pilih printer Bluetooth</Text><Text style={styles.muted}>Pilih perangkat thermal yang sudah dipasangkan di pengaturan Android.</Text>{printError ? <View style={styles.errorBox}><Text style={styles.errorText}>{printError}</Text></View> : null}{printerLoading ? <ActivityIndicator style={styles.loader} color="#087f5b" /> : printerDevices.length ? printerDevices.map((device) => <Pressable key={device.address} disabled={printerLoading} onPress={() => void choosePrinter(device)} style={styles.optionRow}><Text style={styles.optionText}>{device.name}</Text><Text style={styles.muted}>{device.address}</Text></Pressable>) : !printerLoading ? <Text style={styles.empty}>Belum ada perangkat Bluetooth yang dipasangkan.</Text> : null}<View style={styles.modalActions}><Pressable style={styles.cancelButton} onPress={openAndroidBluetoothSettings}><Text style={styles.cancelText}>Pengaturan Bluetooth</Text></Pressable><Pressable style={styles.primary} disabled={printerLoading} onPress={() => void showPrinterPicker(printAfterPrinterSelection)}><Text style={styles.primaryText}>Muat ulang</Text></Pressable></View><Pressable style={styles.cancelButton} onPress={() => { setPrinterPickerVisible(false); setPrintAfterPrinterSelection(false); }}><Text style={styles.cancelText}>Tutup</Text></Pressable></View></View></Modal></ScrollView>;
 
-  if (cartVisible) return <View style={[styles.cartFlow, { paddingTop: insets.top + 10 }]}>
+  if (cartVisible) return <View style={[styles.cartFlow, { paddingTop: insets.top + 8 }]}>
     <View style={styles.sheetHeader}><Text style={styles.sheetTitle}>{paymentStep ? 'Pembayaran' : `Pesanan (${cart.reduce((n, line) => n + line.quantity, 0)})`}</Text><Pressable onPress={() => { setCart([]); setPaymentStep(false); }}><Text style={styles.clearCart}>Hapus</Text></Pressable><Pressable onPress={() => setCartVisible(false)}><Text style={styles.sheetClose}>âŒ„</Text></Pressable></View>
     <View style={styles.stepTabs}><Pressable onPress={() => setPaymentStep(false)} style={[styles.stepTab, !paymentStep && styles.stepTabActive]}><Text style={[styles.stepTabText, !paymentStep && styles.stepTabTextActive]}>1 Pesanan</Text></Pressable><Pressable disabled={!cart.length} onPress={() => setPaymentStep(true)} style={[styles.stepTab, paymentStep && styles.stepTabActive]}><Text style={[styles.stepTabText, paymentStep && styles.stepTabTextActive]}>2 Bayar</Text></Pressable></View>
     {!paymentStep ? <ScrollView style={styles.flowContent} keyboardShouldPersistTaps="handled"><TextInput style={styles.flowInput} value={customer} onChangeText={setCustomer} placeholder="Nama customer" placeholderTextColor="#75808d"/><View style={styles.flowChoices}><Pressable style={[styles.choiceChip, !takeaway && styles.choiceChipActive]} onPress={() => setTakeaway(false)}><Text style={[styles.choiceText, !takeaway && styles.choiceTextActive]}>Dine in</Text></Pressable><Pressable style={[styles.choiceChip, takeaway && styles.choiceChipActive]} onPress={() => setTakeaway(true)}><Text style={[styles.choiceText, takeaway && styles.choiceTextActive]}>Take away</Text></Pressable></View>{cart.map((line) => <View key={line.key} style={styles.flowItem}><Text style={styles.productName}>{line.product.name}</Text><Text style={styles.muted}>{line.product.variants?.find((v) => v.id === line.variantId)?.name ?? line.product.sku}</Text><View style={styles.flowItemBottom}><View style={styles.flowChoices}><Pressable style={styles.qtyButton} onPress={() => quantity(line.key, -1)}><Minus size={16} color="#c70d17" /></Pressable><Text style={styles.qty}>{line.quantity}</Text><Pressable style={styles.qtyButton} onPress={() => quantity(line.key, 1)}><Plus size={16} color="#c70d17" /></Pressable></View><Text style={styles.price}>{money(priceFor(line) * line.quantity)}</Text></View></View>)}</ScrollView> : <ScrollView style={styles.flowContent} keyboardShouldPersistTaps="handled"><TextInput style={styles.flowInput} value={customer} onChangeText={setCustomer} placeholder="Nama customer" placeholderTextColor="#75808d"/><TextInput style={styles.flowInput} value={discount} onChangeText={setDiscount} keyboardType="numeric" placeholder="Diskon nominal" placeholderTextColor="#75808d"/>{method === 'CASH' ? <TextInput style={styles.flowInput} value={received} onChangeText={setReceived} keyboardType="numeric" placeholder="Uang diterima" placeholderTextColor="#75808d"/> : null}<Text style={styles.label}>METODE PEMBAYARAN</Text><View style={styles.flowChoices}>{(['CASH', 'QRIS', 'TRANSFER'] as Method[]).map((item) => <Pressable key={item} onPress={() => setMethod(item)} style={[styles.choiceChip, method === item && styles.choiceChipActive]}><Text style={[styles.choiceText, method === item && styles.choiceTextActive]}>{item === 'CASH' ? 'Cash' : item}</Text></Pressable>)}</View><View style={styles.paymentSummary}><Text style={styles.paymentSummaryLine}>Subtotal <Text>{money(subtotal)}</Text></Text><Text style={styles.paymentSummaryLine}>Diskon <Text>{money(discountAmount)}</Text></Text><Text style={styles.paymentGrandTotal}>Total <Text>{money(total)}</Text></Text></View>{error ? <Text style={styles.errorText}>{error}</Text> : null}</ScrollView>}
+    {paymentStep ? <View style={[styles.flowChoices, { paddingHorizontal: 16, marginVertical: 0 }]}><Pressable onPress={() => setMethod('GOBIZ')} style={[styles.choiceChip, method === 'GOBIZ' && styles.choiceChipActive]}><Text style={[styles.choiceText, method === 'GOBIZ' && styles.choiceTextActive]}>GoBiz</Text></Pressable></View> : null}
     <View style={[styles.flowFooter, { paddingBottom: Math.max(16, insets.bottom + 8) }]}>{paymentStep ? <Pressable onPress={() => setPaymentStep(false)} style={styles.footerSecondary}><Text style={styles.footerSecondaryText}>Kembali</Text></Pressable> : null}<Pressable disabled={!cart.length || submitting} onPress={() => paymentStep ? void checkout() : setPaymentStep(true)} style={[styles.footerPrimary, (!cart.length || submitting) && styles.disabled]}><Text style={styles.footerPrimaryText}>{paymentStep ? submitting ? 'Memproses...' : `Bayar ${money(total)}` : `Lanjut Â· ${money(total)}`}</Text></Pressable></View>
   </View>;
 
@@ -205,9 +314,10 @@ export default function PosScreen() {
     {!loading && !visible.length ? <Text style={styles.empty}>Produk tidak ditemukan di gudang ini.</Text> : null}
     <Modal visible={Boolean(optionProduct)} animationType="slide" transparent onRequestClose={() => setOptionProduct(null)}>
       <View style={styles.modalBackdrop}><View style={styles.optionPanel}><Text style={styles.sectionTitle}>{optionProduct?.name}</Text><Text style={styles.muted}>Pilih varian dan add-on</Text>
+        {(optionProduct?.sellingUnits?.length ?? 0) > 1 ? <><Text style={styles.label}>Satuan</Text>{optionProduct?.sellingUnits.map((entry) => <Pressable key={entry.unitId} onPress={() => setOptionUnit(entry.unitId)} style={[styles.optionRow, optionUnit === entry.unitId && styles.optionSelected]}><Text style={styles.optionText}>{entry.unit.name} ({entry.unit.code})</Text><Text style={styles.optionText}>{money(Number(entry.sellingPrice))}{optionUnit === entry.unitId ? '  ✓' : ''}</Text></Pressable>)}</> : null}
         {(optionProduct?.variants?.length ?? 0) > 0 ? <><Text style={styles.label}>Varian</Text><Pressable onPress={() => setOptionVariant('')} style={[styles.optionRow, !optionVariant && styles.optionSelected]}><Text style={styles.optionText}>Tanpa varian</Text><Text style={styles.optionText}>âœ“</Text></Pressable>{optionProduct?.variants?.map((v) => <Pressable key={v.id} onPress={() => setOptionVariant(v.id)} style={[styles.optionRow, optionVariant === v.id && styles.optionSelected]}><Text style={styles.optionText}>{v.name}</Text><Text style={styles.optionText}>{money(Number(v.priceDelta))}{optionVariant === v.id ? '  âœ“' : ''}</Text></Pressable>)}</> : null}
         {(optionProduct?.addons?.length ?? 0) > 0 ? <><Text style={styles.label}>Add-on</Text>{optionProduct?.addons?.map((addon) => { const active = optionAddons.includes(addon.id); return <Pressable key={addon.id} onPress={() => setOptionAddons((current) => active ? current.filter((id) => id !== addon.id) : [...current, addon.id])} style={[styles.optionRow, active && styles.optionSelected]}><Text style={styles.optionText}>{addon.name}</Text><Text style={styles.optionText}>{money(Number(addon.basePrice))}{active ? '  âœ“' : ''}</Text></Pressable>; })}</> : null}
-        <View style={styles.modalActions}><Pressable style={styles.cancelButton} onPress={() => setOptionProduct(null)}><Text style={styles.cancelText}>Batal</Text></Pressable><Pressable style={styles.primary} onPress={() => { if (optionProduct) addConfigured(optionProduct, optionVariant, optionAddons); setOptionProduct(null); }}><Text style={styles.primaryText}>Tambah ke keranjang</Text></Pressable></View>
+        <View style={styles.modalActions}><Pressable style={styles.cancelButton} onPress={() => setOptionProduct(null)}><Text style={styles.cancelText}>Batal</Text></Pressable><Pressable style={styles.primary} onPress={() => { if (optionProduct) addConfigured(optionProduct, optionUnit, optionVariant, optionAddons); setOptionProduct(null); }}><Text style={styles.primaryText}>Tambah ke keranjang</Text></Pressable></View>
       </View></View>
     </Modal>
 <BarcodeScanner visible={scannerVisible} onClose={() => setScannerVisible(false)} onScanned={(value) => { setScannerVisible(false); const match = products.find((product) => product.barcode === value || product.sku === value); if (match) add(match); else { setSearch(value); setError('Barcode tidak ditemukan pada katalog gudang ini.'); } }} />

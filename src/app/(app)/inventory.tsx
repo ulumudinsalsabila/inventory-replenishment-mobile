@@ -64,9 +64,6 @@ export default function InventoryScreen() {
   return (
     <View style={styles.screen}>
       <ScrollView contentContainerStyle={styles.page} keyboardShouldPersistTaps="handled" refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => { setRefreshing(true); setReloadKey((key) => key + 1); }} tintColor="#087f5b" />}>
-        <Pressable accessibilityRole="button" onPress={() => router.back()} style={styles.back}><Text style={styles.backText}>‹  Operasional</Text></Pressable>
-        <Text style={styles.eyebrow}>PERSEDIAAN</Text>
-        <Text style={styles.title}>Cek stok</Text>
         <Text style={styles.subtitle}>{total.toLocaleString('id-ID')} item · tarik ke bawah untuk memperbarui</Text>
 
         <View style={styles.searchRow}>

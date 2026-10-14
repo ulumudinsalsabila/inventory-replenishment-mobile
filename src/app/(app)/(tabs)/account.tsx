@@ -5,8 +5,6 @@ export default function AccountScreen() {
   const { user, signOut } = useAuth();
   return (
     <View style={styles.page}>
-      <Text style={styles.eyebrow}>AKUN</Text>
-      <Text style={styles.title}>Profil</Text>
       <View style={styles.card}>
         <View style={styles.avatar}><Text style={styles.avatarText}>{user?.name.slice(0, 1).toUpperCase() ?? 'U'}</Text></View>
         <Text style={styles.name}>{user?.name}</Text>

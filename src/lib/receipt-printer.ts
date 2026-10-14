@@ -8,6 +8,8 @@ export type ReceiptLine = {
   productNameSnapshot: string;
   variantNameSnapshot?: string | null;
   quantity: string;
+  inputQuantity?: string | null;
+  unit?: { code: string } | null;
   unitPrice: string;
   totalPrice: string;
   addons?: { addonNameSnapshot: string; quantity: string; totalPrice: string }[];
@@ -121,7 +123,7 @@ function receiptText(order: ReceiptOrder, width: number) {
   for (const item of order.items ?? []) {
     lines.push(...wrap(`${item.productNameSnapshot}${item.variantNameSnapshot ? ` (${item.variantNameSnapshot})` : ''}`, width));
     const addonTotal = (item.addons ?? []).reduce((sum, addon) => sum + Number(addon.totalPrice), 0);
-    lines.push(columns(`${item.quantity} x ${rupiah(Number(item.unitPrice))}`, rupiah(Math.max(0, Number(item.totalPrice) - addonTotal)), width));
+    lines.push(columns(`${item.inputQuantity ?? item.quantity} ${item.unit?.code ?? ''} x ${rupiah(Number(item.unitPrice))}`, rupiah(Math.max(0, Number(item.totalPrice) - addonTotal)), width));
     for (const addon of item.addons ?? []) lines.push(...wrap(`+ ${addon.addonNameSnapshot} x ${addon.quantity} ${rupiah(Number(addon.totalPrice))}`, width));
   }
 

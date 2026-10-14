@@ -68,8 +68,7 @@ export default function AdjustmentsScreen() {
   }
 
   return <View style={styles.screen}><ScrollView keyboardShouldPersistTaps="handled" contentContainerStyle={styles.page} refreshControl={<RefreshControl refreshing={loading} onRefresh={() => { setLoading(true); setReload((value) => value + 1); }} tintColor="#087f5b" />}>
-    <Pressable onPress={() => router.back()} style={styles.back}><Text style={styles.backText}>‹  Operasional</Text></Pressable>
-    <Text style={styles.eyebrow}>PERSEDIAAN</Text><Text style={styles.title}>Adjustment stok</Text><Text style={styles.subtitle}>Catat koreksi stok dengan jejak perubahan dan alasan.</Text>
+    <Text style={styles.subtitle}>Catat koreksi stok dengan jejak perubahan dan alasan.</Text>
     {!allowed ? <View style={styles.card}><Text style={styles.section}>Akses tidak tersedia</Text><Text style={styles.muted}>Fitur ini memerlukan permission inventory.adjust.</Text></View> : null}
     {error ? <View style={styles.error}><Text style={styles.errorText}>{error}</Text></View> : null}
     {loading && allowed ? <ActivityIndicator style={styles.loader} color="#087f5b" /> : null}

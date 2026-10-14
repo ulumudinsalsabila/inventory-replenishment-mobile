@@ -94,8 +94,7 @@ export default function OpnamesScreen() {
   }
 
   return <View style={styles.screen}><ScrollView keyboardShouldPersistTaps="handled" contentContainerStyle={styles.page} refreshControl={<RefreshControl refreshing={loading && !creating && !selected} onRefresh={() => setReload((value) => value + 1)} tintColor="#087f5b" />}>
-    <Pressable accessibilityRole="button" onPress={() => { setSelected(null); setCreating(false); router.back(); }} style={styles.back}><Text style={styles.backText}>‹  Operasional</Text></Pressable>
-    <Text style={styles.eyebrow}>PERSEDIAAN</Text><Text style={styles.title}>Stock opname</Text><Text style={styles.subtitle}>Catat jumlah fisik dan sesuaikan stok setelah pemeriksaan.</Text>
+    <Text style={styles.subtitle}>Catat jumlah fisik dan sesuaikan stok setelah pemeriksaan.</Text>
     {error ? <View style={styles.errorCard}><Text style={styles.errorText}>{error}</Text><Pressable onPress={() => setReload((value) => value + 1)}><Text style={styles.retry}>Coba lagi</Text></Pressable></View> : null}
     {loading && !selected && !creating ? <ActivityIndicator style={styles.loader} color="#087f5b" size="large" /> : null}
     {selected ? <>
