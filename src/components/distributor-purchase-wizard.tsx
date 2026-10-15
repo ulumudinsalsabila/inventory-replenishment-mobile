@@ -5,6 +5,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Banknote, Barcode, CalendarDays, Camera, Check, ChevronLeft, ChevronRight, FileText, ImagePlus, Minus, Package, Plus, Search, Store, Truck, X } from 'lucide-react-native';
 import { useAuth } from '../auth/auth-provider';
 import { ApiError } from '../lib/api';
+import { fetchAllPages } from '../lib/paging';
 import { BarcodeScanner } from './barcode-scanner';
 
 type NamedOption = { id: string; name: string; code?: string; type?: string };
@@ -65,9 +66,9 @@ export function DistributorPurchaseWizard({ onCancel, onSaved, initialDraft }: P
   useEffect(() => {
     let active = true;
     void Promise.allSettled([
-      authorizedRequest<Page<NamedOption>>('distributors?page=1&perPage=100&sortBy=name&sortOrder=asc'),
+      fetchAllPages<NamedOption>(authorizedRequest, 'distributors?sortBy=name&sortOrder=asc'),
       authorizedRequest<Page<NamedOption>>('catalog/warehouses?page=1&perPage=100&sortBy=name&sortOrder=asc'),
-      authorizedRequest<Page<Product>>('products?page=1&perPage=100&sortBy=name&sortOrder=asc&active=true'),
+      fetchAllPages<Product>(authorizedRequest, 'products?sortBy=name&sortOrder=asc&active=true'),
     ]).then(([distributorResult, warehouseResult, productResult]) => {
       if (!active) return;
       const errors: string[] = [];

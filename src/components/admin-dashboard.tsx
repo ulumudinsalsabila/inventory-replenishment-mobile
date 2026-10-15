@@ -6,6 +6,7 @@ import { ArrowDown, ArrowRight, ArrowUp, CalendarDays, ChevronDown, ChevronRight
 import type { ComponentType } from 'react';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useAuth } from '../auth/auth-provider';
+import { useBranchFilter } from '../auth/branch-filter';
 import { ApiError } from '../lib/api';
 import { OptionSheet } from './option-sheet';
 import { dateLabel, daysBetween, jakartaToday, money, percent, percentChange, quantity, shiftDate } from '../lib/report';
@@ -19,7 +20,6 @@ type Dashboard = {
   bestSellers: Array<{ productId: string; name: string; quantity: string | number }>;
 };
 type StockSummary = { summary: { totalQuantity: number; productCount: number; stockValue: number } };
-type Branch = { id: string; name: string; code: string };
 type Preset = 'today' | '7days' | '30days' | 'month';
 type IconType = ComponentType<{ size?: number; color?: string }>;
 
@@ -75,8 +75,8 @@ export function AdminDashboard() {
   const { user, accessToken, authorizedRequest } = useAuth();
   const [anchor, setAnchor] = useState(jakartaToday());
   const [preset, setPreset] = useState<Preset>('today');
-  const [branchId, setBranchId] = useState(user?.branchId ?? '');
-  const [branches, setBranches] = useState<Branch[]>([]);
+  // Shared with the app header so picking a branch in either place filters the dashboard.
+  const { branches, selectedBranchId: branchId, setSelectedBranchId: setBranchId } = useBranchFilter();
   const [data, setData] = useState<Dashboard | null>(null);
   const [previous, setPrevious] = useState<Dashboard | null>(null);
   const [stock, setStock] = useState<StockSummary['summary'] | null>(null);
@@ -90,13 +90,6 @@ export function AdminDashboard() {
   const range = ranges(preset, anchor);
   const canReadReports = user?.permissions.includes('report.read') ?? false;
   const selectedBranch = branches.find((item) => item.id === branchId);
-
-  useEffect(() => {
-    if (!accessToken || user?.branchId) return;
-    let active = true;
-    void authorizedRequest<{ data: Branch[] }>('catalog/branches?page=1&perPage=100&sortBy=name&sortOrder=asc').then((result) => { if (active) setBranches(result.data); }).catch(() => undefined);
-    return () => { active = false; };
-  }, [accessToken, authorizedRequest, user?.branchId]);
 
   useEffect(() => {
     if (!accessToken || !canReadReports) { setLoading(false); return; }

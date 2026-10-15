@@ -1,12 +1,13 @@
 import { Redirect, Stack } from 'expo-router';
 import { ActivityIndicator, StyleSheet, View } from 'react-native';
 import { useAuth } from '../../auth/auth-provider';
+import { BranchFilterProvider } from '../../auth/branch-filter';
 
 export default function AppLayout() {
   const { loading, accessToken } = useAuth();
   if (loading) return <View style={styles.loading}><ActivityIndicator color="#087f5b" size="large" /></View>;
   if (!accessToken) return <Redirect href="/login" />;
-  return <Stack screenOptions={{
+  return <BranchFilterProvider><Stack screenOptions={{
     headerShown: true,
     headerStyle: { backgroundColor: '#fff' },
     headerTintColor: '#172338',
@@ -31,7 +32,7 @@ export default function AppLayout() {
     <Stack.Screen name="branch-profit" options={{ title: 'Keuntungan per cabang' }} />
     <Stack.Screen name="unsold-stock" options={{ title: 'Stok belum terjual' }} />
     <Stack.Screen name="stock-detail" options={{ title: 'Detail stok produk' }} />
-  </Stack>;
+  </Stack></BranchFilterProvider>;
 }
 
 const styles = StyleSheet.create({ loading: { flex: 1, alignItems: 'center', justifyContent: 'center' } });
