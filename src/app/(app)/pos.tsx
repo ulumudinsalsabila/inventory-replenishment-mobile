@@ -6,7 +6,8 @@ import * as Print from 'expo-print';
 import { useAuth } from '../../auth/auth-provider';
 import { BarcodeScanner } from '../../components/barcode-scanner';
 import { PosCatalogScreen, PosCheckoutFlow, PosReceiptScreen, type PosLine, type PosMethod, type PosProduct } from '../../components/pos-flow';
-import { getPairedPrinters, getSavedPrinter, openAndroidBluetoothSettings, printThermalReceipt, savePrinter, type PairedPrinter, type ReceiptOrder } from '../../lib/receipt-printer';
+import { formatOrderReceipt, getPairedPrinters, getSavedPrinter, openAndroidBluetoothSettings, printThermalReceipt, savePrinter, type PairedPrinter, type ReceiptOrder } from '../../lib/receipt-printer';
+import { ThermalPreview } from '../../components/thermal-preview';
 import { formatDate, formatStatus } from '../../lib/display';
 
 type Branch = { id: string; name: string; address?: string | null };
@@ -48,6 +49,7 @@ export default function PosScreen() {
   const [printerDevices, setPrinterDevices] = useState<PairedPrinter[]>([]);
   const [printerLoading, setPrinterLoading] = useState(false);
   const [printAfterPrinterSelection, setPrintAfterPrinterSelection] = useState(false);
+  const [previewVisible, setPreviewVisible] = useState(false);
   const [pendingOrder, setPendingOrder] = useState<Order | null>(null);
   const [scannerVisible, setScannerVisible] = useState(false);
   const [cartVisible, setCartVisible] = useState(false);
@@ -180,8 +182,9 @@ export default function PosScreen() {
     if (!receipt) return;
     setPrintError('');
     if (Platform.OS === 'android') {
+      // Bluetooth printing always goes through the preview; a missing printer is picked first.
       if (!printer) { await showPrinterPicker(true); return; }
-      await sendBluetoothReceipt(printer);
+      setPreviewVisible(true);
       return;
     }
     setPrinting(true);
@@ -204,7 +207,7 @@ export default function PosScreen() {
   async function sendBluetoothReceipt(target: PairedPrinter) {
     if (!receipt) return;
     setPrinting(true); setPrintError('');
-    try { await printThermalReceipt(receipt, target); }
+    try { await printThermalReceipt(receipt, target); setPreviewVisible(false); }
     catch (e) { setPrintError(e instanceof Error ? e.message : 'Nota gagal dikirim ke printer.'); }
     finally { setPrinting(false); }
   }
@@ -215,13 +218,25 @@ export default function PosScreen() {
       await savePrinter(target);
       setPrinter(target);
       setPrinterPickerVisible(false);
-      if (printAfterPrinterSelection) await sendBluetoothReceipt(target);
+      if (printAfterPrinterSelection) setPreviewVisible(true);
     } catch (e) { setPrintError(e instanceof Error ? e.message : 'Printer gagal disimpan.'); }
     finally { setPrinterLoading(false); setPrintAfterPrinterSelection(false); }
   }
 
+  const thermalPreview = receipt ? <ThermalPreview
+    visible={previewVisible}
+    title={`Nota ${receipt.orderNumber}`}
+    text={formatOrderReceipt(receipt)}
+    printer={printer}
+    printing={printing}
+    error={printError}
+    onPrint={() => { if (printer) void sendBluetoothReceipt(printer); }}
+    onChangePrinter={() => { setPreviewVisible(false); void showPrinterPicker(true); }}
+    onClose={() => { setPreviewVisible(false); setPrintError(''); }}
+  /> : null;
 
-  if (receipt && receipt.orderNumber.length > 0) return <PosReceiptScreen
+
+  if (receipt && receipt.orderNumber.length > 0) return <>{thermalPreview}<PosReceiptScreen
     order={receipt}
     topInset={insets.top + 8}
     bottomInset={insets.bottom}
@@ -237,7 +252,7 @@ export default function PosScreen() {
     onChoosePrinter={(target) => void choosePrinter(target)}
     onClosePrinterPicker={() => setPrinterPickerVisible(false)}
     onOpenBluetoothSettings={openAndroidBluetoothSettings}
-  />;
+  /></>;
 
   if (cartVisible) return <PosCheckoutFlow
     lines={cart}

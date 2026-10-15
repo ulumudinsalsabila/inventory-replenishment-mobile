@@ -266,8 +266,16 @@ async function printThermalText(text: string, printer: PairedPrinter) {
   if (!(await connected.write(payload, 'ascii'))) throw new Error('Printer tidak menerima nota. Periksa koneksi dan dukungan ESC/POS.');
 }
 
+/** Characters per line on 58 mm thermal paper; previews use the same width as the printer. */
+export const THERMAL_WIDTH = 32;
+
+/** The exact text sent to the thermal printer for an order receipt. */
+export function formatOrderReceipt(order: ReceiptOrder, width = THERMAL_WIDTH) {
+  return receiptText(order, width);
+}
+
 export async function printThermalReceipt(order: ReceiptOrder, printer: PairedPrinter) {
-  await printThermalText(receiptText(order, 32), printer);
+  await printThermalText(formatOrderReceipt(order), printer);
 }
 
 export async function printThermalCashClosingReceipt(closing: CashClosingReceipt, printer: PairedPrinter) {

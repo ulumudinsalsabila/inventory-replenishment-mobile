@@ -9,7 +9,8 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useAuth } from '../../auth/auth-provider';
 import { getRange, rangeLabel, rangeOptions, type RangePreset } from '../../lib/date-range';
 import { formatDate, formatStatus } from '../../lib/display';
-import { getPairedPrinters, getSavedPrinter, openAndroidBluetoothSettings, printThermalReceipt, savePrinter, type PairedPrinter, type ReceiptOrder } from '../../lib/receipt-printer';
+import { formatOrderReceipt, getPairedPrinters, getSavedPrinter, openAndroidBluetoothSettings, printThermalReceipt, savePrinter, type PairedPrinter, type ReceiptOrder } from '../../lib/receipt-printer';
+import { ThermalPreview } from '../../components/thermal-preview';
 
 type OrderLine = NonNullable<ReceiptOrder['items']>[number] & { id: string };
 type PaymentLine = NonNullable<ReceiptOrder['payments']>[number] & { status: string };
@@ -59,6 +60,7 @@ export default function OrdersScreen() {
   const [printing, setPrinting] = useState(false);
   const [printError, setPrintError] = useState('');
   const [detailLoading, setDetailLoading] = useState(false);
+  const [previewVisible, setPreviewVisible] = useState(false);
 
   useEffect(() => {
     navigation.setOptions({
@@ -102,14 +104,15 @@ export default function OrdersScreen() {
   async function sendBluetoothReceipt(target: PairedPrinter) {
     if (!selected) return;
     setPrinting(true); setPrintError('');
-    try { await printThermalReceipt(selected, target); }
+    try { await printThermalReceipt(selected, target); setPreviewVisible(false); }
     catch (cause) { setPrintError(cause instanceof Error ? cause.message : 'Nota gagal dicetak.'); }
     finally { setPrinting(false); }
   }
 
   async function choosePrinter(target: PairedPrinter) {
     setPrinterLoading(true); setPrintError('');
-    try { await savePrinter(target); setPrinter(target); setPrinterPickerVisible(false); await sendBluetoothReceipt(target); }
+    // After choosing a printer the user reviews the receipt before it is sent.
+    try { await savePrinter(target); setPrinter(target); setPrinterPickerVisible(false); setPreviewVisible(true); }
     catch (cause) { setPrintError(cause instanceof Error ? cause.message : 'Printer gagal disimpan.'); }
     finally { setPrinterLoading(false); }
   }
@@ -119,7 +122,7 @@ export default function OrdersScreen() {
     setPrintError('');
     if (Platform.OS === 'android') {
       if (!printer) { await showPrinterPicker(); return; }
-      await sendBluetoothReceipt(printer);
+      setPreviewVisible(true);
       return;
     }
     setPrinting(true);
@@ -202,6 +205,17 @@ export default function OrdersScreen() {
       <Pressable accessibilityRole="button" disabled={refunding} onPress={() => void submitRefund()} style={[styles.refundButton, refunding && styles.disabled]}>{refunding ? <ActivityIndicator color="#fff" /> : <Text style={styles.refundButtonText}>Simpan pengembalian</Text>}</Pressable>
     </View> : null}
   </ScrollView>
+  <ThermalPreview
+    visible={previewVisible}
+    title={`Nota ${selected.orderNumber}`}
+    text={formatOrderReceipt(selected)}
+    printer={printer}
+    printing={printing}
+    error={printError}
+    onPrint={() => { if (printer) void sendBluetoothReceipt(printer); }}
+    onChangePrinter={() => { setPreviewVisible(false); void showPrinterPicker(); }}
+    onClose={() => { setPreviewVisible(false); setPrintError(''); }}
+  />
   <Modal visible={printerPickerVisible} transparent animationType="slide" onRequestClose={() => setPrinterPickerVisible(false)}>
     <View style={printStyles.modalBackdrop}><View style={[printStyles.printerSheet, { paddingBottom: Math.max(insets.bottom + 8, 25) }]}>
       <View style={printStyles.modalHeader}><Text style={printStyles.modalTitle}>Pilih printer Bluetooth</Text><Pressable accessibilityRole="button" accessibilityLabel="Tutup pemilih printer" onPress={() => setPrinterPickerVisible(false)} style={printStyles.closeButton}><X size={19} color="#526276" /></Pressable></View>

@@ -8,6 +8,7 @@ import { Banknote, Bluetooth, CalendarDays, Camera, Check, ChevronLeft, ChevronR
 import { useAuth } from '../../auth/auth-provider';
 import { ApiError } from '../../lib/api';
 import { formatDate, formatStatus } from '../../lib/display';
+import { ThermalPreview } from '../../components/thermal-preview';
 import { formatCashClosingReceipt, getPairedPrinters, getSavedPrinter, openAndroidBluetoothSettings, printThermalCashClosingReceipt, savePrinter, type CashClosingReceipt, type PairedPrinter } from '../../lib/receipt-printer';
 
 type Branch = { id: string; name: string; code: string };
@@ -79,6 +80,7 @@ export default function CashClosingScreen() {
   const [evidence, setEvidence] = useState<Evidence[]>([]);
   const [selected, setSelected] = useState<CashClosing | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
+  const [previewVisible, setPreviewVisible] = useState(false);
   const [printer, setPrinter] = useState<PairedPrinter | null>(null);
   const [printerPickerVisible, setPrinterPickerVisible] = useState(false);
   const [printerDevices, setPrinterDevices] = useState<PairedPrinter[]>([]);
@@ -196,7 +198,7 @@ export default function CashClosingScreen() {
     if (!selected) return;
     setPrinting(true);
     setPrintError('');
-    try { await printThermalCashClosingReceipt(selected, target); }
+    try { await printThermalCashClosingReceipt(selected, target); setPreviewVisible(false); }
     catch (cause) { setPrintError(cause instanceof Error ? cause.message : 'Nota cash closing gagal dicetak.'); }
     finally { setPrinting(false); }
   }
@@ -208,7 +210,8 @@ export default function CashClosingScreen() {
       await savePrinter(target);
       setPrinter(target);
       setPrinterPickerVisible(false);
-      await sendBluetoothReceipt(target);
+      // After choosing a printer the user reviews the report before it is sent.
+      setPreviewVisible(true);
     } catch (cause) { setPrintError(cause instanceof Error ? cause.message : 'Printer gagal disimpan.'); }
     finally { setPrinterLoading(false); }
   }
@@ -218,7 +221,7 @@ export default function CashClosingScreen() {
     setPrintError('');
     if (Platform.OS === 'android') {
       if (!printer) { await showPrinterPicker(); return; }
-      await sendBluetoothReceipt(printer);
+      setPreviewVisible(true);
       return;
     }
     setPrinting(true);
@@ -309,6 +312,17 @@ export default function CashClosingScreen() {
       </View>
     </View>
   </Modal>
+  {selected ? <ThermalPreview
+    visible={previewVisible}
+    title={`Cash closing ${selected.closingNumber}`}
+    text={formatCashClosingReceipt(selected)}
+    printer={printer}
+    printing={printing}
+    error={printError}
+    onPrint={() => { if (printer) void sendBluetoothReceipt(printer); }}
+    onChangePrinter={() => { setPreviewVisible(false); void showPrinterPicker(); }}
+    onClose={() => { setPreviewVisible(false); setPrintError(''); }}
+  /> : null}
   <Modal visible={printerPickerVisible} transparent animationType="slide" onRequestClose={() => setPrinterPickerVisible(false)}>
     <View style={styles.modalBackdrop}>
       <View style={[styles.printerSheet, { paddingBottom: Math.max(insets.bottom + 8, 24) }]}>
