@@ -300,6 +300,7 @@ export default function PosScreen() {
       canAdd={(product, unitId) => canAddUnit(product as Product, unitId)}
       priceFor={priceFor}
       onOpenCart={() => { setPaymentStep(false); setCartVisible(true); }}
+      onClear={() => { setCart([]); setPendingOrder(null); setError(''); }}
       onScan={(value) => { const match = products.find((product) => product.barcode === value || product.sku === value); if (match) add(match); else { setSearch(value); setError('Barcode tidak ditemukan pada katalog gudang ini.'); } }}
       onCloseOption={() => setOptionProduct(null)}
       onOptionUnitChange={setOptionUnit}

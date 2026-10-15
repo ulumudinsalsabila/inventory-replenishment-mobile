@@ -4,7 +4,7 @@
     "slug": "inventory-replenishment-mobile",
     "scheme": "invreplenishment",
     "version": "1.0.0",
-    "orientation": "portrait",
+    "orientation": "default",
     "icon": "./assets/brand-icon.png",
     "userInterfaceStyle": "light",
     "plugins": [

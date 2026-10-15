@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, type ReactNode } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { router } from 'expo-router';
 import { Bell, ChevronDown, CircleUserRound, Store } from 'lucide-react-native';
@@ -13,7 +13,17 @@ const dateFormatter = new Intl.DateTimeFormat('id-ID', {
   timeZone: 'Asia/Jakarta',
 });
 
-export function AppShellHeader() {
+type HeaderProps = {
+  /** Tablet mode: the sidebar shows the store, so the header shows `title` or `leading` instead. */
+  compact?: boolean;
+  title?: string;
+  /** Replaces the title area in compact mode (for example a search field). */
+  leading?: ReactNode;
+  /** Extra actions after notifications and profile (for example a scan button). */
+  trailing?: ReactNode;
+};
+
+export function AppShellHeader({ compact = false, title, leading, trailing }: HeaderProps = {}) {
   const insets = useSafeAreaInsets();
   const { branches, selectedBranchId, setSelectedBranchId, locked } = useBranchFilter();
   const [pickerVisible, setPickerVisible] = useState(false);
@@ -22,8 +32,8 @@ export function AppShellHeader() {
 
   return (
     <View style={[styles.safeArea, { paddingTop: insets.top }]}>
-      <View style={styles.header}>
-        <Pressable
+      <View style={[styles.header, compact && styles.headerCompact]}>
+        {compact ? <View style={styles.compactLeading}>{leading ?? <Text numberOfLines={1} style={styles.title}>{title}</Text>}</View> : <Pressable
           accessibilityRole={locked ? undefined : 'button'}
           accessibilityLabel={locked ? undefined : `Filter cabang: ${branchName}`}
           disabled={locked}
@@ -38,7 +48,7 @@ export function AppShellHeader() {
             </View>
             <Text style={styles.date}>{dateFormatter.format(new Date())}</Text>
           </View>
-        </Pressable>
+        </Pressable>}
         <Pressable accessibilityRole="button" accessibilityLabel="Notifikasi" onPress={() => router.push('/(app)/(tabs)/operations')} style={({ pressed }) => [styles.action, pressed && styles.pressed]}>
           <Bell size={20} color="#52657d" />
           <View style={styles.notificationDot} />
@@ -46,8 +56,9 @@ export function AppShellHeader() {
         <Pressable accessibilityRole="button" accessibilityLabel="Buka profil" onPress={() => router.push('/(app)/(tabs)/account')} style={({ pressed }) => [styles.action, pressed && styles.pressed]}>
           <CircleUserRound size={22} color="#52657d" />
         </Pressable>
+        {trailing}
       </View>
-      {!locked ? <OptionSheet
+      {!locked && !compact ? <OptionSheet
         visible={pickerVisible}
         title="Pilih cabang"
         selectedId={selectedBranchId}
@@ -63,6 +74,9 @@ const styles = StyleSheet.create({
   safeArea: { backgroundColor: '#fff', borderBottomWidth: 1, borderBottomColor: '#e8eeeb' },
   header: { minHeight: 64, flexDirection: 'row', alignItems: 'center', paddingHorizontal: 14, paddingVertical: 9 },
   storeIcon: { width: 42, height: 42, alignItems: 'center', justifyContent: 'center', borderRadius: 13, backgroundColor: '#ddf7ed' },
+  headerCompact: { minHeight: 68, paddingHorizontal: 18, gap: 4 },
+  compactLeading: { flex: 1, minWidth: 0, marginRight: 8 },
+  title: { color: '#172338', fontSize: 18, fontWeight: '900' },
   branchButton: { flex: 1, minWidth: 0, flexDirection: 'row', alignItems: 'center', borderRadius: 13 },
   identity: { flex: 1, minWidth: 0, marginHorizontal: 10 },
   branchLine: { flexDirection: 'row', alignItems: 'center', gap: 4 },

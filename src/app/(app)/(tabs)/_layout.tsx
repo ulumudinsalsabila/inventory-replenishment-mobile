@@ -3,9 +3,12 @@ import { ArrowLeftRight, LayoutDashboard, LockKeyhole, MonitorSmartphone, MoreHo
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useAuth } from '../../../auth/auth-provider';
 import { AppShellHeader } from '../../../components/app-shell-header';
+import { SideNav, type SideNavProps } from '../../../components/side-nav';
+import { useResponsive } from '../../../lib/responsive';
 
 export default function TabsLayout() {
   const insets = useSafeAreaInsets();
+  const { isTablet } = useResponsive();
   const { user } = useAuth();
   const isEmployee = user?.roles.some((role) => role.toUpperCase() === 'PEGAWAI') ?? false;
   const isAdmin = !isEmployee;
@@ -15,9 +18,12 @@ export default function TabsLayout() {
   const showDisplay = isEmployee && can('display.read');
   const showCashInOut = isEmployee && (can('cash_transaction.create') || can('cash_closing.read'));
   return (
-    <Tabs screenOptions={{
+    <Tabs tabBar={isTablet ? (props) => <SideNav {...(props as unknown as SideNavProps)} /> : undefined} screenOptions={{
       headerShown: true,
-      header: () => <AppShellHeader />,
+      // On tablets the sidebar carries the store identity, so the header only shows the screen title and actions.
+      header: isTablet ? ({ options }) => <AppShellHeader compact title={typeof options.tabBarLabel === 'string' ? options.tabBarLabel : options.title} /> : () => <AppShellHeader />,
+      tabBarPosition: isTablet ? 'left' : 'bottom',
+      sceneStyle: { backgroundColor: '#f5f8f7' },
       tabBarActiveTintColor: '#07956f',
       tabBarInactiveTintColor: '#7a899c',
       tabBarLabelStyle: { fontSize: 11, fontWeight: '700' },

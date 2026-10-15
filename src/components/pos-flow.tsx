@@ -1,6 +1,8 @@
 import { useMemo, useState } from 'react';
 import { ActivityIndicator, FlatList, Image, Modal, Pressable, RefreshControl, ScrollView, Share, StyleSheet, Text, TextInput, View } from 'react-native';
-import { Banknote, Barcode, Check, ChevronLeft, ChevronRight, CircleCheck, CreditCard, Landmark, Minus, Plus, Printer, QrCode, ReceiptText, Search, Share2, ShoppingCart, Store, Wallet, X } from 'lucide-react-native';
+import { Banknote, Barcode, Check, ChevronLeft, ChevronRight, CircleCheck, CreditCard, Landmark, Minus, Plus, Printer, QrCode, ReceiptText, Search, Share2, ShoppingCart, Store, Trash2, Wallet, X } from 'lucide-react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { useResponsive } from '../lib/responsive';
 import { AppShellHeader } from './app-shell-header';
 import { BarcodeScanner } from './barcode-scanner';
 import { formatDate, formatStatus } from '../lib/display';
@@ -105,6 +107,8 @@ type CatalogProps = {
   canAdd: (product: PosProduct, unitId?: string) => boolean;
   priceFor: (line: PosLine) => number;
   onOpenCart: () => void;
+  /** Empties the cart (tablet cart panel). */
+  onClear: () => void;
   onScan: (value: string) => void;
   onCloseOption: () => void;
   onOptionUnitChange: (id: string) => void;
@@ -117,8 +121,13 @@ function ProductRowGap() {
   return <View style={catalogStyles.productRowGap} />;
 }
 
+const GRID_GAP = 12;
+
 export function PosCatalogScreen(props: CatalogProps) {
   const styles = catalogStyles;
+  const insets = useSafeAreaInsets();
+  const { isTablet, columns } = useResponsive();
+  const [gridWidth, setGridWidth] = useState(0);
   const [scannerVisible, setScannerVisible] = useState(false);
   const totalItems = props.cart.reduce((sum, line) => sum + line.quantity, 0);
   const cartQuantities = useMemo(() => {
@@ -130,47 +139,7 @@ export function PosCatalogScreen(props: CatalogProps) {
     return byProduct;
   }, [props.cart]);
 
-  return <View style={[styles.screen, { paddingTop: props.topInset }]}>
-    <AppShellHeader />
-    <FlatList
-      style={styles.content}
-      contentContainerStyle={styles.catalogContent}
-      keyboardShouldPersistTaps="handled"
-      data={props.loading ? [] : props.visibleProducts}
-      keyExtractor={(product) => product.id}
-      numColumns={2}
-      columnWrapperStyle={styles.productRow}
-      ItemSeparatorComponent={ProductRowGap}
-      initialNumToRender={8}
-      maxToRenderPerBatch={8}
-      windowSize={7}
-      refreshControl={<RefreshControl refreshing={props.refreshing} onRefresh={props.onRefresh} tintColor="#07885b" colors={['#07885b']} />}
-      ListHeaderComponent={<>
-      {!props.userBranchId && props.branches.length > 1 ? <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.branchChoices}>{props.branches.map((branch) => <Pressable key={branch.id} onPress={() => props.onBranchChange(branch.id)} style={[styles.branchChip, props.branchId === branch.id && styles.branchChipActive]}><Text numberOfLines={1} style={[styles.branchChipText, props.branchId === branch.id && styles.branchChipTextActive]}>{branch.name}</Text></Pressable>)}</ScrollView> : null}
-      {props.warehouses.length > 1 ? <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.branchChoices}>{props.warehouses.filter((warehouse) => warehouse.branchId === props.branchId).map((warehouse) => <Pressable key={warehouse.id} onPress={() => props.onWarehouseChange(warehouse.id)} style={[styles.warehouseChip, props.warehouseId === warehouse.id && styles.warehouseChipActive]}><Text style={[styles.branchChipText, props.warehouseId === warehouse.id && styles.warehouseChipTextActive]}>{warehouse.name}</Text></Pressable>)}</ScrollView> : null}
-      <View style={styles.catalogSearchRow}><View style={styles.catalogSearchBox}><Search size={17} color="#78889c" /><TextInput accessibilityLabel="Cari produk" value={props.search} onChangeText={props.onSearchChange} placeholder="Cari menu atau SKU..." placeholderTextColor="#8290a2" style={styles.catalogSearchInput} /></View><Pressable accessibilityRole="button" accessibilityLabel="Scan barcode" onPress={() => setScannerVisible(true)} style={styles.catalogScanButton}><Barcode size={21} color="#fff" /></Pressable></View>
-      <View style={styles.catalogFilterRow}><Pressable accessibilityRole="button" accessibilityState={{ selected: !props.displayOnly }} onPress={() => props.onDisplayOnlyChange(false)} style={[styles.catalogFilter, !props.displayOnly && styles.catalogFilterActive]}><Text style={[styles.catalogFilterText, !props.displayOnly && styles.catalogFilterTextActive]}>Semua</Text></Pressable><Pressable accessibilityRole="button" accessibilityState={{ selected: props.displayOnly }} onPress={() => props.onDisplayOnlyChange(true)} style={[styles.catalogFilter, props.displayOnly && styles.catalogFilterActive]}><Store size={14} color={props.displayOnly ? '#fff' : '#60758a'} /><Text style={[styles.catalogFilterText, props.displayOnly && styles.catalogFilterTextActive]}>Display toko</Text></Pressable></View>
-      <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.categoryChoices}>{props.categories.map((category) => <Pressable key={category} onPress={() => props.onCategoryChange(category)} style={[styles.catalogCategory, props.selectedCategory === category && styles.catalogCategoryActive]}><Text style={[styles.catalogCategoryText, props.selectedCategory === category && styles.catalogCategoryTextActive]}>{category}</Text></Pressable>)}</ScrollView>
-      {props.loading ? <View style={styles.loadingRow}><ActivityIndicator color="#07885b" /><Text style={styles.loadingText}>Memuat produk...</Text></View> : null}
-      {props.error ? <Text style={[styles.errorText, styles.catalogError]}>{props.error}</Text> : null}
-      </>}
-      ListEmptyComponent={props.loading
-        ? <View style={styles.productGrid}>{Array.from({ length: 6 }, (_, index) => <View key={`product-skeleton-${index}`} style={styles.skeletonCard}><View style={styles.skeletonImage} /><View style={styles.skeletonLine} /><View style={styles.skeletonLineShort} /></View>)}</View>
-        : <Text style={styles.catalogEmpty}>Produk tidak ditemukan di gudang ini.</Text>}
-      renderItem={({ item: product }) => {
-        const selected = cartQuantities.get(product.id)?.quantity ?? 0;
-        const selectedLine = cartQuantities.get(product.id)?.line;
-        const price = product.sellingUnits[0]?.sellingPrice ?? product.basePrice;
-        return <View style={styles.catalogProductCard}>
-          {product.imageUrl ? <Image source={{ uri: product.imageUrl }} style={styles.catalogProductImage} resizeMode="cover" /> : <View style={[styles.catalogProductImage, styles.catalogImageFallback]}><ReceiptText size={28} color="#8191a3" /></View>}
-          <Text numberOfLines={1} style={styles.catalogProductName}>{product.name}</Text><Text style={styles.catalogProductCategory}>{product.category?.name ?? 'Produk'}</Text><Text style={styles.catalogProductStock}>{props.displayOnly ? `Display ${product.displayQuantity ?? 0} ${product.unit?.code ?? ''}` : `Stok ${product.available} ${product.unit?.code ?? ''}`}</Text>
-          <View style={styles.catalogCardFooter}><Text numberOfLines={1} adjustsFontSizeToFit style={styles.catalogProductPrice}>{money(price)}</Text>{selected && selectedLine ? <View style={styles.catalogQuantity}><Pressable accessibilityRole="button" accessibilityLabel={`Kurangi ${product.name}`} onPress={() => props.onQuantity(selectedLine.key, -1)} style={styles.catalogQtyButton}><Minus size={15} color="#07885b" /></Pressable><Text style={styles.catalogQtyValue}>{selected}</Text><Pressable accessibilityRole="button" accessibilityLabel={`Tambah ${product.name}`} disabled={!props.canAdd(product, selectedLine.unitId)} onPress={() => props.onAdd(product)} style={[styles.catalogQtyButtonActive, !props.canAdd(product, selectedLine.unitId) && styles.disabled]}><Plus size={17} color="#fff" /></Pressable></View> : <Pressable accessibilityRole="button" accessibilityLabel={`Tambah ${product.name}`} disabled={!props.canAdd(product)} onPress={() => props.onAdd(product)} style={[styles.catalogAddButton, !props.canAdd(product) && styles.disabled]}><Plus size={19} color="#fff" /></Pressable>}</View>
-        </View>;
-      }}
-    />
-    <Pressable accessibilityRole="button" onPress={props.onOpenCart} style={[styles.catalogCartBar, { marginBottom: 4 }]}>
-      <ShoppingCart size={19} color="#fff" /><Text style={styles.catalogCartLabel}>Pesanan ({totalItems})</Text><Text style={styles.catalogCartTotal}>{money(props.total)}</Text><ChevronRight size={18} color="#fff" />
-    </Pressable>
+  const optionSheet = <>
     <Modal visible={Boolean(props.optionProduct)} animationType="slide" transparent onRequestClose={props.onCloseOption}>
       <View style={styles.modalBackdrop}><View style={[styles.optionSheet, { paddingBottom: Math.max(props.bottomInset + 8, 26) }]}>
         <View style={styles.optionHeader}><View><Text style={styles.optionTitle}>{props.optionProduct?.name}</Text><Text style={styles.catalogProductCategory}>Pilih satuan, varian, dan add-on</Text></View><Pressable accessibilityRole="button" onPress={props.onCloseOption} style={styles.catalogHeaderIcon}><X size={19} color="#435a72" /></Pressable></View>
@@ -183,12 +152,109 @@ export function PosCatalogScreen(props: CatalogProps) {
         <Pressable accessibilityRole="button" disabled={!props.optionProduct || !props.canAdd(props.optionProduct, props.optionUnit)} onPress={props.onAddConfigured} style={[styles.primaryButton, (!props.optionProduct || !props.canAdd(props.optionProduct, props.optionUnit)) && styles.disabled]}><Text style={styles.primaryText}>Tambah ke pesanan</Text></Pressable>
       </View></View>
     </Modal>
+  </>;
+  const searchBox = <View style={[styles.catalogSearchBox, isTablet && styles.tabletSearchBox]}><Search size={17} color="#78889c" /><TextInput accessibilityLabel="Cari produk" value={props.search} onChangeText={props.onSearchChange} placeholder="Cari menu atau SKU..." placeholderTextColor="#8290a2" style={styles.catalogSearchInput} /></View>;
+  const scanButton = <Pressable accessibilityRole="button" accessibilityLabel="Scan barcode" onPress={() => setScannerVisible(true)} style={[styles.catalogScanButton, isTablet && styles.tabletScanButton]}><Barcode size={21} color="#fff" /></Pressable>;
+  // Card width follows the measured grid width so every column count fills the row evenly.
+  const gridColumns = isTablet ? columns(gridWidth, 175, 6) : 2;
+  const cardWidth = isTablet && gridWidth ? (gridWidth - GRID_GAP * (gridColumns - 1)) / gridColumns : undefined;
+
+  const filters = <>
+    {!props.userBranchId && props.branches.length > 1 ? <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.branchChoices}>{props.branches.map((branch) => <Pressable key={branch.id} onPress={() => props.onBranchChange(branch.id)} style={[styles.branchChip, props.branchId === branch.id && styles.branchChipActive]}><Text numberOfLines={1} style={[styles.branchChipText, props.branchId === branch.id && styles.branchChipTextActive]}>{branch.name}</Text></Pressable>)}</ScrollView> : null}
+    {props.warehouses.length > 1 ? <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.branchChoices}>{props.warehouses.filter((warehouse) => warehouse.branchId === props.branchId).map((warehouse) => <Pressable key={warehouse.id} onPress={() => props.onWarehouseChange(warehouse.id)} style={[styles.warehouseChip, props.warehouseId === warehouse.id && styles.warehouseChipActive]}><Text style={[styles.branchChipText, props.warehouseId === warehouse.id && styles.warehouseChipTextActive]}>{warehouse.name}</Text></Pressable>)}</ScrollView> : null}
+    {!isTablet ? <View style={styles.catalogSearchRow}>{searchBox}{scanButton}</View> : null}
+    <View style={styles.catalogFilterRow}><Pressable accessibilityRole="button" accessibilityState={{ selected: !props.displayOnly }} onPress={() => props.onDisplayOnlyChange(false)} style={[styles.catalogFilter, !props.displayOnly && styles.catalogFilterActive]}><Text style={[styles.catalogFilterText, !props.displayOnly && styles.catalogFilterTextActive]}>Semua</Text></Pressable><Pressable accessibilityRole="button" accessibilityState={{ selected: props.displayOnly }} onPress={() => props.onDisplayOnlyChange(true)} style={[styles.catalogFilter, props.displayOnly && styles.catalogFilterActive]}><Store size={14} color={props.displayOnly ? '#fff' : '#60758a'} /><Text style={[styles.catalogFilterText, props.displayOnly && styles.catalogFilterTextActive]}>Display toko</Text></Pressable></View>
+    <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.categoryChoices}>{props.categories.map((category) => <Pressable key={category} onPress={() => props.onCategoryChange(category)} style={[styles.catalogCategory, props.selectedCategory === category && styles.catalogCategoryActive]}><Text style={[styles.catalogCategoryText, props.selectedCategory === category && styles.catalogCategoryTextActive]}>{category}</Text></Pressable>)}</ScrollView>
+    {props.loading ? <View style={styles.loadingRow}><ActivityIndicator color="#07885b" /><Text style={styles.loadingText}>Memuat produk...</Text></View> : null}
+    {props.error ? <Text style={[styles.errorText, styles.catalogError]}>{props.error}</Text> : null}
+  </>;
+
+  const grid = <FlatList
+    key={`grid-${gridColumns}`}
+    style={styles.content}
+    contentContainerStyle={[styles.catalogContent, isTablet && styles.tabletCatalogContent]}
+    keyboardShouldPersistTaps="handled"
+    data={props.loading ? [] : props.visibleProducts}
+    keyExtractor={(product) => product.id}
+    numColumns={gridColumns}
+    columnWrapperStyle={isTablet ? styles.tabletProductRow : styles.productRow}
+    ItemSeparatorComponent={ProductRowGap}
+    initialNumToRender={isTablet ? 16 : 8}
+    maxToRenderPerBatch={isTablet ? 12 : 8}
+    windowSize={7}
+    refreshControl={<RefreshControl refreshing={props.refreshing} onRefresh={props.onRefresh} tintColor="#07885b" colors={['#07885b']} />}
+    ListHeaderComponent={<View onLayout={isTablet ? (event) => setGridWidth(event.nativeEvent.layout.width) : undefined}>{filters}</View>}
+    ListEmptyComponent={props.loading
+      ? <View style={styles.productGrid}>{Array.from({ length: isTablet ? gridColumns * 2 : 6 }, (_, index) => <View key={`product-skeleton-${index}`} style={[styles.skeletonCard, cardWidth ? { width: cardWidth } : null]}><View style={styles.skeletonImage} /><View style={styles.skeletonLine} /><View style={styles.skeletonLineShort} /></View>)}</View>
+      : <Text style={styles.catalogEmpty}>Produk tidak ditemukan di gudang ini.</Text>}
+    renderItem={({ item: product }) => {
+      const selected = cartQuantities.get(product.id)?.quantity ?? 0;
+      const selectedLine = cartQuantities.get(product.id)?.line;
+      const price = product.sellingUnits[0]?.sellingPrice ?? product.basePrice;
+      return <View style={[styles.catalogProductCard, cardWidth ? { width: cardWidth } : null]}>
+        {product.imageUrl ? <Image source={{ uri: product.imageUrl }} style={styles.catalogProductImage} resizeMode="cover" /> : <View style={[styles.catalogProductImage, styles.catalogImageFallback]}><ReceiptText size={28} color="#8191a3" /></View>}
+        <Text numberOfLines={isTablet ? 2 : 1} style={styles.catalogProductName}>{product.name}</Text><Text style={styles.catalogProductCategory}>{product.category?.name ?? 'Produk'}</Text><Text style={styles.catalogProductStock}>{props.displayOnly ? `Display ${product.displayQuantity ?? 0} ${product.unit?.code ?? ''}` : `Stok ${product.available} ${product.unit?.code ?? ''}`}</Text>
+        <View style={styles.catalogCardFooter}><Text numberOfLines={1} adjustsFontSizeToFit style={styles.catalogProductPrice}>{money(price)}</Text>{selected && selectedLine ? <View style={styles.catalogQuantity}><Pressable accessibilityRole="button" accessibilityLabel={`Kurangi ${product.name}`} onPress={() => props.onQuantity(selectedLine.key, -1)} style={styles.catalogQtyButton}><Minus size={15} color="#07885b" /></Pressable><Text style={styles.catalogQtyValue}>{selected}</Text><Pressable accessibilityRole="button" accessibilityLabel={`Tambah ${product.name}`} disabled={!props.canAdd(product, selectedLine.unitId)} onPress={() => props.onAdd(product)} style={[styles.catalogQtyButtonActive, !props.canAdd(product, selectedLine.unitId) && styles.disabled]}><Plus size={17} color="#fff" /></Pressable></View> : <Pressable accessibilityRole="button" accessibilityLabel={`Tambah ${product.name}`} disabled={!props.canAdd(product)} onPress={() => props.onAdd(product)} style={[styles.catalogAddButton, !props.canAdd(product) && styles.disabled]}><Plus size={19} color="#fff" /></Pressable>}</View>
+      </View>;
+    }}
+  />;
+
+  const cartButton = <Pressable accessibilityRole="button" disabled={isTablet && !props.cart.length} onPress={props.onOpenCart} style={[styles.catalogCartBar, isTablet ? styles.tabletCartBar : { marginBottom: 4 }, isTablet && !props.cart.length && styles.disabled]}>
+    <ShoppingCart size={19} color="#fff" /><View style={styles.cartBarText}><Text style={styles.catalogCartLabel}>Pesanan ({totalItems})</Text>{isTablet ? <Text style={styles.catalogCartTotal}>{money(props.total)}</Text> : null}</View>{!isTablet ? <Text style={styles.catalogCartTotal}>{money(props.total)}</Text> : null}<ChevronRight size={18} color="#fff" />
+  </Pressable>;
+
+  if (isTablet) return <View style={[styles.screen, styles.tabletScreen]}>
+    <View style={styles.tabletCatalog}>
+      <AppShellHeader compact leading={searchBox} trailing={scanButton} />
+      {grid}
+    </View>
+    <View style={[styles.cartPanel, { paddingTop: insets.top + 14, paddingBottom: Math.max(insets.bottom, 12) }]}>
+      <View style={styles.cartPanelHeader}><Text style={styles.cartPanelTitle}>Pesanan ({totalItems})</Text><Pressable accessibilityRole="button" accessibilityLabel="Kosongkan pesanan" disabled={!props.cart.length} onPress={props.onClear} style={[styles.cartPanelClear, !props.cart.length && styles.disabled]}><Trash2 size={17} color="#8a97a8" /></Pressable></View>
+      {props.cart.length ? <ScrollView style={styles.content} contentContainerStyle={styles.cartPanelList}>{props.cart.map((line) => {
+        const variant = line.product.variants?.find((item) => item.id === line.variantId)?.name;
+        const canIncrease = props.canAdd(line.product, line.unitId);
+        return <View key={line.key} style={styles.cartPanelLine}>
+          <View style={styles.cartPanelLineText}><Text numberOfLines={2} style={styles.cartPanelName}>{line.product.name}</Text><Text numberOfLines={1} style={styles.catalogProductCategory}>{variant ?? line.product.sku}</Text><Text style={styles.cartPanelPrice}>{money(props.priceFor(line) * line.quantity)}</Text></View>
+          <View style={styles.catalogQuantity}><Pressable accessibilityRole="button" accessibilityLabel={`Kurangi ${line.product.name}`} onPress={() => props.onQuantity(line.key, -1)} style={styles.catalogQtyButton}><Minus size={15} color="#07885b" /></Pressable><Text style={styles.catalogQtyValue}>{line.quantity}</Text><Pressable accessibilityRole="button" accessibilityLabel={`Tambah ${line.product.name}`} disabled={!canIncrease} onPress={() => props.onQuantity(line.key, 1)} style={[styles.catalogQtyButtonActive, !canIncrease && styles.disabled]}><Plus size={17} color="#fff" /></Pressable></View>
+        </View>;
+      })}</ScrollView> : <View style={styles.cartPanelEmpty}><ShoppingCart size={42} color="#b9c4cf" /><Text style={styles.cartPanelEmptyTitle}>Belum ada pesanan</Text><Text style={styles.cartPanelEmptyText}>Pilih produk untuk menambah ke keranjang</Text></View>}
+      {cartButton}
+    </View>
+    {optionSheet}
+    <BarcodeScanner visible={scannerVisible} onClose={() => setScannerVisible(false)} onScanned={(value) => { setScannerVisible(false); props.onScan(value); }} />
+  </View>;
+
+  return <View style={[styles.screen, { paddingTop: props.topInset }]}>
+    <AppShellHeader />
+    {grid}
+    {cartButton}
+    {optionSheet}
     <BarcodeScanner visible={scannerVisible} onClose={() => setScannerVisible(false)} onScanned={(value) => { setScannerVisible(false); props.onScan(value); }} />
   </View>;
 }
 
 const catalogStyles = StyleSheet.create({
   screen: { flex: 1, backgroundColor: '#f5f8f7' },
+  tabletScreen: { flexDirection: 'row' },
+  tabletCatalog: { flex: 1, minWidth: 0 },
+  tabletCatalogContent: { paddingHorizontal: 18, paddingTop: 14, paddingBottom: 18 },
+  tabletProductRow: { gap: GRID_GAP },
+  tabletSearchBox: { flex: 1, height: 46 },
+  tabletScanButton: { width: 46, height: 46, marginLeft: 6, backgroundColor: '#e23b3b' },
+  tabletCartBar: { marginHorizontal: 0, marginTop: 10 },
+  cartBarText: { flex: 1 },
+  cartPanel: { width: 320, paddingHorizontal: 14, borderLeftWidth: 1, borderLeftColor: '#e8eeeb', backgroundColor: '#fff' },
+  cartPanelHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 },
+  cartPanelTitle: { color: '#172338', fontSize: 15, fontWeight: '900' },
+  cartPanelClear: { width: 36, height: 36, alignItems: 'center', justifyContent: 'center', borderRadius: 10, backgroundColor: '#f4f7f9' },
+  cartPanelList: { gap: 8, paddingBottom: 8 },
+  cartPanelLine: { flexDirection: 'row', alignItems: 'center', gap: 10, padding: 10, borderRadius: 12, backgroundColor: '#f6f9f8' },
+  cartPanelLineText: { flex: 1, minWidth: 0 },
+  cartPanelName: { color: '#172338', fontSize: 12, fontWeight: '900' },
+  cartPanelPrice: { marginTop: 5, color: '#d72f2a', fontSize: 12, fontWeight: '900' },
+  cartPanelEmpty: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 8, paddingHorizontal: 20 },
+  cartPanelEmptyTitle: { color: '#5f7186', fontSize: 13, fontWeight: '800' },
+  cartPanelEmptyText: { color: '#8a97a8', fontSize: 11, textAlign: 'center' },
   content: { flex: 1 },
   catalogContent: { paddingHorizontal: 13, paddingTop: 12, paddingBottom: 10 },
   catalogHeaderIcon: { width: 36, height: 36, alignItems: 'center', justifyContent: 'center', borderRadius: 12, backgroundColor: '#f0f4f7' },
@@ -290,6 +356,7 @@ export function PosCheckoutFlow(props: CheckoutProps) {
               <Text numberOfLines={1} style={styles.productName}>{line.product.name}</Text><Text style={styles.productSku}>{variant ?? line.product.sku}</Text>
               <View style={styles.lineBottom}><View style={styles.quantityControl}><Pressable accessibilityRole="button" accessibilityLabel={`Kurangi ${line.product.name}`} onPress={() => props.onQuantity(line.key, -1)} style={styles.quantityButton}><Text style={styles.quantityButtonText}>−</Text></Pressable><Text style={styles.quantityValue}>{line.quantity}</Text><Pressable accessibilityRole="button" accessibilityLabel={`Tambah ${line.product.name}`} disabled={!props.canIncrease(line)} onPress={() => props.onQuantity(line.key, 1)} style={[styles.quantityButton, !props.canIncrease(line) && styles.disabled]}><Text style={styles.quantityButtonText}>+</Text></Pressable></View><Text style={styles.linePrice}>{money(props.priceFor(line) * line.quantity)}</Text></View>
             </View>
+            <Pressable accessibilityRole="button" accessibilityLabel={`Hapus ${line.product.name}`} hitSlop={6} onPress={() => props.onQuantity(line.key, -line.quantity)} style={styles.lineRemove}><Trash2 size={16} color="#8a97a8" /></Pressable>
           </View>;
         })}</View>
         <View style={styles.summaryCard}>
@@ -343,6 +410,7 @@ type ReceiptScreenProps = {
 };
 
 export function PosReceiptScreen(props: ReceiptScreenProps) {
+  const { isTablet } = useResponsive();
   const [shareError, setShareError] = useState('');
   const completedAt = props.order.completedAt ?? props.order.createdAt;
   const share = async () => {
@@ -353,7 +421,8 @@ export function PosReceiptScreen(props: ReceiptScreenProps) {
 
   return <View style={[styles.screen, { paddingTop: props.topInset, paddingBottom: props.bottomInset + 8 }]}>
     <View style={styles.receiptHeader}><Pressable accessibilityRole="button" accessibilityLabel="Kembali ke katalog" onPress={props.onNewOrder} style={styles.headerIcon}><ChevronLeft size={22} color="#172338" /></Pressable><Text style={styles.receiptHeaderTitle}>Nota pembayaran</Text><Pressable accessibilityRole="button" accessibilityLabel="Cetak nota" onPress={props.onPrint} style={styles.headerIcon}><Printer size={20} color="#216b67" /></Pressable></View>
-    <ScrollView style={styles.content} contentContainerStyle={styles.receiptContent}>
+    <View style={[styles.content, isTablet && styles.receiptSplit]}>
+    <ScrollView style={styles.content} contentContainerStyle={[styles.receiptContent, isTablet && styles.receiptContentTablet]}>
       <View style={styles.successBanner}><CircleCheck size={25} color="#07885b" /><View style={styles.successTextWrap}><Text style={styles.successTitle}>Transaksi berhasil</Text><Text style={styles.successSubtitle}>Pesanan telah diselesaikan.</Text></View></View>
       <View style={styles.receiptCard}>
         <Text style={styles.receiptStore}>{props.order.branch?.name ?? 'Toko'}</Text>
@@ -374,10 +443,10 @@ export function PosReceiptScreen(props: ReceiptScreenProps) {
         <View style={styles.thanks}><Text style={styles.thanksTitle}>Terima kasih</Text><Text style={styles.receiptMeta}>Semoga hari Anda menyenangkan</Text><Text selectable style={styles.orderCode}>{props.order.orderNumber}</Text></View>
       </View>
       {props.printError || shareError ? <Text style={styles.errorText}>{props.printError || shareError}</Text> : null}
-      <View style={styles.receiptActions}>
+      {!isTablet ? <View style={styles.receiptActions}>
         <Pressable accessibilityRole="button" onPress={props.onPrint} disabled={props.printing} style={styles.secondaryButton}>{props.printing ? <ActivityIndicator color="#087f5b" /> : <><Printer size={17} color="#087f5b" /><Text style={styles.secondaryText}>Cetak ulang</Text></>}</Pressable>
         <Pressable accessibilityRole="button" onPress={() => void share()} style={styles.primaryButton}><Share2 size={17} color="#fff" /><Text style={styles.primaryText}>Bagikan</Text></Pressable>
-      </View>
+      </View> : null}
       {props.printerPickerVisible ? <Modal transparent animationType="slide" visible onRequestClose={props.onClosePrinterPicker}>
         <View style={styles.modalBackdrop}><View style={[styles.printerModal, { paddingBottom: Math.max(props.bottomInset + 8, 28) }]}>
           <View style={styles.printerModalHeader}><Text style={styles.printerModalTitle}>Pilih printer Bluetooth</Text><Pressable accessibilityRole="button" onPress={props.onClosePrinterPicker}><X size={20} color="#526276" /></Pressable></View>
@@ -388,7 +457,13 @@ export function PosReceiptScreen(props: ReceiptScreenProps) {
         </View></View>
       </Modal> : null}
     </ScrollView>
-    <Pressable accessibilityRole="button" onPress={props.onNewOrder} style={styles.newOrderButton}><CircleCheck size={17} color="#07885b" /><Text style={styles.newOrderText}>Transaksi baru</Text></Pressable>
+    {isTablet ? <View style={styles.receiptSideActions}>
+      <Pressable accessibilityRole="button" onPress={props.onPrint} disabled={props.printing} style={[styles.secondaryButton, styles.sideActionButton]}>{props.printing ? <ActivityIndicator color="#087f5b" /> : <><Printer size={18} color="#087f5b" /><Text style={styles.secondaryText}>Cetak ulang</Text></>}</Pressable>
+      <Pressable accessibilityRole="button" onPress={() => void share()} style={[styles.primaryButton, styles.sideActionButton]}><Share2 size={18} color="#fff" /><Text style={styles.primaryText}>Bagikan</Text></Pressable>
+      <Pressable accessibilityRole="button" onPress={props.onNewOrder} style={[styles.newOrderButton, styles.sideActionButton]}><CircleCheck size={18} color="#07885b" /><Text style={styles.newOrderText}>Transaksi baru</Text></Pressable>
+    </View> : null}
+    </View>
+    {!isTablet ? <Pressable accessibilityRole="button" onPress={props.onNewOrder} style={styles.newOrderButton}><CircleCheck size={17} color="#07885b" /><Text style={styles.newOrderText}>Transaksi baru</Text></Pressable> : null}
   </View>;
 }
 
@@ -415,5 +490,8 @@ const styles = StyleSheet.create({
   receiptHeader: { minHeight: 54, flexDirection: 'row', alignItems: 'center', gap: 10, paddingHorizontal: 13, backgroundColor: '#fff' }, receiptHeaderTitle: { flex: 1, color: '#14213a', fontSize: 15, fontWeight: '900' }, receiptContent: { padding: 13, paddingBottom: 14, gap: 9 }, successBanner: { minHeight: 58, flexDirection: 'row', alignItems: 'center', gap: 10, padding: 11, borderRadius: 12, backgroundColor: '#dff7ee' }, successTextWrap: { flex: 1 }, successTitle: { color: '#087c53', fontSize: 11, fontWeight: '900' }, successSubtitle: { marginTop: 3, color: '#588477', fontSize: 9 },
   receiptCard: { padding: 14, borderRadius: 13, backgroundColor: '#fff' }, receiptStore: { color: '#172338', fontSize: 13, fontWeight: '900', textAlign: 'center' }, receiptMeta: { marginTop: 4, color: '#74859b', fontSize: 9, lineHeight: 14 }, receiptDivider: { height: 1, marginVertical: 9, borderTopWidth: 1, borderColor: '#dce5eb', borderStyle: 'dashed' }, receiptLine: { paddingVertical: 6 }, receiptRow: { flexDirection: 'row', alignItems: 'flex-start', justifyContent: 'space-between', gap: 9 }, receiptItemName: { flex: 1, color: '#24344a', fontSize: 10, fontWeight: '800' }, receiptItemAmount: { color: '#172338', fontSize: 10, fontWeight: '800' },
   thanks: { alignItems: 'center', marginTop: 12 }, thanksTitle: { color: '#456178', fontSize: 10, fontWeight: '800' }, orderCode: { marginTop: 12, color: '#3c4a5e', fontSize: 10, fontWeight: '900', letterSpacing: 1.4 }, receiptActions: { flexDirection: 'row', gap: 8, marginBottom: 2 }, newOrderButton: { minHeight: 44, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 7, marginHorizontal: 13, marginBottom: 8, borderRadius: 11, backgroundColor: '#e1f7ee' }, newOrderText: { color: '#087c53', fontSize: 10, fontWeight: '900' },
+  lineRemove: { alignSelf: 'flex-start', padding: 4 },
+  receiptSplit: { flexDirection: 'row' }, receiptContentTablet: { padding: 18, gap: 12 },
+  receiptSideActions: { width: 230, gap: 12, paddingTop: 18, paddingRight: 18 }, sideActionButton: { flex: 0, minHeight: 56, marginHorizontal: 0, marginBottom: 0, justifyContent: 'flex-start', paddingHorizontal: 16 },
   modalBackdrop: { flex: 1, justifyContent: 'flex-end', backgroundColor: '#0a172966' }, printerModal: { paddingHorizontal: 17, paddingTop: 17, paddingBottom: 28, borderTopLeftRadius: 20, borderTopRightRadius: 20, backgroundColor: '#fff' }, printerModalHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }, printerModalTitle: { color: '#172338', fontSize: 15, fontWeight: '900' }, printerLoading: { padding: 18 }, printerEmpty: { paddingVertical: 16, color: '#75869a', fontSize: 11, textAlign: 'center' }, printerRow: { minHeight: 55, flexDirection: 'row', alignItems: 'center', gap: 10, borderBottomWidth: 1, borderBottomColor: '#edf1f4' }, printerDetails: { flex: 1 }, printerName: { color: '#27374d', fontSize: 11, fontWeight: '800' }, settingsButton: { alignItems: 'center', marginTop: 12, padding: 11, borderRadius: 10, backgroundColor: '#eef7f3' }, settingsText: { color: '#087c53', fontSize: 10, fontWeight: '800' },
 });

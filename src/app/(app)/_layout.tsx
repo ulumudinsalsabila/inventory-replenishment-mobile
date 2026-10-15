@@ -2,12 +2,16 @@ import { Redirect, Stack } from 'expo-router';
 import { ActivityIndicator, StyleSheet, View } from 'react-native';
 import { useAuth } from '../../auth/auth-provider';
 import { BranchFilterProvider } from '../../auth/branch-filter';
+import { CONTENT_MAX_WIDTH, useResponsive } from '../../lib/responsive';
 
 export default function AppLayout() {
   const { loading, accessToken } = useAuth();
+  const { isTablet } = useResponsive();
   if (loading) return <View style={styles.loading}><ActivityIndicator color="#087f5b" size="large" /></View>;
   if (!accessToken) return <Redirect href="/login" />;
   return <BranchFilterProvider><Stack screenOptions={{
+    // Pushed list/form screens stay readable on tablets; tabs and POS opt out below to use the full width.
+    contentStyle: isTablet ? styles.tabletContent : undefined,
     headerShown: true,
     headerStyle: { backgroundColor: '#fff' },
     headerTintColor: '#172338',
@@ -15,8 +19,8 @@ export default function AppLayout() {
     headerBackButtonDisplayMode: 'minimal',
     headerShadowVisible: false,
   }}>
-    <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
-    <Stack.Screen name="pos" options={{ headerShown: false }} />
+    <Stack.Screen name="(tabs)" options={{ headerShown: false, contentStyle: undefined }} />
+    <Stack.Screen name="pos" options={{ headerShown: false, contentStyle: undefined }} />
     <Stack.Screen name="inventory" options={{ title: 'Stok' }} />
     <Stack.Screen name="movements" options={{ title: 'Pergerakan Stok' }} />
     <Stack.Screen name="orders" options={{ title: 'Pesanan' }} />
@@ -35,4 +39,7 @@ export default function AppLayout() {
   </Stack></BranchFilterProvider>;
 }
 
-const styles = StyleSheet.create({ loading: { flex: 1, alignItems: 'center', justifyContent: 'center' } });
+const styles = StyleSheet.create({
+  loading: { flex: 1, alignItems: 'center', justifyContent: 'center' },
+  tabletContent: { width: '100%', maxWidth: CONTENT_MAX_WIDTH, alignSelf: 'center', backgroundColor: '#f5f8f7' },
+});
