@@ -28,6 +28,9 @@ export default function AppLayout() {
     <Stack.Screen name="transfers" options={{ title: 'Transfer Gudang' }} />
     <Stack.Screen name="adjustments" options={{ title: 'Adjustment Stok' }} />
     <Stack.Screen name="opnames" options={{ title: 'Stock Opname' }} />
+    <Stack.Screen name="branch-profit" options={{ title: 'Keuntungan per cabang' }} />
+    <Stack.Screen name="unsold-stock" options={{ title: 'Stok belum terjual' }} />
+    <Stack.Screen name="stock-detail" options={{ title: 'Detail stok produk' }} />
   </Stack>;
 }
 

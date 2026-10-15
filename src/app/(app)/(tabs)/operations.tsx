@@ -19,11 +19,11 @@ const adminFeatures: Feature[] = [
   { section: 'Akun', title: 'Akun / profil', description: 'Peran, akses, dan pengaturan akun', destination: '/(app)/(tabs)/account', icon: 'UserRound' },
 ];
 const employeeFeatures: Feature[] = [
-  { section: 'Transaksi', title: 'Pesanan', description: 'Riwayat transaksi dan pembayaran', destination: '/(app)/(tabs)/orders', permission: 'order.read', icon: 'ReceiptText' },
+  { section: 'Transaksi', title: 'Pesanan', description: 'Riwayat transaksi, refund, dan cetak ulang struk', destination: '/(app)/orders', permission: 'order.read', icon: 'ReceiptText' },
   { section: 'Stok & Gudang', title: 'Stok', description: 'Ketersediaan produk di gudang', destination: '/(app)/inventory', permission: 'inventory.read', icon: 'PackageSearch' },
   { section: 'Stok & Gudang', title: 'Pergerakan stok', description: 'Riwayat barang masuk dan keluar', destination: '/(app)/movements', permission: 'inventory.read', icon: 'ClipboardList' },
   { section: 'Stok & Gudang', title: 'Permintaan stok', description: 'Ajukan dan pantau permintaan stok', destination: '/(app)/stock-requests', permission: 'inventory.read', icon: 'ClipboardList' },
-  { section: 'Kas', title: 'Cash in/out', description: 'Catat kas masuk atau keluar', destination: '/(app)/cash-in-out', permission: 'cash_transaction.create', icon: 'Banknote' },
+  { section: 'Kas', title: 'Cash Closing', description: 'Tutup kas dan rekonsiliasi harian', destination: '/(app)/cash-closing', permission: 'cash_closing.read', icon: 'Banknote' },
   { section: 'Akun', title: 'Akun / profil', description: 'Peran, akses, dan pengaturan akun', destination: '/(app)/(tabs)/account', icon: 'UserRound' },
 ];
 

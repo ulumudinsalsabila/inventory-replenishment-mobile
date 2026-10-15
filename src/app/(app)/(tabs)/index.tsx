@@ -5,6 +5,7 @@ import { Banknote, Box, ChevronDown, ChevronRight, ClipboardCheck, LockKeyhole, 
 import Svg, { Circle, Defs, G, LinearGradient, Rect, Stop } from 'react-native-svg';
 import { useAuth } from '../../../auth/auth-provider';
 import { ApiError } from '../../../lib/api';
+import { AdminDashboard } from '../../../components/admin-dashboard';
 
 type Dashboard = {
   branchName: string | null;
@@ -73,6 +74,12 @@ function PaymentChart({ methods }: { methods: Dashboard['salesByMethod'] }) {
 }
 
 export default function DashboardScreen() {
+  const { user } = useAuth();
+  const isEmployee = user?.roles.some((role) => role.toUpperCase() === 'PEGAWAI') ?? false;
+  return isEmployee ? <EmployeeDashboard /> : <AdminDashboard />;
+}
+
+function EmployeeDashboard() {
   const { user, accessToken, authorizedRequest } = useAuth();
   const [data, setData] = useState<Dashboard | null>(null);
   const [branches, setBranches] = useState<Branch[]>([]);
