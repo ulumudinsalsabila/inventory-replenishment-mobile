@@ -156,7 +156,7 @@ export default function DashboardScreen() {
       </View>
       <View style={styles.closingCard}>
         <View style={styles.closingIcon}><Box size={21} color="#07956f" /></View><View style={styles.closingInfo}><Text style={styles.closingLabel}>Status kas hari ini</Text><Text style={styles.closingStatus}>{data?.cashClosing ? 'Sudah ditutup' : 'Belum ditutup'}</Text><Text numberOfLines={2} style={styles.closingHint}>{data?.cashClosing ? data.cashClosing.closingNumber : 'Lakukan cash closing untuk mengakhiri hari.'}</Text></View>
-        {canCloseCash ? <Pressable accessibilityRole="button" onPress={() => router.push('/(app)/cash')} style={({ pressed }) => [styles.closeButton, pressed && styles.closeButtonPressed]}><LockKeyhole size={16} color="#fff" /><Text style={styles.closeButtonText}>{data?.cashClosing ? 'Lihat kas' : 'Tutup kas'}</Text></Pressable> : null}
+        {canCloseCash ? <Pressable accessibilityRole="button" onPress={() => router.push('/(app)/cash-closing')} style={({ pressed }) => [styles.closeButton, pressed && styles.closeButtonPressed]}><LockKeyhole size={16} color="#fff" /><Text style={styles.closeButtonText}>{data?.cashClosing ? 'Lihat kas' : 'Tutup kas'}</Text></Pressable> : null}
       </View>
     </> : <View style={styles.noAccess}><Text style={styles.noAccessTitle}>Ringkasan tidak tersedia</Text><Text style={styles.noAccessText}>Akun ini belum memiliki akses laporan.</Text></View>}
   </ScrollView>;

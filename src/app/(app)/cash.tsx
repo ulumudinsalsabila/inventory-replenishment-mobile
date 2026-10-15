@@ -1,33 +1,44 @@
 import { useCallback, useEffect, useState } from 'react';
-import { ActivityIndicator, Pressable, RefreshControl, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
+import { ActivityIndicator, Image, Modal, Platform, Pressable, RefreshControl, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
+import { File } from 'expo-file-system';
+import * as ImagePicker from 'expo-image-picker';
+import { ArrowDownLeft, ArrowLeft, ArrowUpRight, Camera, Check, ChevronRight, ImagePlus, Paperclip, Plus, Search, X } from 'lucide-react-native';
 import { router } from 'expo-router';
 import { useAuth } from '../../auth/auth-provider';
 import { ApiError } from '../../lib/api';
-import { formatStatus } from '../../lib/display';
+import { formatDate } from '../../lib/display';
 
 type Branch = { id: string; name: string; code: string };
 type Page<T> = { data: T[]; meta?: { totalPages: number } };
-type CashRow = { id: string; amount?: string; type?: string; category?: string; reason?: string; closingNumber?: string; expectedCash?: string; actualCash?: string; difference?: string; status?: string; createdAt?: string; closedAt?: string; branch?: Branch };
-type Preview = { expectedCash: string; cashSales: string; cashIn: string; cashOut: string; cashRefund: string; transactionCount: number; periodStart: string | null };
+type CashAttachment = { id: string; url: string; fileName: string; mimeType: string };
+type CashRow = { id: string; amount?: string; type?: string; category?: string; reason?: string; createdAt?: string; branch?: Branch; attachments?: CashAttachment[]; _count?: { attachments: number } };
+type CashDetail = CashRow & { note?: string | null; attachments?: CashAttachment[] };
+type ReasonOption = { label: string; category: string };
+const reasonOptions: Record<'CASH_IN' | 'CASH_OUT', ReasonOption[]> = {
+  CASH_IN: [{ label: 'Setoran modal', category: 'Modal' }, { label: 'Pendapatan lain', category: 'Pendapatan lain' }, { label: 'Koreksi kas', category: 'Koreksi kas' }, { label: 'Lainnya', category: 'Lainnya' }],
+  CASH_OUT: [{ label: 'Pembelian operasional', category: 'Operasional' }, { label: 'Pengembalian dana', category: 'Pengembalian dana' }, { label: 'Koreksi kas', category: 'Koreksi kas' }, { label: 'Lainnya', category: 'Lainnya' }],
+};
 const money = (value?: string | number | null) => `Rp ${Number(value ?? 0).toLocaleString('id-ID')}`;
 
 export default function CashScreen() {
   const { user, authorizedRequest } = useAuth();
   const canRead = user?.permissions.includes('cash_closing.read') ?? false;
   const canTransact = user?.permissions.includes('cash_transaction.create') ?? false;
-  const canClose = user?.permissions.includes('cash_closing.create') ?? false;
   const assignedBranchId = user?.branchId ?? null;
   const [branches, setBranches] = useState<Branch[]>([]);
   const [branchId, setBranchId] = useState(user?.branchId ?? '');
   const [transactions, setTransactions] = useState<CashRow[]>([]);
-  const [closings, setClosings] = useState<CashRow[]>([]);
-  const [preview, setPreview] = useState<Preview | null>(null);
   const [type, setType] = useState<'CASH_IN' | 'CASH_OUT'>('CASH_IN');
-  const [category, setCategory] = useState('');
+  const [reasonChoice, setReasonChoice] = useState('');
   const [amount, setAmount] = useState('');
   const [reason, setReason] = useState('');
-  const [actualCash, setActualCash] = useState('');
-  const [note, setNote] = useState('');
+  const [search, setSearch] = useState('');
+  const [typeFilter, setTypeFilter] = useState<'ALL' | 'CASH_IN' | 'CASH_OUT'>('ALL');
+  const [formVisible, setFormVisible] = useState(false);
+  const [formStep, setFormStep] = useState(0);
+  const [evidence, setEvidence] = useState<ImagePicker.ImagePickerAsset[]>([]);
+  const [selected, setSelected] = useState<CashDetail | null>(null);
+  const [detailLoading, setDetailLoading] = useState(false);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
@@ -42,53 +53,179 @@ export default function CashScreen() {
       const selectedBranch = assignedBranchId ?? branchId ?? availableBranches[0]?.id ?? '';
       setBranchId(selectedBranch);
       const jobs: Promise<unknown>[] = [];
-      if (canRead) jobs.push(authorizedRequest<Page<CashRow>>('cash-transactions?page=1&perPage=10').then((r) => setTransactions(r.data)), authorizedRequest<Page<CashRow>>('cash-closings?page=1&perPage=10').then((r) => setClosings(r.data)));
-      if (canClose && selectedBranch) jobs.push(authorizedRequest<Preview>(`cash-closing/preview?branchId=${encodeURIComponent(selectedBranch)}`).then(setPreview));
+      if (canRead) {
+        const params = new URLSearchParams({ page: '1', perPage: '50', sortBy: 'createdAt', sortOrder: 'desc' });
+        if (search.trim()) params.set('search', search.trim());
+        jobs.push(authorizedRequest<Page<CashRow>>(`cash-transactions?${params}`).then((r) => setTransactions(r.data)));
+      }
       await Promise.all(jobs);
     } catch (cause) { setError(cause instanceof ApiError ? cause.message : 'Data kas belum dapat dimuat.'); }
     finally { setLoading(false); }
-  }, [authorizedRequest, assignedBranchId, branchId, canClose, canRead]);
+  }, [authorizedRequest, assignedBranchId, branchId, canRead, search]);
 
   // Refresh when the route opens and after each successful cash mutation.
   // eslint-disable-next-line react-hooks/set-state-in-effect
   useEffect(() => { void load(); }, [load, reload]);
 
+  async function selectEvidence(useCamera: boolean) {
+    if (evidence.length >= 5) { setError('Maksimal 5 foto bukti.'); return; }
+    if (useCamera) {
+      const permission = await ImagePicker.requestCameraPermissionsAsync();
+      if (!permission.granted) { setError('Izin kamera diperlukan untuk mengambil foto.'); return; }
+    }
+    const result = useCamera
+      ? await ImagePicker.launchCameraAsync({ mediaTypes: ['images'], quality: 0.75 })
+      : await ImagePicker.launchImageLibraryAsync({ mediaTypes: ['images'], allowsMultipleSelection: true, selectionLimit: 5 - evidence.length, quality: 0.75 });
+    if (result.canceled || !result.assets.length) return;
+    if (result.assets.length + evidence.length > 5 || result.assets.some((asset) => Number(asset.fileSize ?? 0) > 5 * 1024 * 1024)) { setError('Maksimal 5 foto dan ukuran tiap file 5 MB.'); return; }
+    setEvidence((current) => [...current, ...result.assets].slice(0, 5));
+    setError('');
+  }
+
   const submitTransaction = async () => {
-    if (!branchId || !category.trim() || !reason.trim() || !(Number(amount) > 0)) return setError('Cabang, kategori, jumlah positif, dan alasan wajib diisi.');
+    const selectedReason = reasonOptions[type].find((option) => option.label === reasonChoice);
+    if (!branchId || !selectedReason || !(Number(amount) > 0)) return setError('Pilih cabang, alasan, dan jumlah positif.');
     setSaving(true); setError('');
     try {
-      await authorizedRequest('cash-transactions', { method: 'POST', body: JSON.stringify({ branchId, type, category: category.trim(), amount, reason: reason.trim() }) });
-      setCategory(''); setAmount(''); setReason(''); setReload((n) => n + 1);
+      const reasonText = reason.trim() ? `${selectedReason.label}: ${reason.trim()}` : selectedReason.label;
+      const form = new FormData();
+      form.append('branchId', branchId); form.append('type', type); form.append('category', selectedReason.category); form.append('amount', amount.replace(',', '.')); form.append('reason', reasonText);
+      evidence.forEach((asset, index) => {
+        const fileName = asset.fileName ?? asset.uri.split('/').pop() ?? `cash-${index + 1}.jpg`;
+        if (Platform.OS === 'web') {
+          if (!asset.file) throw new Error('File foto dari browser tidak tersedia.');
+          form.append('attachments', asset.file, fileName);
+        } else form.append('attachments', new File(asset.uri), fileName);
+      });
+      await authorizedRequest('cash-transactions', { method: 'POST', body: form });
+      setReasonChoice(''); setAmount(''); setReason(''); setEvidence([]); setFormStep(0); setFormVisible(false); setReload((n) => n + 1);
     } catch (cause) { setError(cause instanceof ApiError ? cause.message : 'Transaksi kas gagal disimpan.'); }
     finally { setSaving(false); }
   };
 
-  const submitClosing = async () => {
-    if (!branchId || actualCash === '' || Number(actualCash) < 0) return setError('Pilih cabang dan masukkan jumlah kas aktual.');
-    setSaving(true); setError('');
-    try {
-      await authorizedRequest('cash-closing', { method: 'POST', body: JSON.stringify({ branchId, actualCash, ...(note.trim() ? { note: note.trim() } : {}) }) });
-      setActualCash(''); setNote(''); setReload((n) => n + 1);
-    } catch (cause) { setError(cause instanceof ApiError ? cause.message : 'Penutupan kas gagal disimpan.'); }
-    finally { setSaving(false); }
-  };
+  async function openDetail(row: CashRow) {
+    setSelected(row as CashDetail);
+    setDetailLoading(true);
+    try { setSelected(await authorizedRequest<CashDetail>(`cash-transactions/${row.id}`)); }
+    catch (cause) { setError(cause instanceof Error ? cause.message : 'Detail transaksi belum dapat dimuat.'); }
+    finally { setDetailLoading(false); }
+  }
 
-  return <View style={styles.screen}><ScrollView contentContainerStyle={styles.page} keyboardShouldPersistTaps="handled" refreshControl={<RefreshControl refreshing={loading} onRefresh={() => setReload((n) => n + 1)} tintColor="#087f5b" />}>
-    <Text style={styles.subtitle}>Catat pergerakan kas dan rekonsiliasi hasil penjualan.</Text>
-    {branches.length ? <View style={styles.card}><Text style={styles.label}>Cabang</Text><View style={styles.chips}>{branches.map((b) => <Pressable key={b.id} onPress={() => setBranchId(b.id)} style={[styles.chip, branchId === b.id && styles.chipActive]}><Text style={[styles.chipText, branchId === b.id && styles.chipTextActive]}>{b.name}</Text></Pressable>)}</View></View> : null}
-    {error ? <View style={styles.error}><Text style={styles.errorText}>{error}</Text></View> : null}
-    {loading ? <ActivityIndicator style={styles.loader} color="#087f5b" size="large" /> : null}
-    {canTransact ? <View style={styles.card}><Text style={styles.section}>Catat kas</Text><View style={styles.chips}>{(['CASH_IN', 'CASH_OUT'] as const).map((v) => <Pressable key={v} accessibilityRole="button" onPress={() => setType(v)} style={[styles.chip, type === v && styles.chipActive]}><Text style={[styles.chipText, type === v && styles.chipTextActive]}>{v === 'CASH_IN' ? 'Kas masuk' : 'Kas keluar'}</Text></Pressable>)}</View>
-      <TextInput accessibilityLabel="Kategori" placeholder="Kategori, mis. setoran" value={category} onChangeText={setCategory} style={styles.input} /><TextInput accessibilityLabel="Jumlah" placeholder="Jumlah rupiah" keyboardType="decimal-pad" value={amount} onChangeText={setAmount} style={styles.input} /><TextInput accessibilityLabel="Alasan" placeholder="Alasan transaksi" value={reason} onChangeText={setReason} style={[styles.input, styles.multiline]} multiline />
-      <Pressable accessibilityRole="button" disabled={saving} onPress={() => void submitTransaction()} style={[styles.primary, saving && styles.dim]}>{saving ? <ActivityIndicator color="#fff" /> : <Text style={styles.primaryText}>Simpan transaksi kas</Text>}</Pressable>
-    </View> : null}
-    {canClose ? <View style={styles.card}><Text style={styles.section}>Penutupan kas</Text>{preview ? <><Text style={styles.expected}>Kas seharusnya  {money(preview.expectedCash)}</Text><Text style={styles.detail}>Penjualan tunai {money(preview.cashSales)}  ·  Masuk {money(preview.cashIn)}  ·  Keluar {money(preview.cashOut)}  ·  Refund {money(preview.cashRefund)}</Text><Text style={styles.detail}>{preview.transactionCount} catatan belum ditutup</Text></> : <Text style={styles.detail}>Pilih cabang untuk melihat ringkasan.</Text>}
-      <TextInput accessibilityLabel="Kas aktual" placeholder="Kas aktual dihitung" keyboardType="decimal-pad" value={actualCash} onChangeText={setActualCash} style={styles.input} /><TextInput accessibilityLabel="Catatan penutupan" placeholder="Catatan (opsional)" value={note} onChangeText={setNote} style={styles.input} />
-      <Pressable accessibilityRole="button" disabled={saving || !preview?.transactionCount} onPress={() => void submitClosing()} style={[styles.primary, (saving || !preview?.transactionCount) && styles.dim]}>{saving ? <ActivityIndicator color="#fff" /> : <Text style={styles.primaryText}>Tutup kas</Text>}</Pressable>
-    </View> : null}
-    {canRead ? <><Text style={styles.sectionTitle}>Transaksi terbaru</Text>{transactions.length ? transactions.map((row) => <View key={row.id} style={styles.row}><View style={styles.rowText}><Text style={styles.rowTitle}>{row.category} · {row.type === 'CASH_IN' ? 'Masuk' : 'Keluar'}</Text><Text style={styles.detail}>{row.reason}</Text></View><Text style={styles.rowAmount}>{money(row.amount)}</Text></View>) : <Text style={styles.empty}>Belum ada transaksi kas.</Text>}
-      <Text style={styles.sectionTitle}>Penutupan terbaru</Text>{closings.length ? closings.map((row) => <View key={row.id} style={styles.row}><View style={styles.rowText}><Text style={styles.rowTitle}>{row.closingNumber} · {formatStatus(row.status ?? '-')}</Text><Text style={styles.detail}>Aktual {money(row.actualCash)} · Seharusnya {money(row.expectedCash)}</Text></View><Text style={[styles.rowAmount, { color: Number(row.difference) === 0 ? '#087f5b' : '#aa6b00' }]}>{money(row.difference)}</Text></View>) : <Text style={styles.empty}>Belum ada penutupan kas.</Text>}</> : null}
-  </ScrollView></View>;
+  const currentReason = reasonOptions[type].find((option) => option.label === reasonChoice);
+  const visibleTransactions = transactions.filter((row) => (typeFilter === 'ALL' || row.type === typeFilter) && `${row.reason ?? ''} ${row.category ?? ''} ${row.branch?.name ?? ''}`.toLowerCase().includes(search.trim().toLowerCase()));
+
+  const selectedReason = reasonOptions[type].find((option) => option.label === reasonChoice);
+  return <View style={styles.screen}>
+    <ScrollView contentContainerStyle={[styles.page, { paddingBottom: 18 }]} keyboardShouldPersistTaps="handled" refreshControl={!formVisible ? <RefreshControl refreshing={loading} onRefresh={() => setReload((n) => n + 1)} tintColor="#087f5b" /> : undefined}>
+      {!formVisible ? <>
+        <Text style={styles.subtitle}>Pencatatan kas masuk dan keluar.</Text>
+        {branches.length ? <View style={styles.card}><Text style={styles.label}>Cabang</Text><View style={styles.chips}>{branches.map((branch) => <Pressable key={branch.id} onPress={() => setBranchId(branch.id)} style={[styles.chip, branchId === branch.id && styles.chipActive]}><Text style={[styles.chipText, branchId === branch.id && styles.chipTextActive]}>{branch.name} ({branch.code})</Text></Pressable>)}</View></View> : null}
+        <View style={{ flexDirection: 'row', gap: 8, marginTop: 12 }}><View style={[styles.input, { flex: 1, flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 0 }]}><Search size={16} color="#71839a" /><TextInput accessibilityLabel="Cari kas masuk atau keluar" value={search} onChangeText={setSearch} placeholder="Cari kategori atau alasan..." placeholderTextColor="#8290a2" style={{ flex: 1, color: '#26372e', fontSize: 10 }} /></View><Pressable accessibilityRole="button" accessibilityLabel="Filter kas masuk" onPress={() => setTypeFilter((current) => current === 'CASH_IN' ? 'ALL' : 'CASH_IN')} style={[styles.chip, typeFilter === 'CASH_IN' && styles.chipActive]}><Text style={[styles.chipText, typeFilter === 'CASH_IN' && styles.chipTextActive]}>Masuk</Text></Pressable><Pressable accessibilityRole="button" accessibilityLabel="Filter kas keluar" onPress={() => setTypeFilter((current) => current === 'CASH_OUT' ? 'ALL' : 'CASH_OUT')} style={[styles.chip, typeFilter === 'CASH_OUT' && styles.chipActive]}><Text style={[styles.chipText, typeFilter === 'CASH_OUT' && styles.chipTextActive]}>Keluar</Text></Pressable></View>
+        <View style={styles.chips}><Pressable onPress={() => setTypeFilter('ALL')} style={[styles.chip, typeFilter === 'ALL' && styles.chipActive]}><Text style={[styles.chipText, typeFilter === 'ALL' && styles.chipTextActive]}>Semua</Text></Pressable><Pressable onPress={() => setTypeFilter('CASH_IN')} style={[styles.chip, typeFilter === 'CASH_IN' && styles.chipActive]}><Text style={[styles.chipText, typeFilter === 'CASH_IN' && styles.chipTextActive]}>Kas masuk</Text></Pressable><Pressable onPress={() => setTypeFilter('CASH_OUT')} style={[styles.chip, typeFilter === 'CASH_OUT' && styles.chipActive]}><Text style={[styles.chipText, typeFilter === 'CASH_OUT' && styles.chipTextActive]}>Kas keluar</Text></Pressable></View>
+        {error ? <View style={styles.error}><Text style={styles.errorText}>{error}</Text></View> : null}
+        {loading ? <ActivityIndicator style={styles.loader} color="#087f5b" size="large" /> : null}
+        {canRead ? visibleTransactions.map((row) => <Pressable key={row.id} accessibilityRole="button" onPress={() => void openDetail(row)} style={styles.transactionCard}><View style={[styles.transactionIcon, { backgroundColor: row.type === 'CASH_IN' ? '#e4f7ee' : '#fff0ed' }]}>{row.type === 'CASH_IN' ? <ArrowDownLeft size={18} color="#07885b" /> : <ArrowUpRight size={18} color="#c23a36" />}</View><View style={styles.rowText}><Text numberOfLines={1} style={styles.rowTitle}>{row.reason}</Text><Text style={styles.detail}>{row.type === 'CASH_IN' ? 'Kas masuk' : 'Kas keluar'} · {row.category}</Text><Text style={styles.transactionDate}>{formatDate(row.createdAt ?? '')}{row.branch?.name ? ` · ${row.branch.name}` : ''}</Text></View><Text style={[styles.rowAmount, { color: row.type === 'CASH_IN' ? '#087f5b' : '#c23a36' }]}>{row.type === 'CASH_IN' ? '+' : '-'}{money(row.amount)}</Text><ChevronRight size={16} color="#94a2af" /></Pressable>) : null}
+        {!loading && canRead && !visibleTransactions.length ? <Text style={styles.empty}>Belum ada transaksi kas.</Text> : null}
+        {!canRead && !canTransact ? <View style={styles.card}><Text style={styles.section}>Akses tidak tersedia</Text><Text style={styles.detail}>Akun ini belum memiliki izin untuk kas.</Text></View> : null}
+      </> : <>
+        <View style={styles.formHeader}><Pressable accessibilityRole="button" accessibilityLabel="Kembali ke daftar kas" onPress={() => { if (formStep) setFormStep((stepValue) => stepValue - 1); else { setFormVisible(false); setError(''); } }}><ArrowLeft size={21} color="#24364a" /></Pressable><Text style={styles.formTitle}>Catat kas masuk / keluar</Text></View>
+        <View style={styles.stepRow}>{['Detail', 'Lampiran', 'Konfirmasi'].map((label, index) => <Pressable key={label} onPress={() => index < formStep && setFormStep(index)} style={styles.stepItem}><View style={[styles.stepCircle, index <= formStep && styles.stepCircleActive]}>{index < formStep ? <Check size={12} color="#fff" /> : <Text style={[styles.stepNumber, index === formStep && styles.stepNumberActive]}>{index + 1}</Text>}</View><Text style={[styles.stepLabel, index === formStep && styles.stepLabelActive]}>{label}</Text></Pressable>)}</View>
+        {error ? <View style={styles.error}><Text style={styles.errorText}>{error}</Text></View> : null}
+        {formStep === 0 ? <View style={styles.card}><Text style={styles.section}>Jenis transaksi *</Text><View style={styles.chips}>{(['CASH_IN', 'CASH_OUT'] as const).map((value) => <Pressable key={value} onPress={() => { setType(value); setReasonChoice(''); }} style={[styles.typeChoice, type === value && (value === 'CASH_IN' ? styles.inChoiceActive : styles.outChoiceActive)]}><Text style={[styles.chipText, type === value && styles.whiteText]}>{value === 'CASH_IN' ? 'Kas masuk' : 'Kas keluar'}</Text></Pressable>)}</View>
+          {branches.length ? <><Text style={styles.label}>Cabang</Text><View style={styles.chips}>{branches.map((branch) => <Pressable key={branch.id} onPress={() => setBranchId(branch.id)} style={[styles.chip, branchId === branch.id && styles.chipActive]}><Text style={[styles.chipText, branchId === branch.id && styles.chipTextActive]}>{branch.name} ({branch.code})</Text></Pressable>)}</View></> : null}
+          <Text style={styles.label}>Jumlah *</Text><View style={styles.amountInput}><Text style={styles.currency}>Rp</Text><TextInput accessibilityLabel="Jumlah kas" keyboardType="decimal-pad" value={amount} onChangeText={(value) => setAmount(value.replace(',', '.'))} placeholder="0" placeholderTextColor="#8290a2" style={styles.amountTextInput} /></View>
+          <Text style={styles.label}>Alasan *</Text><View style={styles.reasonGrid}>{reasonOptions[type].map((option) => <Pressable key={option.label} accessibilityRole="checkbox" accessibilityState={{ checked: reasonChoice === option.label }} onPress={() => setReasonChoice(option.label)} style={[styles.reasonChoice, reasonChoice === option.label && styles.reasonChoiceActive]}><View style={[styles.checkbox, reasonChoice === option.label && styles.checkboxActive]}>{reasonChoice === option.label ? <Check size={12} color="#fff" /> : null}</View><Text style={styles.reasonText}>{option.label}</Text></Pressable>)}</View>
+          <Text style={styles.label}>Catatan (opsional)</Text><TextInput accessibilityLabel="Catatan transaksi kas" value={reason} onChangeText={setReason} placeholder="Tambahkan catatan..." placeholderTextColor="#8290a2" maxLength={200} multiline style={[styles.input, styles.multiline]} />
+        </View> : null}
+        {formStep === 1 ? <View style={styles.card}><View style={styles.attachmentHeading}><View><Text style={styles.section}>Foto bukti (opsional)</Text><Text style={styles.detail}>Maksimal 5 foto, 5 MB per file.</Text></View><Paperclip size={18} color="#667c92" /></View><View style={styles.evidenceGrid}>{evidence.map((asset, index) => <View key={`${asset.assetId ?? asset.uri}-${index}`} style={styles.evidenceWrap}><Image source={{ uri: asset.uri }} style={styles.evidenceImage} /><Pressable accessibilityRole="button" accessibilityLabel={`Hapus foto ${index + 1}`} onPress={() => setEvidence((current) => current.filter((_, itemIndex) => itemIndex !== index))} style={styles.removeEvidence}><X size={12} color="#fff" /></Pressable></View>)}</View>{evidence.length < 5 ? <View style={styles.evidenceActions}><Pressable accessibilityRole="button" onPress={() => void selectEvidence(true)} style={styles.evidenceButton}><Camera size={16} color="#087f5b" /><Text style={styles.evidenceButtonText}>Ambil foto</Text></Pressable><Pressable accessibilityRole="button" onPress={() => void selectEvidence(false)} style={styles.evidenceButton}><ImagePlus size={16} color="#087f5b" /><Text style={styles.evidenceButtonText}>Pilih galeri</Text></Pressable></View> : null}</View> : null}
+        {formStep === 2 ? <View style={styles.card}><Text style={styles.section}>Konfirmasi transaksi</Text><Text style={styles.detail}>Jenis transaksi</Text><Text style={styles.rowTitle}>{type === 'CASH_IN' ? 'Kas masuk' : 'Kas keluar'}</Text><View style={styles.detailRow}><Text style={styles.detailLabel}>Jumlah</Text><Text style={styles.detailValue}>{money(amount)}</Text></View><View style={styles.detailRow}><Text style={styles.detailLabel}>Alasan</Text><Text style={styles.detailValue}>{currentReason?.label ?? '—'}</Text></View>{reason.trim() ? <View style={styles.detailRow}><Text style={styles.detailLabel}>Catatan</Text><Text style={styles.detailValue}>{reason}</Text></View> : null}<View style={styles.detailRow}><Text style={styles.detailLabel}>Foto bukti</Text><Text style={styles.detailValue}>{evidence.length} foto</Text></View></View> : null}
+      </>}
+    </ScrollView>
+    {formVisible ? <View style={styles.formFooter}><Pressable accessibilityRole="button" disabled={saving} onPress={() => { if (formStep) setFormStep((value) => value - 1); else { setFormVisible(false); setError(''); } }} style={styles.secondaryButton}><Text style={styles.secondaryText}>{formStep ? 'Kembali' : 'Batal'}</Text></Pressable><Pressable accessibilityRole="button" disabled={saving || (formStep === 0 && (!branchId || !reasonChoice || !(Number(amount) > 0)))} onPress={() => { if (formStep < 2) { setError(''); setFormStep((value) => value + 1); } else void submitTransaction(); }} style={[styles.primary, styles.formPrimary, saving && styles.dim]}>{saving ? <ActivityIndicator color="#fff" /> : <Text style={styles.primaryText}>{formStep < 2 ? 'Lanjut' : 'Simpan transaksi'}</Text>}{formStep < 2 ? <ChevronRight size={16} color="#fff" /> : null}</Pressable></View> : <View style={styles.listFooter}>{canRead && user?.permissions.includes('cash_closing.create') ? <Pressable accessibilityRole="button" onPress={() => router.push('/(app)/cash-closing')} style={styles.closingLink}><Text style={styles.closingLinkText}>Cash closing</Text><ChevronRight size={16} color="#07885b" /></Pressable> : null}{canTransact ? <Pressable accessibilityRole="button" onPress={() => { setFormVisible(true); setFormStep(0); setError(''); }} style={styles.primary}><Plus size={17} color="#fff" /><Text style={styles.primaryText}>Catat kas masuk / keluar</Text></Pressable> : null}</View>}
+    <Modal visible={detailLoading || Boolean(selected)} transparent animationType="slide" onRequestClose={() => setSelected(null)}><View style={styles.modalBackdrop}><View style={styles.detailSheet}><View style={styles.detailHeader}><View><Text style={styles.section}>Detail transaksi</Text><Text style={styles.detail}>{selected?.createdAt ? formatDate(selected.createdAt) : ''}</Text></View><Pressable accessibilityRole="button" accessibilityLabel="Tutup detail" onPress={() => setSelected(null)} style={styles.closeButton}><X size={19} color="#526276" /></Pressable></View>{detailLoading ? <ActivityIndicator style={styles.loader} color="#087f5b" /> : selected ? <ScrollView style={styles.detailContent}><View style={[styles.detailBanner, { backgroundColor: selected.type === 'CASH_IN' ? '#e6f7ef' : '#fff0ed' }]}>{selected.type === 'CASH_IN' ? <ArrowDownLeft size={20} color="#07885b" /> : <ArrowUpRight size={20} color="#c23a36" />}<View style={styles.rowText}><Text style={styles.rowTitle}>{selected.type === 'CASH_IN' ? 'Kas masuk' : 'Kas keluar'}</Text><Text style={styles.detail}>{formatDate(selected.createdAt ?? '')}</Text></View><Text style={[styles.rowAmount, { color: selected.type === 'CASH_IN' ? '#07885b' : '#c23a36' }]}>{money(selected.amount)}</Text></View><View style={styles.detailRow}><Text style={styles.detailLabel}>Kategori</Text><Text style={styles.detailValue}>{selected.category ?? '—'}</Text></View><View style={styles.detailRow}><Text style={styles.detailLabel}>Alasan</Text><Text style={styles.detailValue}>{selected.reason ?? '—'}</Text></View><View style={styles.detailRow}><Text style={styles.detailLabel}>Cabang</Text><Text style={styles.detailValue}>{selected.branch?.name ?? '—'}</Text></View>{selected.note ? <><Text style={styles.sectionTitle}>Catatan</Text><Text style={styles.detail}>{selected.note}</Text></> : null}<Text style={styles.sectionTitle}>Foto bukti</Text><View style={styles.evidenceGrid}>{selected.attachments?.map((attachment) => <Image key={attachment.id} source={{ uri: attachment.url }} accessibilityLabel={attachment.fileName} style={styles.evidenceImage} />)}</View></ScrollView> : null}</View></View></Modal>
+  </View>;
 }
 
-const styles = StyleSheet.create({ screen: { flex: 1, backgroundColor: '#f5f7f6' }, page: { padding: 20, paddingTop: 18, paddingBottom: 36 }, back: { alignSelf: 'flex-start', marginBottom: 20 }, backText: { color: '#087f5b', fontSize: 13, fontWeight: '800' }, eyebrow: { color: '#087f5b', fontSize: 10, fontWeight: '800', letterSpacing: 1.2 }, title: { marginTop: 6, color: '#172820', fontSize: 25, fontWeight: '800' }, subtitle: { marginTop: 5, color: '#718078', fontSize: 12 }, card: { marginTop: 16, padding: 15, borderWidth: 1, borderColor: '#e6ece8', borderRadius: 16, backgroundColor: '#fff' }, section: { marginBottom: 11, color: '#26372e', fontSize: 15, fontWeight: '900' }, label: { marginBottom: 8, color: '#718078', fontSize: 11, fontWeight: '700' }, chips: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 }, chip: { paddingHorizontal: 12, paddingVertical: 9, borderRadius: 11, backgroundColor: '#f1f4f2' }, chipActive: { backgroundColor: '#e7f5ee' }, chipText: { color: '#68766e', fontSize: 11, fontWeight: '800' }, chipTextActive: { color: '#087f5b' }, input: { minHeight: 45, marginTop: 9, paddingHorizontal: 12, borderWidth: 1, borderColor: '#dce4df', borderRadius: 11, backgroundColor: '#fff', color: '#26372e', fontSize: 12 }, multiline: { minHeight: 72, paddingTop: 12, textAlignVertical: 'top' }, primary: { minHeight: 46, alignItems: 'center', justifyContent: 'center', marginTop: 11, borderRadius: 12, backgroundColor: '#087f5b' }, primaryText: { color: '#fff', fontSize: 12, fontWeight: '900' }, dim: { opacity: 0.55 }, expected: { color: '#087f5b', fontSize: 17, fontWeight: '900' }, detail: { marginTop: 5, color: '#79867f', fontSize: 10, lineHeight: 15 }, sectionTitle: { marginTop: 23, marginBottom: 8, color: '#26372e', fontSize: 15, fontWeight: '900' }, row: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginTop: 7, padding: 13, borderRadius: 13, backgroundColor: '#fff' }, rowText: { flex: 1, paddingRight: 8 }, rowTitle: { color: '#26372e', fontSize: 12, fontWeight: '800' }, rowAmount: { color: '#26372e', fontSize: 12, fontWeight: '900' }, empty: { padding: 16, borderRadius: 13, backgroundColor: '#fff', color: '#84918b', fontSize: 11 }, error: { marginTop: 13, padding: 12, borderRadius: 12, backgroundColor: '#fff1ef' }, errorText: { color: '#a3332a', fontSize: 11 }, loader: { padding: 14 } });
+const styles = StyleSheet.create({
+  screen: { flex: 1, backgroundColor: '#f5f7f6' },
+  page: { padding: 20, paddingTop: 18, paddingBottom: 36 },
+  back: { alignSelf: 'flex-start', marginBottom: 20 },
+  backText: { color: '#087f5b', fontSize: 13, fontWeight: '800' },
+  eyebrow: { color: '#087f5b', fontSize: 10, fontWeight: '800', letterSpacing: 1.2 },
+  title: { marginTop: 6, color: '#172820', fontSize: 25, fontWeight: '800' },
+  subtitle: { marginTop: 5, color: '#718078', fontSize: 12 },
+  card: { marginTop: 16, padding: 15, borderWidth: 1, borderColor: '#e6ece8', borderRadius: 16, backgroundColor: '#fff' },
+  section: { marginBottom: 11, color: '#26372e', fontSize: 15, fontWeight: '900' },
+  label: { marginBottom: 8, color: '#718078', fontSize: 11, fontWeight: '700' },
+  chips: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
+  chip: { paddingHorizontal: 12, paddingVertical: 9, borderRadius: 11, backgroundColor: '#f1f4f2' },
+  chipActive: { backgroundColor: '#e7f5ee' },
+  chipText: { color: '#68766e', fontSize: 11, fontWeight: '800' },
+  chipTextActive: { color: '#087f5b' },
+  input: { minHeight: 45, marginTop: 9, paddingHorizontal: 12, borderWidth: 1, borderColor: '#dce4df', borderRadius: 11, backgroundColor: '#fff', color: '#26372e', fontSize: 12 },
+  multiline: { minHeight: 72, paddingTop: 12, textAlignVertical: 'top' },
+  primary: { minHeight: 46, alignItems: 'center', justifyContent: 'center', marginTop: 11, borderRadius: 12, backgroundColor: '#087f5b' },
+  primaryText: { color: '#fff', fontSize: 12, fontWeight: '900' },
+  dim: { opacity: 0.55 },
+  expected: { color: '#087f5b', fontSize: 17, fontWeight: '900' },
+  detail: { marginTop: 5, color: '#79867f', fontSize: 10, lineHeight: 15 },
+  sectionTitle: { marginTop: 23, marginBottom: 8, color: '#26372e', fontSize: 15, fontWeight: '900' },
+  row: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginTop: 7, padding: 13, borderRadius: 13, backgroundColor: '#fff' },
+  rowText: { flex: 1, paddingRight: 8 },
+  rowTitle: { color: '#26372e', fontSize: 12, fontWeight: '800' },
+  rowAmount: { color: '#26372e', fontSize: 12, fontWeight: '900' },
+  empty: { padding: 16, borderRadius: 13, backgroundColor: '#fff', color: '#84918b', fontSize: 11 },
+  error: { marginTop: 13, padding: 12, borderRadius: 12, backgroundColor: '#fff1ef' },
+  errorText: { color: '#a3332a', fontSize: 11 },
+  loader: { padding: 14 },
+  formHeader: { minHeight: 48, flexDirection: 'row', alignItems: 'center', gap: 12, marginBottom: 12 },
+  formTitle: { color: '#26372e', fontSize: 15, fontWeight: '900' },
+  stepRow: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 8 },
+  stepItem: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 5 },
+  stepCircle: { width: 23, height: 23, alignItems: 'center', justifyContent: 'center', borderRadius: 12, backgroundColor: '#edf2f5' },
+  stepCircleActive: { backgroundColor: '#087f5b' },
+  stepNumber: { color: '#718078', fontSize: 9, fontWeight: '900' },
+  stepNumberActive: { color: '#fff' },
+  stepLabel: { color: '#8191a3', fontSize: 8 },
+  stepLabelActive: { color: '#087f5b', fontWeight: '900' },
+  typeChoice: { flex: 1, minHeight: 42, alignItems: 'center', justifyContent: 'center', borderRadius: 10, backgroundColor: '#f1f4f2' },
+  inChoiceActive: { backgroundColor: '#087f5b' },
+  outChoiceActive: { backgroundColor: '#c23a36' },
+  whiteText: { color: '#fff' },
+  amountInput: { minHeight: 48, flexDirection: 'row', alignItems: 'center', gap: 8, paddingHorizontal: 12, borderWidth: 1, borderColor: '#dce4df', borderRadius: 11, backgroundColor: '#fff' },
+  currency: { color: '#718078', fontSize: 12, fontWeight: '700' },
+  amountTextInput: { flex: 1, height: 44, color: '#26372e', fontSize: 14, fontWeight: '800' },
+  reasonGrid: { gap: 7 },
+  reasonChoice: { minHeight: 40, flexDirection: 'row', alignItems: 'center', gap: 9, paddingHorizontal: 10, borderWidth: 1, borderColor: '#e6ece8', borderRadius: 10, backgroundColor: '#fff' },
+  reasonChoiceActive: { borderColor: '#087f5b', backgroundColor: '#e7f5ee' },
+  checkbox: { width: 18, height: 18, alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: '#cbd7d0', borderRadius: 5 },
+  checkboxActive: { borderColor: '#087f5b', backgroundColor: '#087f5b' },
+  reasonText: { color: '#26372e', fontSize: 11, fontWeight: '700' },
+  attachmentHeading: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+  evidenceGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 8 },
+  evidenceWrap: { position: 'relative' },
+  evidenceImage: { width: 68, height: 68, borderRadius: 8, backgroundColor: '#edf2f4' },
+  removeEvidence: { position: 'absolute', top: -4, right: -4, width: 19, height: 19, alignItems: 'center', justifyContent: 'center', borderRadius: 10, backgroundColor: '#b8322d' },
+  evidenceActions: { flexDirection: 'row', gap: 7, marginTop: 8 },
+  evidenceButton: { flex: 1, minHeight: 48, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 7, borderWidth: 1, borderColor: '#dce5eb', borderStyle: 'dashed', borderRadius: 9, backgroundColor: '#fff' },
+  evidenceButtonText: { color: '#53677e', fontSize: 10, fontWeight: '800' },
+  formFooter: { flexDirection: 'row', gap: 8, paddingHorizontal: 14, paddingTop: 10, borderTopWidth: 1, borderTopColor: '#e8edf0', backgroundColor: '#fff' },
+  formPrimary: { flex: 1, flexDirection: 'row', gap: 7, marginTop: 0, paddingHorizontal: 10 },
+  secondaryButton: { minHeight: 46, minWidth: 82, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 10, borderWidth: 1, borderColor: '#dce5eb', borderRadius: 10, backgroundColor: '#fff' },
+  secondaryText: { color: '#53677e', fontSize: 10, fontWeight: '800' },
+  listFooter: { paddingHorizontal: 14, paddingTop: 9, paddingBottom: 12, borderTopWidth: 1, borderTopColor: '#e8edf0', backgroundColor: '#fff' },
+  closingLink: { minHeight: 38, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 3 },
+  closingLinkText: { color: '#087f5b', fontSize: 11, fontWeight: '800' },
+  transactionCard: { minHeight: 74, flexDirection: 'row', alignItems: 'center', gap: 9, marginTop: 8, padding: 11, borderWidth: 1, borderColor: '#e6ece8', borderRadius: 12, backgroundColor: '#fff' },
+  transactionIcon: { width: 36, height: 36, alignItems: 'center', justifyContent: 'center', borderRadius: 11 },
+  transactionDate: { marginTop: 4, color: '#87938c', fontSize: 9 },
+  modalBackdrop: { flex: 1, justifyContent: 'flex-end', backgroundColor: '#0a172966' },
+  detailSheet: { maxHeight: '86%', paddingHorizontal: 14, paddingTop: 14, paddingBottom: 24, borderTopLeftRadius: 16, borderTopRightRadius: 16, backgroundColor: '#f7f9fa' },
+  detailHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 },
+  closeButton: { width: 36, height: 36, alignItems: 'center', justifyContent: 'center', borderRadius: 10, backgroundColor: '#eaf0f3' },
+  detailContent: { flexGrow: 0 },
+  detailBanner: { minHeight: 62, flexDirection: 'row', alignItems: 'center', gap: 9, marginBottom: 8, padding: 10, borderRadius: 10 },
+  detailRow: { minHeight: 38, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 10, borderBottomWidth: 1, borderBottomColor: '#e8edf1' },
+  detailLabel: { color: '#71839a', fontSize: 10 },
+  detailValue: { maxWidth: '68%', color: '#25364a', fontSize: 10, fontWeight: '800', textAlign: 'right' },
+});

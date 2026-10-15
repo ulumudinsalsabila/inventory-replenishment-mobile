@@ -24,7 +24,7 @@ export default function TabsLayout() {
       tabBarActiveTintColor: '#07956f',
       tabBarInactiveTintColor: '#718078',
       tabBarLabelStyle: { fontSize: 11, fontWeight: '700' },
-      tabBarStyle: { height: 62 + insets.bottom, paddingTop: 7, paddingBottom: Math.max(insets.bottom, 8), borderTopColor: '#e4eae6', backgroundColor: '#fff' },
+      tabBarStyle: { height: 70 + insets.bottom, paddingTop: 7, paddingBottom: insets.bottom + 8, borderTopColor: '#e4eae6', backgroundColor: '#fff' },
     }}>
       <Tabs.Screen name="index" options={{ title: 'Dashboard', tabBarAccessibilityLabel: 'Dashboard', tabBarIcon: ({ color, size }) => <House color={color} size={size} /> }} />
       <Tabs.Screen name="orders" options={{ href: isEmployee || !canReadOrders ? null : undefined, title: 'Pesanan', tabBarAccessibilityLabel: 'Pesanan', tabBarIcon: ({ color, size }) => <ReceiptText color={color} size={size} /> }} />

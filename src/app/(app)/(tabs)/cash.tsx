@@ -1,3 +1,3 @@
-import CashScreen from '../cash';
+import CashClosingScreen from '../cash-closing';
 
-export default CashScreen;
+export default CashClosingScreen;

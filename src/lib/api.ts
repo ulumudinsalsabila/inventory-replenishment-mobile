@@ -23,6 +23,8 @@ export class ApiError extends Error {
   }
 }
 
+export type ApiFile = { bytes: ArrayBuffer; fileName: string; contentType: string };
+
 const apiBaseUrl = process.env.EXPO_PUBLIC_API_URL?.replace(/\/+$/, '');
 
 function getApiBaseUrl() {
@@ -82,4 +84,23 @@ export async function refreshAccessToken(refreshToken: string) {
 
 export function apiRequest<T>(path: string, accessToken: string, init?: RequestInit) {
   return request<T>(path, accessToken, init);
+}
+
+export async function apiFileRequest(path: string, accessToken: string): Promise<ApiFile> {
+  let response: Response;
+  try {
+    response = await expoFetch(`${getApiBaseUrl()}/${path.replace(/^\//, '')}`, {
+      headers: { Accept: 'application/pdf, application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', Authorization: `Bearer ${accessToken}` },
+    });
+  } catch {
+    throw new ApiError('Tidak dapat terhubung ke server. Periksa URL API dan koneksi jaringan.');
+  }
+  if (!response.ok) {
+    const payload = await response.json().catch(() => null);
+    const message = Array.isArray(payload?.message) ? payload.message.join(', ') : payload?.message ?? `Permintaan gagal (${response.status}).`;
+    throw new ApiError(String(message), response.status);
+  }
+  const disposition = response.headers.get('Content-Disposition');
+  const fileName = disposition?.match(/filename="?([^";]+)"?/i)?.[1] ?? 'download.pdf';
+  return { bytes: await response.arrayBuffer(), fileName, contentType: response.headers.get('Content-Type') ?? 'application/octet-stream' };
 }

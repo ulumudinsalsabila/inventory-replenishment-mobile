@@ -40,7 +40,7 @@ export default function StockMovementsScreen() {
   useEffect(() => {
     if (!canRead) { setLoading(false); return; }
     let active = true;
-    const params = new URLSearchParams({ page: '1', perPage: '30', sortBy: 'createdAt', sortOrder: 'desc' });
+    const params = new URLSearchParams({ page: '1', perPage: '20', sortBy: 'createdAt', sortOrder: 'desc' });
     if (search) params.set('search', search);
     void authorizedRequest<Page>(`stock-movements?${params.toString()}`)
       .then((result) => { if (active) { setRows(result.data); setError(''); } })

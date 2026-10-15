@@ -1,7 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { ActivityIndicator, Image, Modal, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
-import { File } from 'expo-file-system';
-import * as ImagePicker from 'expo-image-picker';
+import DateTimePicker from '@react-native-community/datetimepicker';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Banknote, Barcode, CalendarDays, Camera, Check, ChevronLeft, ChevronRight, FileText, ImagePlus, Minus, Package, Plus, Search, Store, Truck, X } from 'lucide-react-native';
 import { useAuth } from '../auth/auth-provider';
@@ -23,7 +22,8 @@ type Product = {
 };
 type PurchaseLine = { productId: string; unitId: string; lineType: 'PURCHASE' | 'BONUS'; orderedQty: string; unitPrice: string; discountAmount: string };
 type Page<T> = { data: T[] };
-type Props = { onCancel: () => void; onCreated: (purchaseId: string) => void };
+type ExistingDraft = { id: string; distributorId: string; warehouseId: string; purchaseDate: string; distributorInvoiceNumber: string | null; discountAmount: string | number; additionalCost: string | number; note: string | null; items: Array<{ productId: string; unitId: string | null; lineType: 'PURCHASE' | 'BONUS'; orderedQty: string; unitPrice: string; discountAmount: string; note?: string | null }> };
+type Props = { onCancel: () => void; onSaved: (purchaseId: string) => void; initialDraft?: ExistingDraft };
 type Selector = 'distributor' | 'warehouse' | null;
 
 const money = (value: string | number) => `Rp ${Number(value || 0).toLocaleString('id-ID', { maximumFractionDigits: 0 })}`;
@@ -31,10 +31,12 @@ const today = () => {
   const now = new Date();
   return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
 };
+const dateInputValue = (date: Date) => `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
 
-export function DistributorPurchaseWizard({ onCancel, onCreated }: Props) {
+export function DistributorPurchaseWizard({ onCancel, onSaved, initialDraft }: Props) {
   const { authorizedRequest } = useAuth();
   const insets = useSafeAreaInsets();
+  const initialPurchaseDate = initialDraft?.purchaseDate.slice(0, 10) ?? today();
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
@@ -42,39 +44,54 @@ export function DistributorPurchaseWizard({ onCancel, onCreated }: Props) {
   const [selector, setSelector] = useState<Selector>(null);
   const [distributors, setDistributors] = useState<NamedOption[]>([]);
   const [warehouses, setWarehouses] = useState<NamedOption[]>([]);
+  const [distributorError, setDistributorError] = useState('');
+  const [warehouseError, setWarehouseError] = useState('');
   const [products, setProducts] = useState<Product[]>([]);
-  const [distributorId, setDistributorId] = useState('');
-  const [warehouseId, setWarehouseId] = useState('');
-  const [purchaseDate, setPurchaseDate] = useState(today());
-  const [distributorInvoiceNumber, setDistributorInvoiceNumber] = useState('');
-  const [discountAmount, setDiscountAmount] = useState('0');
-  const [additionalCost, setAdditionalCost] = useState('0');
-  const [note, setNote] = useState('');
+  const [distributorId, setDistributorId] = useState(initialDraft?.distributorId ?? '');
+  const [warehouseId, setWarehouseId] = useState(initialDraft?.warehouseId ?? '');
+  const [purchaseDate, setPurchaseDate] = useState(initialPurchaseDate);
+  const [datePickerVisible, setDatePickerVisible] = useState(false);
+  const [datePickerValue, setDatePickerValue] = useState(new Date(`${initialPurchaseDate}T00:00:00`));
+  const [distributorInvoiceNumber, setDistributorInvoiceNumber] = useState(initialDraft?.distributorInvoiceNumber ?? '');
+  const [discountAmount, setDiscountAmount] = useState(String(initialDraft?.discountAmount ?? '0'));
+  const [additionalCost, setAdditionalCost] = useState(String(initialDraft?.additionalCost ?? '0'));
+  const [note, setNote] = useState(initialDraft?.note ?? '');
   const [lineType, setLineType] = useState<'PURCHASE' | 'BONUS'>('PURCHASE');
   const [productSearch, setProductSearch] = useState('');
-  const [lines, setLines] = useState<PurchaseLine[]>([]);
-  const [photos, setPhotos] = useState<ImagePicker.ImagePickerAsset[]>([]);
-  const [draftId, setDraftId] = useState<string | null>(null);
-  const [uploadedPhotoCount, setUploadedPhotoCount] = useState(0);
+  const [lines, setLines] = useState<PurchaseLine[]>(() => initialDraft?.items.map((item) => ({ productId: item.productId, unitId: item.unitId ?? '', lineType: item.lineType, orderedQty: item.orderedQty, unitPrice: item.unitPrice, discountAmount: item.discountAmount })) ?? []);
+  const [draftId] = useState<string | null>(initialDraft?.id ?? null);
   const [scannerVisible, setScannerVisible] = useState(false);
 
   useEffect(() => {
     let active = true;
-    void Promise.all([
+    void Promise.allSettled([
       authorizedRequest<Page<NamedOption>>('distributors?page=1&perPage=100&sortBy=name&sortOrder=asc'),
       authorizedRequest<Page<NamedOption>>('catalog/warehouses?page=1&perPage=100&sortBy=name&sortOrder=asc'),
       authorizedRequest<Page<Product>>('products?page=1&perPage=100&sortBy=name&sortOrder=asc&active=true'),
     ]).then(([distributorResult, warehouseResult, productResult]) => {
       if (!active) return;
-      const centralWarehouses = warehouseResult.data.filter((warehouse) => warehouse.type === 'CENTRAL');
-      setDistributors(distributorResult.data);
-      setWarehouses(centralWarehouses);
-      setProducts(productResult.data);
-      setDistributorId(distributorResult.data[0]?.id ?? '');
-      setWarehouseId(centralWarehouses[0]?.id ?? '');
-      setError('');
-    }).catch((cause: unknown) => {
-      if (active) setError(cause instanceof ApiError ? cause.message : 'Pilihan pembelian belum dapat dimuat.');
+      const errors: string[] = [];
+      if (distributorResult.status === 'fulfilled') {
+        const options = distributorResult.value.data;
+        setDistributors(options);
+        setDistributorId((current) => current || options[0]?.id || '');
+        setDistributorError(options.length ? '' : 'Belum ada distributor untuk bisnis ini.');
+      } else {
+        const message = distributorResult.reason instanceof ApiError ? distributorResult.reason.message : 'Data distributor belum dapat dimuat.';
+        setDistributors([]); setDistributorId(''); setDistributorError(message); errors.push(`Distributor: ${message}`);
+      }
+      if (warehouseResult.status === 'fulfilled') {
+        const centralWarehouses = warehouseResult.value.data.filter((warehouse) => warehouse.type === 'CENTRAL');
+        setWarehouses(centralWarehouses);
+        setWarehouseId((current) => current || centralWarehouses[0]?.id || '');
+        setWarehouseError(centralWarehouses.length ? '' : 'Gudang pusat tidak tersedia untuk akun ini.');
+      } else {
+        const message = warehouseResult.reason instanceof ApiError ? warehouseResult.reason.message : 'Data gudang belum dapat dimuat.';
+        setWarehouses([]); setWarehouseId(''); setWarehouseError(message); errors.push(`Gudang pusat: ${message}`);
+      }
+      if (productResult.status === 'fulfilled') setProducts(productResult.value.data);
+      else errors.push(`Produk: ${productResult.reason instanceof ApiError ? productResult.reason.message : 'Katalog produk belum dapat dimuat.'}`);
+      setError(errors.join(' '));
     }).finally(() => { if (active) setLoading(false); });
     return () => { active = false; };
   }, [authorizedRequest]);
@@ -133,21 +150,6 @@ export function DistributorPurchaseWizard({ onCancel, onCreated }: Props) {
     setLines((current) => current.filter((_, lineIndex) => lineIndex !== index));
   }
 
-  async function addPhotos(useCamera: boolean) {
-    if (photos.length >= 12) { setError('Maksimal 12 foto untuk satu pembelian.'); return; }
-    const permission = useCamera ? await ImagePicker.requestCameraPermissionsAsync() : await ImagePicker.requestMediaLibraryPermissionsAsync();
-    if (!permission.granted) { setError(useCamera ? 'Izin kamera diperlukan untuk mengambil foto.' : 'Izin galeri diperlukan untuk memilih foto.'); return; }
-    const result = useCamera
-      ? await ImagePicker.launchCameraAsync({ mediaTypes: ['images'], quality: 0.75 })
-      : await ImagePicker.launchImageLibraryAsync({ mediaTypes: ['images'], allowsMultipleSelection: true, selectionLimit: 12 - photos.length, quality: 0.75, preferredAssetRepresentationMode: ImagePicker.UIImagePickerPreferredAssetRepresentationMode.Compatible });
-    if (result.canceled || !result.assets.length) return;
-    if (result.assets.some((asset) => Number(asset.fileSize ?? 0) > 5 * 1024 * 1024)) { setError('Ukuran tiap foto maksimal 5 MB.'); return; }
-    const allowedTypes = ['image/jpeg', 'image/png', 'image/webp'];
-    if (result.assets.some((asset) => asset.mimeType && !allowedTypes.includes(asset.mimeType))) { setError('Foto harus berformat JPEG, PNG, atau WebP.'); return; }
-    setPhotos((current) => [...current, ...result.assets].slice(0, 12));
-    setError('');
-  }
-
   function validateStepOne() {
     if (!distributorId || !warehouseId) { setError('Pilih distributor dan gudang pusat.'); return false; }
     if (!/^\d{4}-\d{2}-\d{2}$/.test(purchaseDate) || Number.isNaN(new Date(`${purchaseDate}T00:00:00.000Z`).getTime())) { setError('Tanggal pembelian harus berformat YYYY-MM-DD.'); return false; }
@@ -163,11 +165,9 @@ export function DistributorPurchaseWizard({ onCancel, onCreated }: Props) {
     setStep((current) => Math.min(3, current + 1));
   }
 
-  async function confirmPurchase() {
-    if (!validateStepOne() || !lines.length || !photos.length) {
-      setError(!photos.length ? 'Tambahkan minimal satu foto invoice atau bukti pembelian.' : 'Lengkapi detail dan produk pembelian.');
-      return;
-    }
+  async function saveDraft() {
+    if (!validateStepOne()) return;
+    if (!lines.length || !lines.some((line) => line.lineType === 'PURCHASE')) { setError('Tambahkan minimal satu produk pembelian berbayar.'); return; }
     if (lines.some((line) => !Number(line.orderedQty) || Number(line.orderedQty) <= 0 || !Number.isFinite(Number(line.unitPrice)) || Number(line.unitPrice) < 0)) { setError('Jumlah dan harga produk harus lebih dari nol.'); return; }
     if (lines.some((line) => line.lineType === 'BONUS' && (Number(line.unitPrice) !== 0 || Number(line.discountAmount) !== 0))) { setError('Produk bonus harus memiliki harga dan diskon Rp 0.'); return; }
     if (lines.some((line) => Number(line.discountAmount) > Number(line.orderedQty) * Number(line.unitPrice))) { setError('Diskon item tidak boleh melebihi harga item.'); return; }
@@ -175,32 +175,16 @@ export function DistributorPurchaseWizard({ onCancel, onCreated }: Props) {
 
     setSaving(true); setError('');
     try {
-      let purchaseId = draftId;
-      if (!purchaseId) {
-        const draft = await authorizedRequest<{ id: string }>('distributor-purchases', { method: 'POST', body: JSON.stringify({
-          distributorId, warehouseId, purchaseDate: new Date(`${purchaseDate}T00:00:00.000Z`).toISOString(),
-          distributorInvoiceNumber: distributorInvoiceNumber.trim() || undefined, note: note.trim() || undefined,
-          discountAmount: String(Number(discountAmount) || 0), additionalCost: String(Number(additionalCost) || 0),
-          items: lines.map((line) => ({ ...line, discountAmount: line.lineType === 'BONUS' ? '0' : String(Number(line.discountAmount) || 0) })),
-        }) });
-        purchaseId = draft.id;
-        setDraftId(draft.id);
-      }
-      for (let start = uploadedPhotoCount; start < photos.length; start += 8) {
-        const batch = photos.slice(start, start + 8);
-        const form = new FormData();
-        batch.forEach((asset, index) => {
-          const name = asset.fileName ?? asset.uri.split('/').pop() ?? `invoice-${start + index}.jpg`;
-          if (Platform.OS === 'web') {
-            if (!asset.file) throw new Error('File foto dari browser tidak tersedia.');
-            form.append('images', asset.file, name);
-          } else form.append('images', new File(asset.uri), name);
-        });
-        await authorizedRequest(`distributor-purchases/${purchaseId}/attachments`, { method: 'POST', body: form });
-        setUploadedPhotoCount(start + batch.length);
-      }
-      await authorizedRequest(`distributor-purchases/${purchaseId}/submit`, { method: 'POST' });
-      onCreated(purchaseId);
+      const body = JSON.stringify({
+        distributorId, warehouseId, purchaseDate: new Date(`${purchaseDate}T00:00:00.000Z`).toISOString(),
+        distributorInvoiceNumber: distributorInvoiceNumber.trim() || undefined, note: note.trim() || undefined,
+        discountAmount: String(Number(discountAmount) || 0), additionalCost: String(Number(additionalCost) || 0),
+        items: lines.map((line) => ({ ...line, discountAmount: line.lineType === 'BONUS' ? '0' : String(Number(line.discountAmount) || 0) })),
+      });
+      const saved = draftId
+        ? await authorizedRequest<{ id: string }>(`distributor-purchases/${draftId}`, { method: 'PATCH', body })
+        : await authorizedRequest<{ id: string }>('distributor-purchases', { method: 'POST', body });
+      onSaved(saved.id);
     } catch (cause) {
       setError(cause instanceof ApiError ? cause.message : 'Pembelian belum dapat dikonfirmasi. Draft tersimpan agar bisa dicoba kembali.');
     } finally { setSaving(false); }
@@ -209,14 +193,14 @@ export function DistributorPurchaseWizard({ onCancel, onCreated }: Props) {
   const totalForLine = (line: PurchaseLine) => line.lineType === 'BONUS' ? 0 : Math.max(0, Number(line.orderedQty) * Number(line.unitPrice) - Number(line.discountAmount || 0));
 
   return <View style={[styles.screen, { paddingTop: insets.top + 8 }]}>
-    <View style={styles.header}><Pressable accessibilityRole="button" accessibilityLabel="Kembali" onPress={step === 1 ? onCancel : () => setStep((current) => Math.max(1, current - 1))} style={styles.headerBack}><ChevronLeft size={21} color="#172338" /></Pressable><Text style={styles.headerTitle}>Buat pembelian</Text><View style={styles.headerSpacer} /></View>
+    <View style={styles.header}><Pressable accessibilityRole="button" accessibilityLabel="Kembali" onPress={step === 1 ? onCancel : () => setStep((current) => Math.max(1, current - 1))} style={styles.headerBack}><ChevronLeft size={21} color="#172338" /></Pressable><Text style={styles.headerTitle}>{initialDraft ? 'Edit draft pembelian' : 'Buat pembelian'}</Text><View style={styles.headerSpacer} /></View>
     <View style={styles.stepper}>{(['Detail', 'Produk', 'Konfirmasi'] as const).map((label, index) => <View key={label} style={styles.stepWrap}><View style={[styles.stepCircle, step >= index + 1 && styles.stepCircleActive]}>{step > index + 1 ? <Check size={14} color="#fff" /> : <Text style={[styles.stepNumber, step >= index + 1 && styles.stepNumberActive]}>{index + 1}</Text>}</View><Text style={[styles.stepLabel, step === index + 1 && styles.stepLabelCurrent]}>{label}</Text>{index < 2 ? <View style={[styles.stepLine, step > index + 1 && styles.stepLineActive]} /> : null}</View>)}</View>
     {loading ? <ActivityIndicator style={styles.loading} color="#07885b" /> : <>
       <ScrollView style={styles.body} contentContainerStyle={styles.bodyContent} keyboardShouldPersistTaps="handled">
         {step === 1 ? <>
           <Pressable accessibilityRole="button" onPress={() => setSelector('distributor')} style={styles.fieldCard}><View style={styles.fieldIcon}><Store size={18} color="#57718a" /></View><View style={styles.fieldContent}><Text style={styles.fieldLabel}>Distributor <Text style={styles.required}>*</Text></Text><Text style={styles.fieldValue}>{selectedDistributor?.name ?? 'Pilih distributor'}</Text></View><ChevronRight size={17} color="#71839a" /></Pressable>
-          <Pressable accessibilityRole="button" onPress={() => setSelector('warehouse')} style={styles.fieldCard}><View style={styles.fieldIcon}><Package size={18} color="#57718a" /></View><View style={styles.fieldContent}><Text style={styles.fieldLabel}>Gudang tujuan <Text style={styles.required}>*</Text></Text><Text style={styles.fieldValue}>{selectedWarehouse?.name ?? 'Pilih gudang pusat'}</Text></View><ChevronRight size={17} color="#71839a" /></Pressable>
-          <View style={styles.inputCard}><View style={styles.fieldIcon}><CalendarDays size={18} color="#57718a" /></View><View style={styles.fieldContent}><Text style={styles.fieldLabel}>Tanggal pembelian <Text style={styles.required}>*</Text></Text><TextInput accessibilityLabel="Tanggal pembelian" value={purchaseDate} onChangeText={setPurchaseDate} placeholder="YYYY-MM-DD" style={styles.fieldInput} /></View></View>
+          <Pressable accessibilityRole="button" onPress={() => setSelector('warehouse')} style={styles.fieldCard}><View style={styles.fieldIcon}><Package size={18} color="#57718a" /></View><View style={styles.fieldContent}><Text style={styles.fieldLabel}>Gudang pusat <Text style={styles.required}>*</Text></Text><Text style={styles.fieldValue}>{selectedWarehouse?.name ?? 'Pilih gudang pusat'}</Text></View><ChevronRight size={17} color="#71839a" /></Pressable>
+          <Pressable accessibilityRole="button" accessibilityLabel={`Tanggal pembelian ${purchaseDate}`} onPress={() => { setDatePickerValue(new Date(`${purchaseDate}T00:00:00`)); setDatePickerVisible(true); }} style={styles.inputCard}><View style={styles.fieldIcon}><CalendarDays size={18} color="#57718a" /></View><View style={styles.fieldContent}><Text style={styles.fieldLabel}>Tanggal pembelian <Text style={styles.required}>*</Text></Text><Text style={styles.fieldInput}>{purchaseDate}</Text></View><ChevronRight size={17} color="#71839a" /></Pressable>
           <View style={styles.inputCard}><View style={styles.fieldIcon}><FileText size={18} color="#57718a" /></View><View style={styles.fieldContent}><Text style={styles.fieldLabel}>Invoice distributor</Text><TextInput accessibilityLabel="Invoice distributor" value={distributorInvoiceNumber} onChangeText={setDistributorInvoiceNumber} placeholder="Masukkan nomor invoice" style={styles.fieldInput} /></View></View>
           <View style={styles.amountCard}><PercentIcon /><View style={styles.fieldContent}><Text style={styles.fieldLabel}>Diskon transaksi</Text><TextInput accessibilityLabel="Diskon transaksi" value={discountAmount} onChangeText={setDiscountAmount} keyboardType="decimal-pad" placeholder="0" style={styles.fieldInput} /></View></View>
           <View style={styles.amountCard}><Plus size={19} color="#71839a" /><View style={styles.fieldContent}><Text style={styles.fieldLabel}>Biaya tambahan</Text><TextInput accessibilityLabel="Biaya tambahan" value={additionalCost} onChangeText={setAdditionalCost} keyboardType="decimal-pad" placeholder="0" style={styles.fieldInput} /></View></View>
@@ -239,7 +223,7 @@ export function DistributorPurchaseWizard({ onCancel, onCreated }: Props) {
             return <View key={`${line.productId}-${line.lineType}`} style={styles.cartLine}>
               <View style={styles.cartLineHeader}><View style={styles.fieldContent}><Text numberOfLines={1} style={styles.productName}>{product.name}</Text><Text style={styles.meta}>{product.sku} · {line.lineType === 'BONUS' ? 'Bonus' : 'Pembelian'}</Text></View><Pressable accessibilityRole="button" accessibilityLabel={`Hapus ${product.name}`} onPress={() => setLines((current) => current.filter((_, lineIndex) => lineIndex !== index))}><X size={17} color="#d33a36" /></Pressable></View>
               <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.unitOptions}>{units.map((unit) => <Pressable key={unit.unitId} onPress={() => chooseLineUnit(index, product, unit.unitId)} style={[styles.unitChip, line.unitId === unit.unitId && styles.unitChipActive]}><Text style={[styles.unitText, line.unitId === unit.unitId && styles.unitTextActive]}>{unit.unit.code}</Text></Pressable>)}</ScrollView>
-              <View style={styles.productInputs}><View style={styles.productInputGroup}><Text style={styles.inputLabel}>Jumlah</Text><TextInput accessibilityLabel={`Jumlah ${product.name}`} keyboardType="decimal-pad" value={line.orderedQty} onChangeText={(value) => updateLine(index, { orderedQty: value.replace(',', '.') })} style={styles.smallInput} /></View><View style={styles.productInputGroup}><Text style={styles.inputLabel}>Harga modal</Text><TextInput accessibilityLabel={`Harga modal ${product.name}`} editable={line.lineType !== 'BONUS'} keyboardType="decimal-pad" value={line.unitPrice} onChangeText={(value) => updateLine(index, { unitPrice: value.replace(',', '.') })} style={[styles.smallInput, line.lineType === 'BONUS' && styles.readOnlyInput]} /></View></View>
+              <View style={styles.productInputs}><View style={styles.productInputGroup}><Text style={styles.inputLabel}>Jumlah</Text><TextInput accessibilityLabel={`Jumlah ${product.name}`} keyboardType="decimal-pad" value={line.orderedQty} onChangeText={(value) => updateLine(index, { orderedQty: value.replace(',', '.') })} style={styles.smallInput} /></View><View style={styles.productInputGroup}><Text style={styles.inputLabel}>Harga modal</Text><TextInput accessibilityLabel={`Harga modal ${product.name}`} editable={false} value={line.unitPrice} style={[styles.smallInput, styles.readOnlyInput]} /></View><View style={styles.productInputGroup}><Text style={styles.inputLabel}>Diskon item</Text><TextInput accessibilityLabel={`Diskon item ${product.name}`} editable={line.lineType !== 'BONUS'} keyboardType="decimal-pad" value={line.discountAmount} onChangeText={(value) => updateLine(index, { discountAmount: value.replace(',', '.') })} style={[styles.smallInput, line.lineType === 'BONUS' && styles.readOnlyInput]} /></View></View>
               <View style={styles.lineTotal}><Text style={styles.meta}>Subtotal item</Text><Text style={styles.lineAmount}>{money(lineSubtotal(line))}</Text></View>
             </View>;
           })}</> : null}
@@ -247,24 +231,26 @@ export function DistributorPurchaseWizard({ onCancel, onCreated }: Props) {
         </> : null}
 
         {step === 3 ? <>
-          <View style={styles.confirmCard}><Text style={styles.sectionHeading}>Konfirmasi pembelian</Text><SummaryRow label="Distributor" value={selectedDistributor?.name ?? '—'} /><SummaryRow label="Gudang tujuan" value={selectedWarehouse?.name ?? '—'} /><SummaryRow label="Tanggal" value={purchaseDate} />{distributorInvoiceNumber.trim() ? <SummaryRow label="Invoice distributor" value={distributorInvoiceNumber.trim()} /> : null}</View>
+          <View style={styles.confirmCard}><Text style={styles.sectionHeading}>Konfirmasi pembelian</Text><SummaryRow label="Distributor" value={selectedDistributor?.name ?? '—'} /><SummaryRow label="Gudang pusat" value={selectedWarehouse?.name ?? '—'} /><SummaryRow label="Tanggal" value={purchaseDate} />{distributorInvoiceNumber.trim() ? <SummaryRow label="Invoice distributor" value={distributorInvoiceNumber.trim()} /> : null}</View>
           <View style={styles.confirmCard}><Text style={styles.sectionHeading}>Daftar produk ({lines.length})</Text>{lines.map((line) => {
             const product = products.find((entry) => entry.id === line.productId)!;
             const unit = unitOptions(product).find((entry) => entry.unitId === line.unitId);
             return <View key={`${line.productId}-${line.lineType}`} style={styles.confirmLine}><View style={styles.fieldContent}><Text style={styles.productName}>{product.name}{line.lineType === 'BONUS' ? ' (Bonus)' : ''}</Text><Text style={styles.meta}>{line.orderedQty} {unit?.unit.code ?? product.unit.code} × {money(line.unitPrice)}</Text></View><Text style={styles.lineAmount}>{money(lineSubtotal(line))}</Text></View>;
           })}<SummaryRow label="Subtotal" value={money(subtotal)} /><SummaryRow label="Diskon transaksi" value={`- ${money(headerDiscount)}`} /><SummaryRow label="Biaya tambahan" value={money(Number(additionalCost) || 0)} /><View style={styles.totalRow}><Text style={styles.totalLabel}>Total</Text><Text style={styles.totalValue}>{money(grandTotal)}</Text></View></View>
-          <View style={styles.confirmCard}><Text style={styles.sectionHeading}>Foto invoice / bukti pembelian <Text style={styles.required}>*</Text></Text><Text style={styles.meta}>Minimal 1, maksimal 12 foto; tiap file maksimal 5 MB.</Text><View style={styles.photoActions}><Pressable accessibilityRole="button" disabled={photos.length >= 12 || saving} onPress={() => void addPhotos(true)} style={styles.photoButton}><Camera size={17} color="#07885b" /><Text style={styles.photoButtonText}>Ambil foto</Text></Pressable><Pressable accessibilityRole="button" disabled={photos.length >= 12 || saving} onPress={() => void addPhotos(false)} style={styles.photoButton}><ImagePlus size={17} color="#07885b" /><Text style={styles.photoButtonText}>Pilih galeri</Text></Pressable></View>{photos.length ? <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.photoList}>{photos.map((photo, index) => <View key={`${photo.uri}-${index}`} style={styles.photoWrap}><Image source={{ uri: photo.uri }} style={styles.photo} />{uploadedPhotoCount === 0 ? <Pressable accessibilityRole="button" accessibilityLabel={`Hapus foto ${index + 1}`} onPress={() => setPhotos((current) => current.filter((_, photoIndex) => photoIndex !== index))} style={styles.removePhoto}><X size={13} color="#fff" /></Pressable> : null}</View>)}</ScrollView> : <Text style={styles.noPhoto}>Belum ada bukti dipilih.</Text>}</View>
+          <View style={styles.confirmCard}><Text style={styles.sectionHeading}>Langkah berikutnya</Text><Text style={styles.meta}>Simpan draft terlebih dahulu. Tambahkan foto invoice dari detail pembelian sebelum submit.</Text></View>
         </> : null}
         {error ? <Text accessibilityRole="alert" style={styles.error}>{error}</Text> : null}
       </ScrollView>
-      <View style={[styles.footer, { paddingBottom: Math.max(12, insets.bottom + 7) }]}>
+      <View style={[styles.footer, { paddingBottom: Math.max(12, insets.bottom + 8) }]}>
         {step > 1 ? <Pressable accessibilityRole="button" disabled={saving} onPress={() => setStep((current) => Math.max(1, current - 1))} style={styles.backButton}><Text style={styles.backButtonText}>Kembali</Text></Pressable> : <Pressable accessibilityRole="button" onPress={onCancel} style={styles.backButton}><Text style={styles.backButtonText}>Batal</Text></Pressable>}
-        {step < 3 ? <Pressable accessibilityRole="button" disabled={loading} onPress={nextStep} style={[styles.nextButton, loading && styles.disabled]}><Text style={styles.nextButtonText}>{step === 1 ? 'Lanjut ke produk' : 'Lanjut ke konfirmasi'}</Text><ChevronRight size={17} color="#fff" /></Pressable> : <Pressable accessibilityRole="button" disabled={saving} onPress={() => void confirmPurchase()} style={[styles.nextButton, saving && styles.disabled]}>{saving ? <ActivityIndicator color="#fff" /> : <><Check size={17} color="#fff" /><Text style={styles.nextButtonText}>Konfirmasi pembelian</Text></>}</Pressable>}
+        {step < 3 ? <Pressable accessibilityRole="button" disabled={loading} onPress={nextStep} style={[styles.nextButton, loading && styles.disabled]}><Text style={styles.nextButtonText}>{step === 1 ? 'Lanjut ke produk' : 'Lanjut ke konfirmasi'}</Text><ChevronRight size={17} color="#fff" /></Pressable> : <Pressable accessibilityRole="button" disabled={saving} onPress={() => void saveDraft()} style={[styles.nextButton, saving && styles.disabled]}>{saving ? <ActivityIndicator color="#fff" /> : <><Check size={17} color="#fff" /><Text style={styles.nextButtonText}>Simpan draft</Text></>}</Pressable>}
       </View>
     </>}
     <Modal visible={selector !== null} transparent animationType="slide" onRequestClose={() => setSelector(null)}>
-      <View style={styles.backdrop}><View style={styles.selectorSheet}><View style={styles.selectorHeader}><Text style={styles.selectorTitle}>{selectionTitle}</Text><Pressable accessibilityRole="button" onPress={() => setSelector(null)} style={styles.closeButton}><X size={19} color="#526276" /></Pressable></View><ScrollView>{selectionItems.map((option) => <Pressable key={option.id} accessibilityRole="button" onPress={() => { if (selector === 'distributor') setDistributorId(option.id); else setWarehouseId(option.id); setSelector(null); }} style={styles.selectorRow}><Text style={styles.selectorOption}>{option.name}</Text><ChevronRight size={17} color="#71839a" /></Pressable>)}</ScrollView></View></View>
+      <View style={styles.backdrop}><View style={[styles.selectorSheet, { paddingBottom: Math.max(insets.bottom + 16, 28) }]}><View style={styles.selectorHeader}><Text style={styles.selectorTitle}>{selectionTitle}</Text><Pressable accessibilityRole="button" onPress={() => setSelector(null)} style={styles.closeButton}><X size={19} color="#526276" /></Pressable></View><ScrollView contentContainerStyle={styles.selectorList}>{selectionItems.length ? selectionItems.map((option) => <Pressable key={option.id} accessibilityRole="button" onPress={() => { if (selector === 'distributor') setDistributorId(option.id); else setWarehouseId(option.id); setSelector(null); }} style={styles.selectorRow}><Text style={styles.selectorOption}>{option.name}</Text><ChevronRight size={17} color="#71839a" /></Pressable>) : <Text style={styles.selectorEmpty}>{selector === 'distributor' ? distributorError || 'Distributor belum tersedia.' : warehouseError || 'Gudang pusat belum tersedia.'}</Text>}</ScrollView></View></View>
     </Modal>
+    {Platform.OS === 'android' && datePickerVisible ? <DateTimePicker value={datePickerValue} mode="date" display="default" onChange={(event, date) => { setDatePickerVisible(false); if (event.type === 'set' && date) { setDatePickerValue(date); setPurchaseDate(dateInputValue(date)); } }} /> : null}
+    {Platform.OS === 'ios' ? <Modal visible={datePickerVisible} transparent animationType="slide" onRequestClose={() => setDatePickerVisible(false)}><View style={styles.backdrop}><View style={[styles.datePickerSheet, { paddingBottom: Math.max(insets.bottom + 12, 20) }]}><View style={styles.datePickerHeader}><Pressable accessibilityRole="button" onPress={() => setDatePickerVisible(false)}><Text style={styles.datePickerAction}>Batal</Text></Pressable><Text style={styles.datePickerTitle}>Tanggal pembelian</Text><Pressable accessibilityRole="button" onPress={() => { setPurchaseDate(dateInputValue(datePickerValue)); setDatePickerVisible(false); }}><Text style={styles.datePickerAction}>Pilih</Text></Pressable></View><DateTimePicker value={datePickerValue} mode="date" display="spinner" onChange={(_, date) => { if (date) setDatePickerValue(date); }} /></View></View></Modal> : null}
     <BarcodeScanner visible={scannerVisible} onClose={() => setScannerVisible(false)} onScanned={scanProduct} />
   </View>;
 }
@@ -292,5 +278,5 @@ const styles = StyleSheet.create({
   cartLine: { padding: 10, borderWidth: 1, borderColor: '#e6ecef', borderRadius: 11, backgroundColor: '#fff' }, cartLineHeader: { flexDirection: 'row', alignItems: 'center', gap: 8 }, unitOptions: { gap: 5, paddingVertical: 8 }, unitChip: { paddingHorizontal: 9, paddingVertical: 5, borderRadius: 8, backgroundColor: '#edf2f5' }, unitChipActive: { backgroundColor: '#d9f3e8' }, unitText: { color: '#61748a', fontSize: 8, fontWeight: '800' }, unitTextActive: { color: '#087c53' }, productInputs: { flexDirection: 'row', gap: 6 }, productInputGroup: { flex: 1 }, inputLabel: { marginBottom: 4, color: '#77879a', fontSize: 7 }, smallInput: { height: 34, paddingHorizontal: 7, borderWidth: 1, borderColor: '#e1e8ec', borderRadius: 8, color: '#24364a', fontSize: 9 }, readOnlyInput: { color: '#8190a0', backgroundColor: '#f4f6f7' }, lineTotal: { flexDirection: 'row', justifyContent: 'space-between', marginTop: 8 }, lineAmount: { color: '#07885b', fontSize: 9, fontWeight: '900' }, summaryCard: { padding: 11, borderRadius: 11, backgroundColor: '#fff' }, summaryRow: { minHeight: 25, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 9 }, summaryLabel: { color: '#708198', fontSize: 9 }, summaryValue: { color: '#24364a', fontSize: 9, fontWeight: '700' }, totalRow: { flexDirection: 'row', justifyContent: 'space-between', marginTop: 5, paddingTop: 8, borderTopWidth: 1, borderTopColor: '#edf1f3' }, totalLabel: { color: '#26384a', fontSize: 11, fontWeight: '900' }, totalValue: { color: '#07885b', fontSize: 13, fontWeight: '900' },
   confirmCard: { padding: 11, borderRadius: 11, backgroundColor: '#fff' }, confirmLine: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingVertical: 7, borderBottomWidth: 1, borderBottomColor: '#f0f2f4' }, photoActions: { flexDirection: 'row', gap: 7, marginTop: 10 }, photoButton: { flex: 1, minHeight: 37, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, borderRadius: 9, backgroundColor: '#e5f7ee' }, photoButtonText: { color: '#087c53', fontSize: 8, fontWeight: '900' }, photoList: { gap: 7, paddingTop: 9 }, photoWrap: { position: 'relative' }, photo: { width: 62, height: 62, borderRadius: 9, backgroundColor: '#edf2f4' }, removePhoto: { position: 'absolute', top: 3, right: 3, width: 19, height: 19, alignItems: 'center', justifyContent: 'center', borderRadius: 10, backgroundColor: '#d3433e' }, noPhoto: { marginTop: 8, color: '#a53631', fontSize: 8 },
   error: { padding: 9, borderRadius: 9, color: '#a3332a', backgroundColor: '#fff1ef', fontSize: 9 }, footer: { flexDirection: 'row', gap: 8, paddingHorizontal: 12, paddingTop: 9, borderTopWidth: 1, borderTopColor: '#e7ecef', backgroundColor: '#fff' }, backButton: { minHeight: 43, minWidth: 76, alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: '#e2e9ed', borderRadius: 10, backgroundColor: '#fff' }, backButtonText: { color: '#53677e', fontSize: 9, fontWeight: '800' }, nextButton: { flex: 1, minHeight: 43, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 7, borderRadius: 10, backgroundColor: '#07885b' }, nextButtonText: { color: '#fff', fontSize: 9, fontWeight: '900' }, disabled: { opacity: 0.5 },
-  backdrop: { flex: 1, justifyContent: 'flex-end', backgroundColor: '#0a172966' }, selectorSheet: { maxHeight: '75%', paddingHorizontal: 14, paddingTop: 14, paddingBottom: 20, borderTopLeftRadius: 18, borderTopRightRadius: 18, backgroundColor: '#fff' }, selectorHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }, selectorTitle: { color: '#172338', fontSize: 13, fontWeight: '900' }, closeButton: { width: 32, height: 32, alignItems: 'center', justifyContent: 'center', borderRadius: 9, backgroundColor: '#eff3f5' }, selectorRow: { minHeight: 48, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', borderBottomWidth: 1, borderBottomColor: '#edf1f3' }, selectorOption: { color: '#293b4f', fontSize: 10, fontWeight: '700' },
+  backdrop: { flex: 1, justifyContent: 'flex-end', backgroundColor: '#0a172966' }, selectorSheet: { maxHeight: '75%', paddingHorizontal: 14, paddingTop: 14, paddingBottom: 20, borderTopLeftRadius: 18, borderTopRightRadius: 18, backgroundColor: '#fff' }, selectorHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }, selectorTitle: { color: '#172338', fontSize: 13, fontWeight: '900' }, closeButton: { width: 32, height: 32, alignItems: 'center', justifyContent: 'center', borderRadius: 9, backgroundColor: '#eff3f5' }, selectorList: { paddingBottom: 4 }, selectorRow: { minHeight: 48, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', borderBottomWidth: 1, borderBottomColor: '#edf1f3' }, selectorOption: { color: '#293b4f', fontSize: 10, fontWeight: '700' }, selectorEmpty: { paddingVertical: 16, color: '#7b8b9b', fontSize: 10, lineHeight: 15, textAlign: 'center' }, datePickerSheet: { paddingHorizontal: 16, paddingTop: 14, borderTopLeftRadius: 18, borderTopRightRadius: 18, backgroundColor: '#fff' }, datePickerHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', minHeight: 38 }, datePickerTitle: { color: '#26384a', fontSize: 11, fontWeight: '900' }, datePickerAction: { color: '#07885b', fontSize: 10, fontWeight: '900' },
 });

@@ -1,6 +1,6 @@
 import * as SecureStore from 'expo-secure-store';
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
-import { ApiError, apiRequest, currentUserRequest, loginRequest, refreshAccessToken, type ApiUser } from '../lib/api';
+import { ApiError, apiFileRequest, apiRequest, currentUserRequest, loginRequest, refreshAccessToken, type ApiFile, type ApiUser } from '../lib/api';
 
 const ACCESS_TOKEN_KEY = 'inventory.access-token';
 const REFRESH_TOKEN_KEY = 'inventory.refresh-token';
@@ -13,6 +13,7 @@ type AuthState = {
   signIn: (email: string, password: string) => Promise<void>;
   signOut: () => Promise<void>;
   authorizedRequest: <T>(path: string, init?: RequestInit) => Promise<T>;
+  authorizedFileRequest: (path: string) => Promise<ApiFile>;
 };
 
 const AuthContext = createContext<AuthState | null>(null);
@@ -139,7 +140,43 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
   }, []);
 
-  const value = useMemo(() => ({ user, accessToken, loading, signIn, signOut, authorizedRequest }), [user, accessToken, loading, signIn, signOut, authorizedRequest]);
+  const authorizedFileRequest = useCallback(async (path: string) => {
+    const requestToken = accessTokenRef.current;
+    if (!requestToken) throw new ApiError('Sesi login sudah berakhir. Silakan masuk kembali.', 401);
+    try {
+      return await apiFileRequest(path, requestToken);
+    } catch (error) {
+      if (!(error instanceof ApiError) || error.status !== 401) throw error;
+      const latestToken = accessTokenRef.current;
+      if (latestToken && latestToken !== requestToken) return apiFileRequest(path, latestToken);
+      try {
+        if (!refreshPromise.current) {
+          refreshPromise.current = (async () => {
+            const savedRefreshToken = await SecureStore.getItemAsync(REFRESH_TOKEN_KEY);
+            if (!savedRefreshToken) throw new ApiError('Sesi login sudah berakhir. Silakan masuk kembali.', 401);
+            const nextAccessToken = await refreshAccessToken(savedRefreshToken);
+            await SecureStore.setItemAsync(ACCESS_TOKEN_KEY, nextAccessToken);
+            accessTokenRef.current = nextAccessToken;
+            setAccessToken(nextAccessToken);
+            return nextAccessToken;
+          })();
+        }
+        return await apiFileRequest(path, await refreshPromise.current);
+      } catch (refreshError) {
+        if (refreshError instanceof ApiError && refreshError.status === 401) {
+          await Promise.all([SecureStore.deleteItemAsync(ACCESS_TOKEN_KEY), SecureStore.deleteItemAsync(REFRESH_TOKEN_KEY)]);
+          accessTokenRef.current = null;
+          setAccessToken(null);
+          setUser(null);
+        }
+        throw refreshError;
+      } finally {
+        refreshPromise.current = null;
+      }
+    }
+  }, []);
+
+  const value = useMemo(() => ({ user, accessToken, loading, signIn, signOut, authorizedRequest, authorizedFileRequest }), [user, accessToken, loading, signIn, signOut, authorizedRequest, authorizedFileRequest]);
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 }
 

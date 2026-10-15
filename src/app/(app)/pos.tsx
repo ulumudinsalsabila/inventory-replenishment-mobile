@@ -37,8 +37,7 @@ export default function PosScreen() {
   const [customer, setCustomer] = useState('');
   const [discount, setDiscount] = useState('0');
   const [method, setMethod] = useState<Method>('CASH');
-  const [received, setReceived] = useState('');
-  const [loading, setLoading] = useState(true);
+  const [productsLoading, setProductsLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState('');
   const [receipt, setReceipt] = useState<Order | null>(null);
@@ -55,6 +54,7 @@ export default function PosScreen() {
   const [paymentStep, setPaymentStep] = useState(false);
   const [takeaway, setTakeaway] = useState(true);
   const [selectedCategory, setSelectedCategory] = useState('Semua');
+  const [displayOnly, setDisplayOnly] = useState(false);
 
   useEffect(() => {
     let active = true;
@@ -64,12 +64,9 @@ export default function PosScreen() {
 
   useEffect(() => {
     let active = true;
-    // eslint-disable-next-line react-hooks/set-state-in-effect
-    setLoading(true);
     void authorizedRequest<{ data: Branch[] }>('catalog/branches?page=1&perPage=100')
       .then((result) => { if (active) { setBranches(result.data); if (!branchId && result.data[0]) setBranchId(result.data[0].id); } })
-      .catch((e: Error) => { if (active) setError(e.message); })
-      .finally(() => { if (active) setLoading(false); });
+      .catch((e: Error) => { if (active) setError(e.message); });
     return () => { active = false; };
   // Initial branch options are loaded once; the user-scoped branch is stable for this session.
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -90,21 +87,20 @@ export default function PosScreen() {
     if (!warehouseId) return;
     let active = true;
     // eslint-disable-next-line react-hooks/set-state-in-effect
-    setLoading(true); setError('');
+    setProducts([]); setProductsLoading(true); setError('');
     void authorizedRequest<Product[]>(`pos/catalog?warehouseId=${encodeURIComponent(warehouseId)}`)
       .then((rows) => { if (active) setProducts(rows); })
       .catch((e: Error) => { if (active) setError(e.message); })
-      .finally(() => { if (active) setLoading(false); });
+      .finally(() => { if (active) setProductsLoading(false); });
     return () => { active = false; };
   }, [warehouseId, authorizedRequest]);
 
   const categories = useMemo(() => ['Semua', ...new Set(products.map((product) => product.category?.name).filter((name): name is string => Boolean(name)))], [products]);
-  const visible = useMemo(() => products.filter((p) => (selectedCategory === 'Semua' || p.category?.name === selectedCategory) && `${p.name} ${p.sku} ${p.barcode ?? ''} ${p.category?.name ?? ''}`.toLowerCase().includes(search.toLowerCase())), [products, search, selectedCategory]);
+  const visible = useMemo(() => products.filter((p) => (!displayOnly || Number(p.displayQuantity ?? 0) > 0) && (selectedCategory === 'Semua' || p.category?.name === selectedCategory) && `${p.name} ${p.sku} ${p.barcode ?? ''} ${p.category?.name ?? ''}`.toLowerCase().includes(search.toLowerCase())), [displayOnly, products, search, selectedCategory]);
   const priceFor = (line: Line) => Number(line.product.sellingUnits.find((unit) => unit.unitId === line.unitId)?.sellingPrice ?? line.product.basePrice) + Number(line.product.variants?.find((v) => v.id === line.variantId)?.priceDelta ?? 0) + line.addonIds.reduce((sum, id) => sum + Number(line.product.addons?.find((a) => a.id === id)?.basePrice ?? 0), 0);
   const subtotal = cart.reduce((sum, line) => sum + priceFor(line) * line.quantity, 0);
   const discountAmount = Math.min(Math.max(Number(discount) || 0, 0), subtotal);
   const total = subtotal - discountAmount;
-  const cash = Number(received) || 0;
 
   function conversionFactor(product: Product, unitId: string) {
     return Number(product.sellingUnits.find((unit) => unit.unitId === unitId)?.conversionFactor ?? 1);
@@ -147,7 +143,6 @@ export default function PosScreen() {
   async function checkout() {
     if (!customer.trim()) return setError('Nama pelanggan wajib diisi.');
     if (total <= 0) return setError('Total pembayaran harus lebih dari Rp 0.');
-    if (method === 'CASH' && cash < total) return setError('Uang diterima belum mencukupi.');
     if (!branchId || !warehouseId) return setError('Pilih cabang dan gudang terlebih dahulu.');
     setSubmitting(true); setError('');
     try {
@@ -156,10 +151,10 @@ export default function PosScreen() {
         order = await authorizedRequest<Order>('orders', { method: 'POST', body: JSON.stringify({ branchId, warehouseId, customerName: customer.trim(), discountAmount: String(discountAmount), items: cart.map((line) => ({ productId: line.product.id, unitId: line.unitId, variantId: line.variantId || undefined, quantity: String(line.quantity), addons: line.addonIds.map((addonId) => ({ addonId, quantity: '1' })) })) }) });
         setPendingOrder(order);
       }
-      const paid = order.status === 'PAID' ? order : await authorizedRequest<Order>(`orders/${order.id}/pay`, { method: 'POST', body: JSON.stringify({ payments: [{ method, amount: order.grandTotal, ...(method === 'CASH' ? { receivedAmount: String(cash) } : {}) }] }) });
+      const paid = order.status === 'PAID' ? order : await authorizedRequest<Order>(`orders/${order.id}/pay`, { method: 'POST', body: JSON.stringify({ payments: [{ method, amount: order.grandTotal, ...(method === 'CASH' ? { receivedAmount: order.grandTotal } : {}) }] }) });
       setPendingOrder(paid);
       const completed = await authorizedRequest<Order>(`orders/${paid.id}/complete`, { method: 'POST' });
-      setReceipt(completed); setPendingOrder(null); setCart([]); setCartVisible(false); setPaymentStep(false); setTakeaway(true); setCustomer(''); setDiscount('0'); setReceived('');
+      setReceipt(completed); setPendingOrder(null); setCart([]); setCartVisible(false); setPaymentStep(false); setTakeaway(true); setCustomer(''); setDiscount('0');
     } catch (e) { setError(e instanceof Error ? e.message : 'Transaksi gagal.'); }
     finally { setSubmitting(false); }
   }
@@ -212,6 +207,7 @@ export default function PosScreen() {
   if (receipt && receipt.orderNumber.length > 0) return <PosReceiptScreen
     order={receipt}
     topInset={insets.top + 8}
+    bottomInset={insets.bottom}
     cashierName={user?.name ?? 'Kasir'}
     printing={printing}
     printError={printError}
@@ -237,12 +233,9 @@ export default function PosScreen() {
     onDiscountChange={setDiscount}
     method={method}
     onMethodChange={setMethod}
-    received={received}
-    onReceivedChange={setReceived}
     total={total}
     subtotal={subtotal}
     discountAmount={discountAmount}
-    cash={cash}
     priceFor={priceFor}
     onQuantity={quantity}
     canIncrease={(line) => canAddUnit(line.product, line.unitId)}
@@ -265,21 +258,23 @@ export default function PosScreen() {
       products={products}
       categories={categories}
       selectedCategory={selectedCategory}
+      displayOnly={displayOnly}
       search={search}
       visibleProducts={visible}
       cart={cart}
       total={total}
-      loading={loading}
+      loading={Boolean(warehouseId) && productsLoading}
       error={error}
       optionProduct={optionProduct}
       optionUnit={optionUnit}
       optionVariant={optionVariant}
       optionAddons={optionAddons}
-      topInset={insets.top}
-      bottomInset={insets.bottom}
+      topInset={0}
+      bottomInset={0}
       onBranchChange={setBranchId}
       onWarehouseChange={setWarehouseId}
       onCategoryChange={setSelectedCategory}
+      onDisplayOnlyChange={setDisplayOnly}
       onSearchChange={setSearch}
       onAdd={add}
       onQuantity={quantity}
@@ -298,7 +293,7 @@ export default function PosScreen() {
   if (cartVisible) return <View style={[styles.cartFlow, { paddingTop: insets.top + 8 }]}>
     <View style={styles.sheetHeader}><Text style={styles.sheetTitle}>{paymentStep ? 'Pembayaran' : `Pesanan (${cart.reduce((n, line) => n + line.quantity, 0)})`}</Text><Pressable onPress={() => { setCart([]); setPaymentStep(false); }}><Text style={styles.clearCart}>Hapus</Text></Pressable><Pressable onPress={() => setCartVisible(false)}><Text style={styles.sheetClose}>âŒ„</Text></Pressable></View>
     <View style={styles.stepTabs}><Pressable onPress={() => setPaymentStep(false)} style={[styles.stepTab, !paymentStep && styles.stepTabActive]}><Text style={[styles.stepTabText, !paymentStep && styles.stepTabTextActive]}>1 Pesanan</Text></Pressable><Pressable disabled={!cart.length} onPress={() => setPaymentStep(true)} style={[styles.stepTab, paymentStep && styles.stepTabActive]}><Text style={[styles.stepTabText, paymentStep && styles.stepTabTextActive]}>2 Bayar</Text></Pressable></View>
-    {!paymentStep ? <ScrollView style={styles.flowContent} keyboardShouldPersistTaps="handled"><TextInput style={styles.flowInput} value={customer} onChangeText={setCustomer} placeholder="Nama customer" placeholderTextColor="#75808d"/><View style={styles.flowChoices}><Pressable style={[styles.choiceChip, !takeaway && styles.choiceChipActive]} onPress={() => setTakeaway(false)}><Text style={[styles.choiceText, !takeaway && styles.choiceTextActive]}>Dine in</Text></Pressable><Pressable style={[styles.choiceChip, takeaway && styles.choiceChipActive]} onPress={() => setTakeaway(true)}><Text style={[styles.choiceText, takeaway && styles.choiceTextActive]}>Take away</Text></Pressable></View>{cart.map((line) => <View key={line.key} style={styles.flowItem}><Text style={styles.productName}>{line.product.name}</Text><Text style={styles.muted}>{line.product.variants?.find((v) => v.id === line.variantId)?.name ?? line.product.sku}</Text><View style={styles.flowItemBottom}><View style={styles.flowChoices}><Pressable style={styles.qtyButton} onPress={() => quantity(line.key, -1)}><Minus size={16} color="#c70d17" /></Pressable><Text style={styles.qty}>{line.quantity}</Text><Pressable style={styles.qtyButton} onPress={() => quantity(line.key, 1)}><Plus size={16} color="#c70d17" /></Pressable></View><Text style={styles.price}>{money(priceFor(line) * line.quantity)}</Text></View></View>)}</ScrollView> : <ScrollView style={styles.flowContent} keyboardShouldPersistTaps="handled"><TextInput style={styles.flowInput} value={customer} onChangeText={setCustomer} placeholder="Nama customer" placeholderTextColor="#75808d"/><TextInput style={styles.flowInput} value={discount} onChangeText={setDiscount} keyboardType="numeric" placeholder="Diskon nominal" placeholderTextColor="#75808d"/>{method === 'CASH' ? <TextInput style={styles.flowInput} value={received} onChangeText={setReceived} keyboardType="numeric" placeholder="Uang diterima" placeholderTextColor="#75808d"/> : null}<Text style={styles.label}>METODE PEMBAYARAN</Text><View style={styles.flowChoices}>{(['CASH', 'QRIS', 'TRANSFER'] as Method[]).map((item) => <Pressable key={item} onPress={() => setMethod(item)} style={[styles.choiceChip, method === item && styles.choiceChipActive]}><Text style={[styles.choiceText, method === item && styles.choiceTextActive]}>{item === 'CASH' ? 'Cash' : item}</Text></Pressable>)}</View><View style={styles.paymentSummary}><Text style={styles.paymentSummaryLine}>Subtotal <Text>{money(subtotal)}</Text></Text><Text style={styles.paymentSummaryLine}>Diskon <Text>{money(discountAmount)}</Text></Text><Text style={styles.paymentGrandTotal}>Total <Text>{money(total)}</Text></Text></View>{error ? <Text style={styles.errorText}>{error}</Text> : null}</ScrollView>}
+    {!paymentStep ? <ScrollView style={styles.flowContent} keyboardShouldPersistTaps="handled"><TextInput autoFocus style={styles.flowInput} value={customer} onChangeText={setCustomer} placeholder="Nama customer" placeholderTextColor="#75808d"/><View style={styles.flowChoices}><Pressable style={[styles.choiceChip, !takeaway && styles.choiceChipActive]} onPress={() => setTakeaway(false)}><Text style={[styles.choiceText, !takeaway && styles.choiceTextActive]}>Dine in</Text></Pressable><Pressable style={[styles.choiceChip, takeaway && styles.choiceChipActive]} onPress={() => setTakeaway(true)}><Text style={[styles.choiceText, takeaway && styles.choiceTextActive]}>Take away</Text></Pressable></View>{cart.map((line) => <View key={line.key} style={styles.flowItem}><Text style={styles.productName}>{line.product.name}</Text><Text style={styles.muted}>{line.product.variants?.find((v) => v.id === line.variantId)?.name ?? line.product.sku}</Text><View style={styles.flowItemBottom}><View style={styles.flowChoices}><Pressable style={styles.qtyButton} onPress={() => quantity(line.key, -1)}><Minus size={16} color="#c70d17" /></Pressable><Text style={styles.qty}>{line.quantity}</Text><Pressable style={styles.qtyButton} onPress={() => quantity(line.key, 1)}><Plus size={16} color="#c70d17" /></Pressable></View><Text style={styles.price}>{money(priceFor(line) * line.quantity)}</Text></View></View>)}</ScrollView> : <ScrollView style={styles.flowContent} keyboardShouldPersistTaps="handled"><TextInput style={styles.flowInput} value={customer} onChangeText={setCustomer} placeholder="Nama customer" placeholderTextColor="#75808d"/><TextInput style={styles.flowInput} value={discount} onChangeText={setDiscount} keyboardType="numeric" placeholder="Diskon nominal" placeholderTextColor="#75808d"/><Text style={styles.label}>METODE PEMBAYARAN</Text><View style={styles.flowChoices}>{(['CASH', 'QRIS', 'TRANSFER', 'GRAB', 'GOBIZ'] as Method[]).map((item) => <Pressable key={item} onPress={() => setMethod(item)} style={[styles.choiceChip, method === item && styles.choiceChipActive]}><Text style={[styles.choiceText, method === item && styles.choiceTextActive]}>{item === 'CASH' ? 'Cash' : item === 'GOBIZ' ? 'GoBiz' : item}</Text></Pressable>)}</View><View style={styles.paymentSummary}><Text style={styles.paymentSummaryLine}>Subtotal <Text>{money(subtotal)}</Text></Text><Text style={styles.paymentSummaryLine}>Diskon <Text>{money(discountAmount)}</Text></Text><Text style={styles.paymentGrandTotal}>Total <Text>{money(total)}</Text></Text></View>{error ? <Text style={styles.errorText}>{error}</Text> : null}</ScrollView>}
     {paymentStep ? <View style={[styles.flowChoices, { paddingHorizontal: 16, marginVertical: 0 }]}><Pressable onPress={() => setMethod('GOBIZ')} style={[styles.choiceChip, method === 'GOBIZ' && styles.choiceChipActive]}><Text style={[styles.choiceText, method === 'GOBIZ' && styles.choiceTextActive]}>GoBiz</Text></Pressable></View> : null}
     <View style={[styles.flowFooter, { paddingBottom: Math.max(16, insets.bottom + 8) }]}>{paymentStep ? <Pressable onPress={() => setPaymentStep(false)} style={styles.footerSecondary}><Text style={styles.footerSecondaryText}>Kembali</Text></Pressable> : null}<Pressable disabled={!cart.length || submitting} onPress={() => paymentStep ? void checkout() : setPaymentStep(true)} style={[styles.footerPrimary, (!cart.length || submitting) && styles.disabled]}><Text style={styles.footerPrimaryText}>{paymentStep ? submitting ? 'Memproses...' : `Bayar ${money(total)}` : `Lanjut Â· ${money(total)}`}</Text></Pressable></View>
   </View>;
@@ -308,10 +303,10 @@ export default function PosScreen() {
     <View style={styles.branchWarehouseCard}><View style={styles.locationSide}><Text style={styles.locationSideLabel}>Cabang</Text>{user?.branchId ? <Text numberOfLines={1} ellipsizeMode="tail" style={styles.locationSideValue}>{branches.find((b) => b.id === branchId)?.name ?? 'Memuat cabang...'}</Text> : <ScrollView horizontal showsHorizontalScrollIndicator={false}>{branches.map((b) => <Pressable key={b.id} onPress={() => setBranchId(b.id)} style={[styles.locationChip, branchId === b.id && styles.locationChipActive]}><Text numberOfLines={1} ellipsizeMode="tail" style={[styles.locationText, branchId === b.id && styles.locationTextActive]}>{b.name}</Text></Pressable>)}</ScrollView>}</View><View style={styles.locationDivider} /><View style={styles.locationSide}><Text style={styles.locationSideLabel}>Gudang</Text>{warehouses.length ? <ScrollView horizontal showsHorizontalScrollIndicator={false}>{warehouses.map((w) => <Pressable key={w.id} onPress={() => setWarehouseId(w.id)} style={[styles.locationChip, warehouseId === w.id && styles.locationChipActive]}><Text numberOfLines={1} ellipsizeMode="tail" style={[styles.locationText, warehouseId === w.id && styles.locationTextActive]}>{warehouses.length === 1 ? 'Stok cabang' : w.name}</Text></Pressable>)}</ScrollView> : <Text numberOfLines={1} style={styles.locationSideEmpty}>{branchId ? 'Belum ada gudang' : 'Pilih cabang'}</Text>}</View></View>
     <View style={styles.searchRow}><TextInput style={[styles.search, styles.searchFlex, styles.catalogSearch]} value={search} onChangeText={setSearch} placeholder="Cari menu atau SKU..." placeholderTextColor="#87948c" /><Pressable accessibilityRole="button" accessibilityLabel="Scan barcode" onPress={() => setScannerVisible(true)} style={styles.scanButton}><Barcode size={22} color="#fff" /></Pressable></View>
     <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.categoryList}>{categories.map((category) => <Pressable key={category} onPress={() => setSelectedCategory(category)} style={[styles.categoryChip, selectedCategory === category && styles.categoryChipActive]}><Text style={[styles.categoryText, selectedCategory === category && styles.categoryTextActive]}>{category}</Text></Pressable>)}</ScrollView>
-    {loading ? <ActivityIndicator style={styles.loader} color="#087f5b" /> : null}
+    {productsLoading ? <ActivityIndicator style={styles.loader} color="#087f5b" /> : null}
     {error ? <View style={styles.errorBox}><Text style={styles.errorText}>{error}</Text></View> : null}
     <View style={styles.catalogGrid}>{visible.map((p) => { const selectedQuantity = cart.filter((line) => line.product.id === p.id).reduce((sum, line) => sum + line.quantity, 0); const selectedLine = cart.find((line) => line.product.id === p.id); return <View key={p.id} style={styles.catalogCard}><View style={styles.productArtwork}><Utensils size={38} color="#8145d8" /></View><Text style={styles.productCategory}>{p.category?.name ?? 'Produk'}</Text><Text numberOfLines={2} style={styles.catalogProductName}>{p.name}</Text><Text style={styles.catalogStock}>{p.available} {p.unit?.code ?? ''} tersedia</Text><View style={styles.productCardBottom}><Text numberOfLines={1} style={styles.price}>{money(Number(p.basePrice))}</Text>{selectedQuantity && selectedLine ? <View style={styles.productQtyControls}><Pressable accessibilityRole="button" accessibilityLabel={'Kurangi ' + p.name} style={styles.productQtyButton} onPress={() => quantity(selectedLine.key, -1)}><Minus size={17} color="#c70d17" /></Pressable><Text style={styles.productQtyValue}>{selectedQuantity}</Text><Pressable accessibilityRole="button" accessibilityLabel={'Tambah ' + p.name} style={styles.productQtyButtonActive} onPress={() => add(p)}><Plus size={18} color="#fff" /></Pressable></View> : <Pressable accessibilityRole="button" accessibilityLabel={'Tambah ' + p.name} style={styles.addCircle} onPress={() => add(p)}><Plus size={25} color="#fff" strokeWidth={2.5} /></Pressable>}</View></View>; })}</View>
-    {!loading && !visible.length ? <Text style={styles.empty}>Produk tidak ditemukan di gudang ini.</Text> : null}
+    {!productsLoading && !visible.length ? <Text style={styles.empty}>Produk tidak ditemukan di gudang ini.</Text> : null}
     <Modal visible={Boolean(optionProduct)} animationType="slide" transparent onRequestClose={() => setOptionProduct(null)}>
       <View style={styles.modalBackdrop}><View style={styles.optionPanel}><Text style={styles.sectionTitle}>{optionProduct?.name}</Text><Text style={styles.muted}>Pilih varian dan add-on</Text>
         {(optionProduct?.sellingUnits?.length ?? 0) > 1 ? <><Text style={styles.label}>Satuan</Text>{optionProduct?.sellingUnits.map((entry) => <Pressable key={entry.unitId} onPress={() => setOptionUnit(entry.unitId)} style={[styles.optionRow, optionUnit === entry.unitId && styles.optionSelected]}><Text style={styles.optionText}>{entry.unit.name} ({entry.unit.code})</Text><Text style={styles.optionText}>{money(Number(entry.sellingPrice))}{optionUnit === entry.unitId ? '  ✓' : ''}</Text></Pressable>)}</> : null}

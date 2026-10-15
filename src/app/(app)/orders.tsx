@@ -5,6 +5,7 @@ import * as Print from 'expo-print';
 import * as ImagePicker from 'expo-image-picker';
 import { useNavigation } from 'expo-router';
 import { Bluetooth, ChevronLeft, Printer, X } from 'lucide-react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useAuth } from '../../auth/auth-provider';
 import { formatDate, formatStatus } from '../../lib/display';
 import { getPairedPrinters, getSavedPrinter, openAndroidBluetoothSettings, printThermalReceipt, savePrinter, type PairedPrinter, type ReceiptOrder } from '../../lib/receipt-printer';
@@ -33,6 +34,7 @@ function receiptHtml(order: ReceiptOrder) {
 
 export default function OrdersScreen() {
   const { authorizedRequest, user } = useAuth();
+  const insets = useSafeAreaInsets();
   const navigation = useNavigation();
   const [result, setResult] = useState<PageResult | null>(null);
   const [selected, setSelected] = useState<Order | null>(null);
@@ -58,10 +60,10 @@ export default function OrdersScreen() {
 
   useEffect(() => {
     navigation.setOptions({
-      title: selected?.orderNumber ?? 'Pesanan',
+      title: selected ? 'Detail Pesanan' : 'Pesanan',
       headerLeft: selected ? () => <Pressable accessibilityRole="button" accessibilityLabel="Kembali ke daftar pesanan" hitSlop={8} onPress={() => { setSelected(null); setPrintError(''); }}><ChevronLeft size={22} color="#172338" /></Pressable> : undefined,
     });
-  }, [navigation, selected?.id, selected?.orderNumber]);
+  }, [navigation, selected?.id]);
 
   useEffect(() => { void getSavedPrinter().then(setPrinter).catch(() => setPrinter(null)); }, []);
 
@@ -198,7 +200,7 @@ export default function OrdersScreen() {
     </View> : null}
   </ScrollView>
   <Modal visible={printerPickerVisible} transparent animationType="slide" onRequestClose={() => setPrinterPickerVisible(false)}>
-    <View style={printStyles.modalBackdrop}><View style={printStyles.printerSheet}>
+    <View style={printStyles.modalBackdrop}><View style={[printStyles.printerSheet, { paddingBottom: Math.max(insets.bottom + 8, 25) }]}>
       <View style={printStyles.modalHeader}><Text style={printStyles.modalTitle}>Pilih printer Bluetooth</Text><Pressable accessibilityRole="button" accessibilityLabel="Tutup pemilih printer" onPress={() => setPrinterPickerVisible(false)} style={printStyles.closeButton}><X size={19} color="#526276" /></Pressable></View>
       {printerLoading ? <ActivityIndicator style={printStyles.printerLoader} color="#087f5b" /> : null}
       {!printerLoading && !printerDevices.length ? <Text style={printStyles.printerEmpty}>Tidak ada printer yang dipasangkan.</Text> : null}

@@ -1,8 +1,11 @@
 import { useEffect, useState } from 'react';
-import { ActivityIndicator, Image, Modal, Pressable, RefreshControl, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
-import { Stack } from 'expo-router';
-import { Check, ChevronLeft, ChevronRight, Download, Package, Plus, Search, X } from 'lucide-react-native';
+import { ActivityIndicator, Alert, Image, Modal, Platform, Pressable, RefreshControl, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
+import { Tabs } from 'expo-router';
+import { Check, ChevronLeft, ChevronRight, Download, Package, Plus, Search, X, Camera, ImagePlus, Trash2 } from 'lucide-react-native';
+import { File, Paths } from 'expo-file-system';
+import * as ImagePicker from 'expo-image-picker';
 import * as Print from 'expo-print';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useAuth } from '../../auth/auth-provider';
 import { ApiError } from '../../lib/api';
 import { formatDate, formatStatus } from '../../lib/display';
@@ -10,6 +13,8 @@ import { DistributorPurchaseWizard } from '../../components/distributor-purchase
 
 type Purchase = {
   id: string;
+  distributorId: string;
+  warehouseId: string;
   status: string;
   invoiceNumber: string | null;
   distributorInvoiceNumber: string | null;
@@ -24,7 +29,7 @@ type Purchase = {
 };
 type PurchaseDetail = Purchase & {
   note: string | null;
-  items: { id: string; lineType: string; orderedQty: string; receivedQty: string | null; unitPrice: string; subtotal: string; product: { sku: string; name: string }; unit?: { code: string } | null }[];
+  items: { id: string; productId: string; unitId: string | null; lineType: 'PURCHASE' | 'BONUS'; orderedQty: string; receivedQty: string | null; unitPrice: string; discountAmount: string; subtotal: string; product: { sku: string; name: string; unit?: { id: string; code: string } | null }; unit?: { code: string } | null }[];
   attachments?: { id: string; url: string; fileName: string; createdAt: string }[];
 };
 type Page<T> = { data: T[]; meta: { page: number; totalPages: number; total: number } };
@@ -38,12 +43,14 @@ const purchaseDetailStyles = StyleSheet.create({
 const statusColor = (status: string) => status === 'COMPLETED' ? styles.statusComplete : status === 'SUBMITTED' ? styles.statusSubmitted : status === 'CANCELLED' ? styles.statusCancelled : styles.statusDraft;
 
 export default function DistributorPurchasesScreen() {
-  const { user, authorizedRequest } = useAuth();
+  const { user, authorizedRequest, authorizedFileRequest } = useAuth();
+  const insets = useSafeAreaInsets();
   const canRead = user?.permissions.includes('purchase.read') ?? false;
   const canManage = user?.permissions.includes('purchase.manage') ?? false;
   const canReceive = user?.permissions.includes('purchase.receive') ?? false;
   const [rows, setRows] = useState<Purchase[]>([]);
   const [selected, setSelected] = useState<PurchaseDetail | null>(null);
+  const [editingDraft, setEditingDraft] = useState<PurchaseDetail | null>(null);
   const [searchInput, setSearchInput] = useState('');
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState('');
@@ -55,12 +62,15 @@ export default function DistributorPurchasesScreen() {
   const [createVisible, setCreateVisible] = useState(false);
   const [receiving, setReceiving] = useState(false);
   const [receiveError, setReceiveError] = useState('');
+  const [uploadingAttachments, setUploadingAttachments] = useState(false);
   const [receivedQuantities, setReceivedQuantities] = useState<Record<string, string>>({});
+  const [downloadingPdf, setDownloadingPdf] = useState(false);
+  const [downloadError, setDownloadError] = useState('');
 
   useEffect(() => {
     if (!canRead) { setLoading(false); return; }
     let active = true;
-    const params = new URLSearchParams({ page: '1', perPage: '30', sortBy: 'createdAt', sortOrder: 'desc' });
+    const params = new URLSearchParams({ page: '1', perPage: '20', sortBy: 'createdAt', sortOrder: 'desc' });
     if (search) params.set('search', search);
     if (statusFilter) params.set('status', statusFilter);
     void authorizedRequest<Page<Purchase>>(`distributor-purchases?${params.toString()}`)
@@ -85,6 +95,7 @@ export default function DistributorPurchasesScreen() {
 
   async function openCreatedPurchase(purchaseId: string) {
     setCreateVisible(false);
+    setEditingDraft(null);
     setReload((value) => value + 1);
     setDetailLoading(true);
     try {
@@ -95,9 +106,97 @@ export default function DistributorPurchasesScreen() {
     finally { setDetailLoading(false); }
   }
 
+  function openDraftForEditing() {
+    if (!selected) return;
+    setEditingDraft(selected);
+    setSelected(null);
+    setCreateVisible(true);
+  }
+
+  function cancelDraftEditing() {
+    setCreateVisible(false);
+    if (editingDraft) setSelected(editingDraft);
+    setEditingDraft(null);
+  }
+
+  async function refreshSelectedPurchase(id: string) {
+    const detail = await authorizedRequest<PurchaseDetail>(`distributor-purchases/${id}`);
+    setSelected(detail);
+    setReload((value) => value + 1);
+  }
+
+  async function addAttachments(useCamera: boolean) {
+    if (!selected || selected.status !== 'DRAFT' || !canManage) return;
+    const currentCount = selected.attachments?.length ?? 0;
+    if (currentCount >= 12) { setReceiveError('Maksimal 12 foto untuk satu pembelian.'); return; }
+    const permission = useCamera ? await ImagePicker.requestCameraPermissionsAsync() : await ImagePicker.requestMediaLibraryPermissionsAsync();
+    if (!permission.granted) { setReceiveError(useCamera ? 'Izin kamera diperlukan untuk mengambil foto.' : 'Izin galeri diperlukan untuk memilih foto.'); return; }
+    const result = useCamera
+      ? await ImagePicker.launchCameraAsync({ mediaTypes: ['images'], quality: 0.75 })
+      : await ImagePicker.launchImageLibraryAsync({ mediaTypes: ['images'], allowsMultipleSelection: true, selectionLimit: 12 - currentCount, quality: 0.75, preferredAssetRepresentationMode: ImagePicker.UIImagePickerPreferredAssetRepresentationMode.Compatible });
+    if (result.canceled || !result.assets.length) return;
+    if (result.assets.length + currentCount > 12 || result.assets.some((asset) => Number(asset.fileSize ?? 0) > 5 * 1024 * 1024)) { setReceiveError('Maksimal 12 foto dan ukuran tiap foto maksimal 5 MB.'); return; }
+    const allowedTypes = ['image/jpeg', 'image/png', 'image/webp'];
+    if (result.assets.some((asset) => asset.mimeType && !allowedTypes.includes(asset.mimeType))) { setReceiveError('Foto harus berformat JPEG, PNG, atau WebP.'); return; }
+    setUploadingAttachments(true); setReceiveError('');
+    try {
+      for (let start = 0; start < result.assets.length; start += 8) {
+        const form = new FormData();
+        result.assets.slice(start, start + 8).forEach((asset, index) => {
+          const name = asset.fileName ?? asset.uri.split('/').pop() ?? `invoice-${start + index}.jpg`;
+          if (Platform.OS === 'web') {
+            if (!asset.file) throw new Error('File foto dari browser tidak tersedia.');
+            form.append('images', asset.file, name);
+          } else form.append('images', new File(asset.uri), name);
+        });
+        await authorizedRequest(`distributor-purchases/${selected.id}/attachments`, { method: 'POST', body: form });
+      }
+      await refreshSelectedPurchase(selected.id);
+    } catch (cause) { setReceiveError(cause instanceof Error ? cause.message : 'Lampiran gagal diunggah.'); }
+    finally { setUploadingAttachments(false); }
+  }
+
+  async function removeAttachment(attachmentId: string) {
+    if (!selected || selected.status !== 'DRAFT' || !canManage) return;
+    setUploadingAttachments(true); setReceiveError('');
+    try {
+      await authorizedRequest(`distributor-purchases/${selected.id}/attachments/${attachmentId}`, { method: 'DELETE' });
+      await refreshSelectedPurchase(selected.id);
+    } catch (cause) { setReceiveError(cause instanceof Error ? cause.message : 'Lampiran gagal dihapus.'); }
+    finally { setUploadingAttachments(false); }
+  }
+
+  async function runPurchaseTransition(action: 'submit' | 'cancel') {
+    if (!selected) return;
+    setReceiving(true); setReceiveError('');
+    try {
+      await authorizedRequest(`distributor-purchases/${selected.id}/${action}`, { method: 'POST' });
+      await refreshSelectedPurchase(selected.id);
+    } catch (cause) { setReceiveError(cause instanceof Error ? cause.message : 'Status pembelian gagal diperbarui.'); }
+    finally { setReceiving(false); }
+  }
+
+  function confirmPurchaseTransition(action: 'submit' | 'cancel') {
+    if (!selected) return;
+    if (action === 'submit' && !selected.attachments?.length) { setReceiveError('Tambahkan minimal satu foto bukti sebelum submit.'); return; }
+    Alert.alert(
+      action === 'submit' ? 'Submit pembelian?' : 'Batalkan pembelian?',
+      action === 'submit' ? 'Invoice akan dibuat dan data utama pembelian dikunci.' : 'Pembelian ini tidak dapat diproses lebih lanjut setelah dibatalkan.',
+      [{ text: 'Kembali', style: 'cancel' }, { text: action === 'submit' ? 'Submit' : 'Ya, batalkan', style: action === 'cancel' ? 'destructive' : 'default', onPress: () => void runPurchaseTransition(action) }],
+    );
+  }
+
   async function completePurchase() {
     if (!selected) return;
     if (selected.items.some((item) => !(Number(receivedQuantities[item.id]) > 0))) { setReceiveError('Jumlah diterima untuk setiap produk harus lebih dari nol.'); return; }
+    Alert.alert('Selesaikan penerimaan?', 'Jumlah diterima akan disimpan dan stok Gudang Pusat akan bertambah.', [
+      { text: 'Kembali', style: 'cancel' },
+      { text: 'Selesaikan', onPress: () => void confirmCompletePurchase() },
+    ]);
+  }
+
+  async function confirmCompletePurchase() {
+    if (!selected) return;
     setReceiving(true); setReceiveError('');
     try {
       await authorizedRequest(`distributor-purchases/${selected.id}/complete`, { method: 'POST', body: JSON.stringify({ items: selected.items.map((item) => ({ itemId: item.id, receivedQty: receivedQuantities[item.id] })) }) });
@@ -108,21 +207,38 @@ export default function DistributorPurchasesScreen() {
   }
 
   async function downloadPurchasePdf() {
-    if (!selected) return;
-    const escape = (value: unknown) => String(value ?? '').replace(/[&<>"']/g, (character) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[character]!);
-    const lines = selected.items.map((item) => `<div class="row"><span>${escape(item.product.name)} · ${Number(item.orderedQty)} ${escape(item.unit?.code ?? '')} · ${escape(item.lineType)}</span><strong>${money(item.subtotal)}</strong></div>`).join('');
-    const html = `<!doctype html><html><head><meta name="viewport" content="width=device-width, initial-scale=1"><style>@page{margin:10mm}body{font:12px Arial,sans-serif;color:#172338;max-width:600px;margin:0 auto}.center{text-align:center}.muted{color:#71839a;font-size:10px}.row{display:flex;justify-content:space-between;gap:14px;padding:8px 0;border-bottom:1px solid #e8edf0}.total{font-weight:bold;font-size:16px;color:#07885b}</style></head><body><div class="center"><h2>${escape(selected.distributor.name)}</h2><div>${escape(selected.invoiceNumber ?? selected.distributorInvoiceNumber ?? 'Draft pembelian')}</div><div class="muted">${formatDate(selected.purchaseDate)} · ${escape(selected.warehouse.name)}</div></div><hr/>${lines}<div class="row"><span>Subtotal</span><span>${money(selected.subtotal)}</span></div><div class="row"><span>Diskon</span><span>-${money(selected.discountAmount)}</span></div><div class="row"><span>Biaya tambahan</span><span>${money(selected.additionalCost)}</span></div><div class="row total"><span>TOTAL</span><span>${money(selected.grandTotal)}</span></div>${selected.note ? `<p class="muted">Catatan: ${escape(selected.note)}</p>` : ''}</body></html>`;
-    await Print.printAsync({ html });
+    if (!selected?.invoiceNumber) return;
+    setDownloadingPdf(true);
+    setDownloadError('');
+    try {
+      const downloaded = await authorizedFileRequest(`distributor-purchases/${selected.id}/invoice.pdf`);
+      if (Platform.OS === 'web') {
+        const url = URL.createObjectURL(new Blob([downloaded.bytes], { type: downloaded.contentType }));
+        const anchor = document.createElement('a');
+        anchor.href = url;
+        anchor.download = downloaded.fileName;
+        anchor.click();
+        window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+      } else {
+        const file = new File(Paths.cache, downloaded.fileName);
+        file.create({ overwrite: true });
+        file.write(new Uint8Array(downloaded.bytes));
+        await Print.printAsync({ uri: file.uri });
+      }
+    } catch (cause) {
+      setDownloadError(cause instanceof Error ? cause.message : 'Invoice PDF gagal diunduh.');
+    } finally {
+      setDownloadingPdf(false);
+    }
   }
 
-  if (createVisible) return <><Stack.Screen options={{ headerShown: false }} /><DistributorPurchaseWizard onCancel={() => setCreateVisible(false)} onCreated={(purchaseId) => void openCreatedPurchase(purchaseId)} /></>;
+  if (createVisible) return <><Tabs.Screen options={{ title: 'Pembelian Distributor', headerShown: false }} /><DistributorPurchaseWizard initialDraft={editingDraft ?? undefined} onCancel={cancelDraftEditing} onSaved={(purchaseId) => void openCreatedPurchase(purchaseId)} /></>;
 
-  return <><Stack.Screen options={{ title: 'Pembelian Distributor' }} /><View style={styles.screen}>
+  return <><Tabs.Screen options={{ title: 'Pembelian Distributor', headerShown: true, headerRight: canManage ? () => <Pressable accessibilityRole="button" accessibilityLabel="Buat pembelian" onPress={() => setCreateVisible(true)} style={styles.headerCreateButton}><Plus size={20} color="#07885b" /></Pressable> : undefined }} /><View style={styles.screen}>
     <ScrollView contentContainerStyle={styles.page} refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => { setRefreshing(true); setReload((value) => value + 1); }} tintColor="#07885b" />}>
-      <View style={styles.titleRow}>{canManage ? <Pressable accessibilityRole="button" onPress={() => setCreateVisible(true)} style={styles.createButton}><Plus size={17} color="#fff" /><Text style={styles.createButtonText}>Buat pembelian</Text></Pressable> : null}</View>
       {canRead ? <>
         <View style={styles.searchRow}><View style={styles.searchBox}><Search size={17} color="#71839a" /><TextInput accessibilityLabel="Cari pembelian" value={searchInput} onChangeText={setSearchInput} onSubmitEditing={() => setSearch(searchInput.trim())} placeholder="Nomor invoice atau distributor" placeholderTextColor="#8b99a8" style={styles.searchInput} returnKeyType="search" /></View><Pressable accessibilityRole="button" onPress={() => setSearch(searchInput.trim())} style={styles.searchButton}><Search size={18} color="#fff" /></Pressable></View>
-        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.filters}>{[{ label: 'Semua', value: '' }, { label: 'Draft', value: 'DRAFT' }, { label: 'Dikonfirmasi', value: 'SUBMITTED' }, { label: 'Selesai', value: 'COMPLETED' }].map((filter) => <Pressable key={filter.value || 'all'} onPress={() => setStatusFilter(filter.value)} style={[styles.filterChip, statusFilter === filter.value && styles.filterChipActive]}><Text style={[styles.filterText, statusFilter === filter.value && styles.filterTextActive]}>{filter.label}</Text></Pressable>)}</ScrollView>
+        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.filters}>{[{ label: 'Semua', value: '' }, { label: 'Draft', value: 'DRAFT' }, { label: 'Dikonfirmasi', value: 'SUBMITTED' }, { label: 'Selesai', value: 'COMPLETED' }, { label: 'Dibatalkan', value: 'CANCELLED' }].map((filter) => <Pressable key={filter.value || 'all'} onPress={() => setStatusFilter(filter.value)} style={[styles.filterChip, statusFilter === filter.value && styles.filterChipActive]}><Text style={[styles.filterText, statusFilter === filter.value && styles.filterTextActive]}>{filter.label}</Text></Pressable>)}</ScrollView>
         {error ? <Text style={styles.error}>{error}</Text> : null}
         {loading ? <ActivityIndicator style={styles.loader} color="#07885b" /> : null}
         {!loading && !rows.length ? <View style={styles.empty}><Package size={22} color="#8091a4" /><Text style={styles.emptyTitle}>Belum ada pembelian</Text><Text style={styles.emptyText}>Pembelian distributor akan tampil di sini.</Text></View> : null}
@@ -134,7 +250,7 @@ export default function DistributorPurchasesScreen() {
       </> : <View style={styles.empty}><Text style={styles.emptyTitle}>Akses tidak tersedia</Text><Text style={styles.emptyText}>Akun ini belum memiliki izin melihat pembelian distributor.</Text></View>}
     </ScrollView>
     <Modal visible={detailLoading || Boolean(selected)} transparent animationType="slide" onRequestClose={() => setSelected(null)}>
-      <View style={styles.backdrop}><View style={styles.detailSheet}>
+      <View style={styles.backdrop}><View style={[styles.detailSheet, { paddingBottom: Math.max(insets.bottom + 8, 24) }]}>
         <View style={styles.detailHeader}><View><Text style={styles.detailTitle}>Detail pembelian</Text>{selected ? <Text style={styles.meta}>{selected.invoiceNumber ?? selected.distributorInvoiceNumber ?? 'Draft pembelian'}</Text> : null}</View><Pressable accessibilityRole="button" accessibilityLabel="Tutup detail" onPress={() => setSelected(null)} style={styles.closeButton}><X size={19} color="#4c5e70" /></Pressable></View>
         {detailLoading ? <ActivityIndicator style={styles.loader} color="#07885b" /> : selected ? <ScrollView style={styles.detailContent} keyboardShouldPersistTaps="handled">
           <Text style={styles.detailMeta}>{selected.distributor.name} · {selected.warehouse.name}</Text><Text style={styles.detailMeta}>{formatDate(selected.purchaseDate)} · {formatStatus(selected.status)}</Text>
@@ -143,11 +259,13 @@ export default function DistributorPurchasesScreen() {
           <View style={purchaseDetailStyles.detailStats}><View style={purchaseDetailStyles.detailStat}><Text style={styles.detailMeta}>Total</Text><Text style={styles.detailTotalValue}>{money(selected.grandTotal)}</Text></View><View style={purchaseDetailStyles.detailStat}><Text style={styles.detailMeta}>Diskon</Text><Text style={styles.detailProduct}>{money(selected.discountAmount)}</Text></View></View>
           <Text style={purchaseDetailStyles.detailSectionTitle}>Daftar produk ({selected.items.length})</Text>
           {selected.items.map((item) => <View key={item.id} style={styles.detailItem}><View style={styles.detailItemText}><Text style={styles.detailProduct}>{item.product.name}{item.lineType === 'BONUS' ? ' (Bonus)' : ''}</Text><Text style={styles.meta}>{item.product.sku} · {item.orderedQty} {item.unit?.code ?? ''} × {money(item.unitPrice)}</Text>{selected.status === 'SUBMITTED' && canReceive ? <TextInput accessibilityLabel={`Jumlah diterima ${item.product.name}`} value={receivedQuantities[item.id] ?? item.orderedQty} onChangeText={(value) => setReceivedQuantities((current) => ({ ...current, [item.id]: value.replace(',', '.') }))} keyboardType="decimal-pad" style={purchaseDetailStyles.receivedInput} placeholder="Jumlah diterima" /> : item.receivedQty ? <Text style={styles.meta}>Diterima {item.receivedQty} {item.unit?.code ?? ''}</Text> : null}</View><Text style={styles.detailAmount}>{money(item.subtotal)}</Text></View>)}
-          {selected.attachments?.length ? <><Text style={purchaseDetailStyles.detailSectionTitle}>Foto invoice</Text><ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={purchaseDetailStyles.attachmentList}>{selected.attachments.map((attachment) => <Image key={attachment.id} source={{ uri: attachment.url }} accessibilityLabel={attachment.fileName} style={purchaseDetailStyles.attachmentImage} />)}</ScrollView></> : null}
+          {(selected.status === 'DRAFT' || selected.attachments?.length) ? <><View style={styles.attachmentHeading}><View><Text style={purchaseDetailStyles.detailSectionTitle}>Foto invoice</Text><Text style={styles.meta}>{selected.attachments?.length ?? 0}/12 foto · minimal 1 sebelum submit</Text></View>{uploadingAttachments ? <ActivityIndicator color="#07885b" /> : null}</View><ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={purchaseDetailStyles.attachmentList}>{selected.attachments?.map((attachment) => <View key={attachment.id} style={styles.attachmentWrap}><Image source={{ uri: attachment.url }} accessibilityLabel={attachment.fileName} style={purchaseDetailStyles.attachmentImage} />{selected.status === 'DRAFT' && canManage ? <Pressable accessibilityRole="button" accessibilityLabel={`Hapus foto ${attachment.fileName}`} disabled={uploadingAttachments} onPress={() => void removeAttachment(attachment.id)} style={styles.removeAttachment}><X size={12} color="#fff" /></Pressable> : null}</View>)}</ScrollView>{selected.status === 'DRAFT' && canManage && (selected.attachments?.length ?? 0) < 12 ? <View style={styles.attachmentActions}><Pressable accessibilityRole="button" disabled={uploadingAttachments} onPress={() => void addAttachments(true)} style={styles.attachmentButton}><Camera size={15} color="#087f5b" /><Text style={styles.attachmentButtonText}>Ambil foto</Text></Pressable><Pressable accessibilityRole="button" disabled={uploadingAttachments} onPress={() => void addAttachments(false)} style={styles.attachmentButton}><ImagePlus size={15} color="#087f5b" /><Text style={styles.attachmentButtonText}>Pilih galeri</Text></Pressable></View> : null}{!selected.attachments?.length ? <Text style={styles.emptyText}>Belum ada bukti dipilih.</Text> : null}</> : null}
           {selected.note ? <Text style={styles.detailMeta}>Catatan: {selected.note}</Text> : null}
           <View style={styles.detailTotal}><Text style={styles.detailTotalLabel}>Total pembelian</Text><Text style={styles.detailTotalValue}>{money(selected.grandTotal)}</Text></View>
-          <Pressable accessibilityRole="button" onPress={() => void downloadPurchasePdf()} style={styles.pdfButton}><Download size={15} color="#53677e" /><Text style={styles.pdfButtonText}>Download PDF</Text></Pressable>
+          {selected.invoiceNumber ? <><Pressable accessibilityRole="button" disabled={downloadingPdf} onPress={() => void downloadPurchasePdf()} style={[styles.pdfButton, downloadingPdf && purchaseDetailStyles.disabled]}>{downloadingPdf ? <ActivityIndicator color="#53677e" /> : <><Download size={15} color="#53677e" /><Text style={styles.pdfButtonText}>Download PDF</Text></>}</Pressable>{downloadError ? <Text style={styles.error}>{downloadError}</Text> : null}</> : null}
           {receiveError ? <Text style={purchaseDetailStyles.receiveError}>{receiveError}</Text> : null}
+          {selected.status === 'DRAFT' && canManage ? <View style={styles.draftActions}><Pressable accessibilityRole="button" disabled={receiving || uploadingAttachments} onPress={openDraftForEditing} style={styles.draftSecondary}><Text style={styles.draftSecondaryText}>Edit draft</Text></Pressable><Pressable accessibilityRole="button" disabled={receiving || uploadingAttachments || !(selected.attachments?.length)} onPress={() => confirmPurchaseTransition('submit')} style={[purchaseDetailStyles.receiveButton, (receiving || uploadingAttachments || !selected.attachments?.length) && purchaseDetailStyles.disabled]}><Text style={purchaseDetailStyles.receiveButtonText}>Submit & buat invoice</Text></Pressable><Pressable accessibilityRole="button" disabled={receiving || uploadingAttachments} onPress={() => confirmPurchaseTransition('cancel')} style={styles.draftCancel}><Text style={styles.draftCancelText}>Batalkan</Text></Pressable></View> : null}
+          {selected.status === 'SUBMITTED' && canManage ? <Pressable accessibilityRole="button" disabled={receiving} onPress={() => confirmPurchaseTransition('cancel')} style={styles.draftCancel}><Text style={styles.draftCancelText}>Batalkan pembelian</Text></Pressable> : null}
           {selected.status === 'SUBMITTED' && canReceive ? <Pressable accessibilityRole="button" disabled={receiving} onPress={() => void completePurchase()} style={[purchaseDetailStyles.receiveButton, receiving && purchaseDetailStyles.disabled]}>{receiving ? <ActivityIndicator color="#fff" /> : <><Check size={16} color="#fff" /><Text style={purchaseDetailStyles.receiveButtonText}>Selesaikan penerimaan</Text></>}</Pressable> : null}
         </ScrollView> : null}
       </View></View>
@@ -158,11 +276,12 @@ export default function DistributorPurchasesScreen() {
 const styles = StyleSheet.create({
   screen: { flex: 1, backgroundColor: '#f5f8f7' }, page: { padding: 16, paddingTop: 12, paddingBottom: 24 },
   back: { alignSelf: 'flex-start', flexDirection: 'row', alignItems: 'center', gap: 4, marginBottom: 16 }, backText: { color: '#07885b', fontSize: 11, fontWeight: '800' },
-  eyebrow: { color: '#07885b', fontSize: 9, fontWeight: '900' }, title: { marginTop: 5, marginBottom: 14, color: '#172338', fontSize: 23, fontWeight: '900' }, titleRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 9 }, createButton: { minHeight: 38, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 5, paddingHorizontal: 10, borderRadius: 10, backgroundColor: '#07885b' }, createButtonText: { color: '#fff', fontSize: 9, fontWeight: '900' },
+  eyebrow: { color: '#07885b', fontSize: 9, fontWeight: '900' }, title: { marginTop: 5, marginBottom: 14, color: '#172338', fontSize: 23, fontWeight: '900' }, headerCreateButton: { width: 38, height: 38, alignItems: 'center', justifyContent: 'center', borderRadius: 10, backgroundColor: '#e4f7ef' },
   filters: { gap: 7, paddingBottom: 10 }, filterChip: { paddingHorizontal: 12, paddingVertical: 8, borderRadius: 10, backgroundColor: '#edf2f5' }, filterChipActive: { backgroundColor: '#07885b' }, filterText: { color: '#60758a', fontSize: 8, fontWeight: '800' }, filterTextActive: { color: '#fff' },
   searchRow: { flexDirection: 'row', gap: 8, marginBottom: 10 }, searchBox: { height: 43, flex: 1, flexDirection: 'row', alignItems: 'center', gap: 8, paddingHorizontal: 11, borderWidth: 1, borderColor: '#e2e9ed', borderRadius: 11, backgroundColor: '#fff' }, searchInput: { flex: 1, color: '#172338', fontSize: 10 }, searchButton: { width: 43, alignItems: 'center', justifyContent: 'center', borderRadius: 11, backgroundColor: '#07885b' },
   error: { marginBottom: 9, padding: 10, borderRadius: 9, color: '#a3332a', backgroundColor: '#fff1ef', fontSize: 10 }, loader: { padding: 20 }, empty: { alignItems: 'center', gap: 7, marginTop: 22, padding: 20, borderWidth: 1, borderColor: '#e5ecef', borderRadius: 13, backgroundColor: '#fff' }, emptyTitle: { color: '#26384a', fontSize: 12, fontWeight: '900' }, emptyText: { color: '#7a8a9b', fontSize: 10, textAlign: 'center' },
   row: { minHeight: 78, flexDirection: 'row', alignItems: 'center', gap: 9, marginBottom: 8, padding: 10, borderWidth: 1, borderColor: '#e8eef1', borderRadius: 12, backgroundColor: '#fff' }, rowPressed: { opacity: 0.75 }, rowIcon: { width: 37, height: 37, alignItems: 'center', justifyContent: 'center', borderRadius: 11, backgroundColor: '#e4f7ef' }, rowBody: { flex: 1, minWidth: 0 }, rowTitleLine: { flexDirection: 'row', alignItems: 'center', gap: 5 }, invoice: { flex: 1, color: '#25364a', fontSize: 10, fontWeight: '900' }, distributor: { marginTop: 4, color: '#344b5e', fontSize: 10, fontWeight: '700' }, meta: { marginTop: 4, color: '#7b8b9b', fontSize: 8 }, rowRight: { width: 75, alignItems: 'flex-end', gap: 5 }, total: { width: '100%', color: '#07885b', fontSize: 9, fontWeight: '900', textAlign: 'right' }, status: { overflow: 'hidden', paddingHorizontal: 6, paddingVertical: 3, borderRadius: 7, fontSize: 7, fontWeight: '900' }, statusDraft: { color: '#6e7680', backgroundColor: '#eff2f4' }, statusSubmitted: { color: '#996400', backgroundColor: '#fff2d5' }, statusComplete: { color: '#087c53', backgroundColor: '#def7eb' }, statusCancelled: { color: '#a53631', backgroundColor: '#ffebe9' },
   backdrop: { flex: 1, justifyContent: 'flex-end', backgroundColor: '#0a172966' }, detailSheet: { maxHeight: '84%', paddingHorizontal: 15, paddingTop: 15, paddingBottom: 24, borderTopLeftRadius: 18, borderTopRightRadius: 18, backgroundColor: '#f7f9fa' }, detailHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 9 }, detailTitle: { color: '#172338', fontSize: 14, fontWeight: '900' }, closeButton: { width: 34, height: 34, alignItems: 'center', justifyContent: 'center', borderRadius: 10, backgroundColor: '#edf1f4' }, detailContent: { flexGrow: 0 }, detailMeta: { marginTop: 4, color: '#6e7f91', fontSize: 9 }, detailItem: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 10, marginTop: 8, padding: 10, borderRadius: 10, backgroundColor: '#fff' }, detailItemText: { flex: 1 }, detailProduct: { color: '#27394c', fontSize: 10, fontWeight: '800' }, detailAmount: { color: '#263a4e', fontSize: 9, fontWeight: '800' }, detailTotal: { flexDirection: 'row', justifyContent: 'space-between', marginTop: 10, padding: 12, borderRadius: 10, backgroundColor: '#e4f7ef' }, detailTotalLabel: { color: '#3f6959', fontSize: 10, fontWeight: '800' }, detailTotalValue: { color: '#07885b', fontSize: 11, fontWeight: '900' },
+  attachmentHeading: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 8, marginTop: 10 }, attachmentWrap: { position: 'relative' }, removeAttachment: { position: 'absolute', top: 3, right: 3, width: 22, height: 22, alignItems: 'center', justifyContent: 'center', borderRadius: 11, backgroundColor: '#a3332a' }, attachmentActions: { flexDirection: 'row', gap: 7, marginTop: 7 }, attachmentButton: { minHeight: 38, flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, borderRadius: 9, backgroundColor: '#e5f7ee' }, attachmentButtonText: { color: '#087c53', fontSize: 9, fontWeight: '900' }, draftActions: { gap: 8, marginTop: 12 }, draftSecondary: { minHeight: 40, alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: '#dce4df', borderRadius: 9, backgroundColor: '#fff' }, draftSecondaryText: { color: '#53677e', fontSize: 9, fontWeight: '800' }, draftCancel: { minHeight: 40, alignItems: 'center', justifyContent: 'center', marginTop: 8, borderWidth: 1, borderColor: '#f1c8c5', borderRadius: 9, backgroundColor: '#fff6f5' }, draftCancelText: { color: '#a3332a', fontSize: 9, fontWeight: '900' },
   pdfButton: { minHeight: 38, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, marginTop: 9, borderWidth: 1, borderColor: '#e0e8ed', borderRadius: 9, backgroundColor: '#fff' }, pdfButtonText: { color: '#53677e', fontSize: 8, fontWeight: '900' },
 });
