@@ -30,6 +30,37 @@ export type ReceiptOrder = {
   items?: ReceiptLine[];
   payments?: { method: string; amount: string; receivedAmount?: string | null; changeAmount?: string | null }[];
 };
+export type CashClosingReceipt = {
+  closingNumber: string;
+  status: string;
+  transactionCount: number;
+  periodStart?: string | null;
+  periodEnd?: string | null;
+  createdAt?: string | null;
+  closedAt?: string | null;
+  cashSales?: string;
+  qrisSales?: string;
+  transferSales?: string;
+  grabSales?: string;
+  gobizSales?: string;
+  cardSales?: string;
+  otherSales?: string;
+  totalSales?: string;
+  cashIn?: string;
+  cashOut?: string;
+  cashRefund?: string;
+  qrisRefund?: string;
+  transferRefund?: string;
+  grabRefund?: string;
+  gobizRefund?: string;
+  cardRefund?: string;
+  otherRefund?: string;
+  totalRefund?: string;
+  expectedCash?: string;
+  actualCash?: string;
+  difference?: string;
+  note?: string | null;
+};
 
 const SAVED_PRINTER_KEY = 'inventory.bluetooth.receipt-printer.v1';
 const PRINTER_NAME = /printer|thermal|pos|receipt|rpp|mtp|xp[- ]|pt[- ]|58|80/i;
@@ -87,6 +118,7 @@ const safeText = (value: unknown) => String(value ?? '')
   .replace(/[^\x20-\x7E]/g, '');
 
 const rupiah = (value: number) => `Rp ${Math.max(0, value).toLocaleString('id-ID', { maximumFractionDigits: 0 })}`;
+const cashRupiah = (value: unknown) => `Rp ${Number(value ?? 0).toLocaleString('id-ID', { maximumFractionDigits: 0 })}`;
 const fit = (value: unknown, width: number) => safeText(value).slice(0, width);
 const columns = (left: unknown, right: unknown, width: number) => {
   const rightText = fit(right, width);
@@ -141,7 +173,85 @@ function receiptText(order: ReceiptOrder, width: number) {
   return lines.join('\n');
 }
 
-export async function printThermalReceipt(order: ReceiptOrder, printer: PairedPrinter) {
+const receiptDate = (value?: string | null) => {
+  if (!value) return '—';
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? '—' : date.toLocaleDateString('id-ID', { day: '2-digit', month: '2-digit', year: 'numeric', timeZone: 'Asia/Jakarta' });
+};
+
+const receiptDateTime = (value?: string | null) => {
+  if (!value) return '—';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return '—';
+  return `${receiptDate(value)} ${date.toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit', hourCycle: 'h23', timeZone: 'Asia/Jakarta' })}`;
+};
+
+const center = (value: unknown, width: number) => {
+  const text = fit(value, width);
+  return `${' '.repeat(Math.floor((width - text.length) / 2))}${text}`;
+};
+
+export function formatCashClosingReceipt(closing: CashClosingReceipt, width = 32) {
+  const rule = '-'.repeat(width);
+  const sales: Array<[string, unknown]> = [
+    ['Cash Sales', closing.cashSales],
+    ['QRIS Sales', closing.qrisSales],
+    ['Transfer Sales', closing.transferSales],
+    ['E-Wallet Sales', Number(closing.grabSales ?? 0) + Number(closing.gobizSales ?? 0)],
+    ['Card Sales', closing.cardSales],
+    ['Other Sales', closing.otherSales],
+  ];
+  const refunds: Array<[string, unknown]> = [
+    ['Cash Refund', closing.cashRefund],
+    ['QRIS Refund', closing.qrisRefund],
+    ['Transfer Refund', closing.transferRefund],
+    ['E-Wallet Refund', Number(closing.grabRefund ?? 0) + Number(closing.gobizRefund ?? 0)],
+    ['Card Refund', closing.cardRefund],
+    ['Other Refund', closing.otherRefund],
+  ];
+  const lines = [
+    center('CASH CLOSING REPORT', width),
+    center(closing.closingNumber, width),
+    '',
+    ...wrap(`Period Start : ${receiptDate(closing.periodStart)}`, width),
+    ...wrap(`Period End   : ${receiptDate(closing.periodEnd)}`, width),
+    ...wrap(`Transaction  : ${closing.transactionCount}`, width),
+    ...wrap(`Created At   : ${receiptDateTime(closing.createdAt ?? closing.closedAt)}`, width),
+    rule,
+    'SALES',
+    ...sales.map(([label, value]) => columns(label, cashRupiah(value), width)),
+    rule,
+    columns('TOTAL SALES', cashRupiah(closing.totalSales), width),
+    rule,
+    'CASH MOVEMENT',
+    columns('Cash In', cashRupiah(closing.cashIn), width),
+    columns('Cash Out', cashRupiah(closing.cashOut), width),
+    rule,
+    columns('NET CASH MOVEMENT', cashRupiah(Number(closing.cashIn ?? 0) - Number(closing.cashOut ?? 0)), width),
+    rule,
+    'REFUND',
+    ...refunds.map(([label, value]) => columns(label, cashRupiah(value), width)),
+    rule,
+    columns('TOTAL REFUND', cashRupiah(closing.totalRefund), width),
+    rule,
+    columns('EXPECTED CASH', cashRupiah(closing.expectedCash), width),
+    columns('ACTUAL CASH', cashRupiah(closing.actualCash), width),
+    rule,
+    columns('DIFFERENCE', cashRupiah(closing.difference), width),
+    rule,
+    columns('STATUS', formatStatus(closing.status).toLocaleUpperCase('id-ID'), width),
+    ...wrap(`NOTE ${closing.note || '-'}`, width),
+    rule,
+    '',
+    center('Prepared By', width),
+    center('Approved By', width),
+    '',
+    columns('(____________)', '(____________)', width),
+  ];
+  return lines.join('\n');
+}
+
+async function printThermalText(text: string, printer: PairedPrinter) {
   await ensureAndroidBluetoothAccess();
   const paired = await RNBluetoothClassic.getBondedDevices();
   const device = paired.find((candidate) => candidate.address === printer.address);
@@ -152,7 +262,14 @@ export async function printThermalReceipt(order: ReceiptOrder, printer: PairedPr
     : await RNBluetoothClassic.connectToDevice(printer.address);
   if (!(await connected.isConnected())) throw new Error(`Gagal tersambung ke ${printer.name}. Pastikan printer menyala.`);
 
-  const width = 32; // format umum kertas thermal 58 mm
-  const payload = `${String.fromCharCode(0x1b, 0x40)}${receiptText(order, width)}\n\n\n\n${String.fromCharCode(0x1b, 0x64, 3)}`;
+  const payload = `${String.fromCharCode(0x1b, 0x40)}${text}\n\n\n\n${String.fromCharCode(0x1b, 0x64, 3)}`;
   if (!(await connected.write(payload, 'ascii'))) throw new Error('Printer tidak menerima nota. Periksa koneksi dan dukungan ESC/POS.');
+}
+
+export async function printThermalReceipt(order: ReceiptOrder, printer: PairedPrinter) {
+  await printThermalText(receiptText(order, 32), printer);
+}
+
+export async function printThermalCashClosingReceipt(closing: CashClosingReceipt, printer: PairedPrinter) {
+  await printThermalText(formatCashClosingReceipt(closing), printer);
 }

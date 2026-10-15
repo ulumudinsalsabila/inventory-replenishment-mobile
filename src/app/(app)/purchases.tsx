@@ -1,10 +1,9 @@
 import { useEffect, useState } from 'react';
 import { ActivityIndicator, Alert, Image, Modal, Platform, Pressable, RefreshControl, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { Tabs } from 'expo-router';
-import { Check, ChevronLeft, ChevronRight, Download, Package, Plus, Search, X, Camera, ImagePlus, Trash2 } from 'lucide-react-native';
-import { File, Paths } from 'expo-file-system';
+import { Check, ChevronLeft, ChevronRight, Package, Plus, Search, X, Camera, ImagePlus, Trash2 } from 'lucide-react-native';
+import { File } from 'expo-file-system';
 import * as ImagePicker from 'expo-image-picker';
-import * as Print from 'expo-print';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useAuth } from '../../auth/auth-provider';
 import { ApiError } from '../../lib/api';
@@ -43,7 +42,7 @@ const purchaseDetailStyles = StyleSheet.create({
 const statusColor = (status: string) => status === 'COMPLETED' ? styles.statusComplete : status === 'SUBMITTED' ? styles.statusSubmitted : status === 'CANCELLED' ? styles.statusCancelled : styles.statusDraft;
 
 export default function DistributorPurchasesScreen() {
-  const { user, authorizedRequest, authorizedFileRequest } = useAuth();
+  const { user, authorizedRequest } = useAuth();
   const insets = useSafeAreaInsets();
   const canRead = user?.permissions.includes('purchase.read') ?? false;
   const canManage = user?.permissions.includes('purchase.manage') ?? false;
@@ -64,8 +63,6 @@ export default function DistributorPurchasesScreen() {
   const [receiveError, setReceiveError] = useState('');
   const [uploadingAttachments, setUploadingAttachments] = useState(false);
   const [receivedQuantities, setReceivedQuantities] = useState<Record<string, string>>({});
-  const [downloadingPdf, setDownloadingPdf] = useState(false);
-  const [downloadError, setDownloadError] = useState('');
 
   useEffect(() => {
     if (!canRead) { setLoading(false); return; }
@@ -206,32 +203,6 @@ export default function DistributorPurchasesScreen() {
     finally { setReceiving(false); }
   }
 
-  async function downloadPurchasePdf() {
-    if (!selected?.invoiceNumber) return;
-    setDownloadingPdf(true);
-    setDownloadError('');
-    try {
-      const downloaded = await authorizedFileRequest(`distributor-purchases/${selected.id}/invoice.pdf`);
-      if (Platform.OS === 'web') {
-        const url = URL.createObjectURL(new Blob([downloaded.bytes], { type: downloaded.contentType }));
-        const anchor = document.createElement('a');
-        anchor.href = url;
-        anchor.download = downloaded.fileName;
-        anchor.click();
-        window.setTimeout(() => URL.revokeObjectURL(url), 1000);
-      } else {
-        const file = new File(Paths.cache, downloaded.fileName);
-        file.create({ overwrite: true });
-        file.write(new Uint8Array(downloaded.bytes));
-        await Print.printAsync({ uri: file.uri });
-      }
-    } catch (cause) {
-      setDownloadError(cause instanceof Error ? cause.message : 'Invoice PDF gagal diunduh.');
-    } finally {
-      setDownloadingPdf(false);
-    }
-  }
-
   if (createVisible) return <><Tabs.Screen options={{ title: 'Pembelian Distributor', headerShown: false }} /><DistributorPurchaseWizard initialDraft={editingDraft ?? undefined} onCancel={cancelDraftEditing} onSaved={(purchaseId) => void openCreatedPurchase(purchaseId)} /></>;
 
   return <><Tabs.Screen options={{ title: 'Pembelian Distributor', headerShown: true, headerRight: canManage ? () => <Pressable accessibilityRole="button" accessibilityLabel="Buat pembelian" onPress={() => setCreateVisible(true)} style={styles.headerCreateButton}><Plus size={20} color="#07885b" /></Pressable> : undefined }} /><View style={styles.screen}>
@@ -262,7 +233,6 @@ export default function DistributorPurchasesScreen() {
           {(selected.status === 'DRAFT' || selected.attachments?.length) ? <><View style={styles.attachmentHeading}><View><Text style={purchaseDetailStyles.detailSectionTitle}>Foto invoice</Text><Text style={styles.meta}>{selected.attachments?.length ?? 0}/12 foto · minimal 1 sebelum submit</Text></View>{uploadingAttachments ? <ActivityIndicator color="#07885b" /> : null}</View><ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={purchaseDetailStyles.attachmentList}>{selected.attachments?.map((attachment) => <View key={attachment.id} style={styles.attachmentWrap}><Image source={{ uri: attachment.url }} accessibilityLabel={attachment.fileName} style={purchaseDetailStyles.attachmentImage} />{selected.status === 'DRAFT' && canManage ? <Pressable accessibilityRole="button" accessibilityLabel={`Hapus foto ${attachment.fileName}`} disabled={uploadingAttachments} onPress={() => void removeAttachment(attachment.id)} style={styles.removeAttachment}><X size={12} color="#fff" /></Pressable> : null}</View>)}</ScrollView>{selected.status === 'DRAFT' && canManage && (selected.attachments?.length ?? 0) < 12 ? <View style={styles.attachmentActions}><Pressable accessibilityRole="button" disabled={uploadingAttachments} onPress={() => void addAttachments(true)} style={styles.attachmentButton}><Camera size={15} color="#087f5b" /><Text style={styles.attachmentButtonText}>Ambil foto</Text></Pressable><Pressable accessibilityRole="button" disabled={uploadingAttachments} onPress={() => void addAttachments(false)} style={styles.attachmentButton}><ImagePlus size={15} color="#087f5b" /><Text style={styles.attachmentButtonText}>Pilih galeri</Text></Pressable></View> : null}{!selected.attachments?.length ? <Text style={styles.emptyText}>Belum ada bukti dipilih.</Text> : null}</> : null}
           {selected.note ? <Text style={styles.detailMeta}>Catatan: {selected.note}</Text> : null}
           <View style={styles.detailTotal}><Text style={styles.detailTotalLabel}>Total pembelian</Text><Text style={styles.detailTotalValue}>{money(selected.grandTotal)}</Text></View>
-          {selected.invoiceNumber ? <><Pressable accessibilityRole="button" disabled={downloadingPdf} onPress={() => void downloadPurchasePdf()} style={[styles.pdfButton, downloadingPdf && purchaseDetailStyles.disabled]}>{downloadingPdf ? <ActivityIndicator color="#53677e" /> : <><Download size={15} color="#53677e" /><Text style={styles.pdfButtonText}>Download PDF</Text></>}</Pressable>{downloadError ? <Text style={styles.error}>{downloadError}</Text> : null}</> : null}
           {receiveError ? <Text style={purchaseDetailStyles.receiveError}>{receiveError}</Text> : null}
           {selected.status === 'DRAFT' && canManage ? <View style={styles.draftActions}><Pressable accessibilityRole="button" disabled={receiving || uploadingAttachments} onPress={openDraftForEditing} style={styles.draftSecondary}><Text style={styles.draftSecondaryText}>Edit draft</Text></Pressable><Pressable accessibilityRole="button" disabled={receiving || uploadingAttachments || !(selected.attachments?.length)} onPress={() => confirmPurchaseTransition('submit')} style={[purchaseDetailStyles.receiveButton, (receiving || uploadingAttachments || !selected.attachments?.length) && purchaseDetailStyles.disabled]}><Text style={purchaseDetailStyles.receiveButtonText}>Submit & buat invoice</Text></Pressable><Pressable accessibilityRole="button" disabled={receiving || uploadingAttachments} onPress={() => confirmPurchaseTransition('cancel')} style={styles.draftCancel}><Text style={styles.draftCancelText}>Batalkan</Text></Pressable></View> : null}
           {selected.status === 'SUBMITTED' && canManage ? <Pressable accessibilityRole="button" disabled={receiving} onPress={() => confirmPurchaseTransition('cancel')} style={styles.draftCancel}><Text style={styles.draftCancelText}>Batalkan pembelian</Text></Pressable> : null}

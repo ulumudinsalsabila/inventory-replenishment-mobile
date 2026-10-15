@@ -20,7 +20,10 @@ export default function AppLayout() {
     <Stack.Screen name="movements" options={{ title: 'Pergerakan Stok' }} />
     <Stack.Screen name="orders" options={{ title: 'Pesanan' }} />
     <Stack.Screen name="purchases" options={{ title: 'Pembelian Distributor' }} />
-    <Stack.Screen name="cash" options={{ title: 'Cash Closing' }} />
+    <Stack.Screen name="cash" options={{ title: 'Kas Masuk / Keluar' }} />
+    <Stack.Screen name="cash-in-out" options={{ title: 'Kas Masuk / Keluar' }} />
+    <Stack.Screen name="cash-in-out-form" options={{ headerShown: false }} />
+    <Stack.Screen name="cash-in-out-detail" options={{ headerShown: false }} />
     <Stack.Screen name="stock-requests" options={{ title: 'Permintaan Stok' }} />
     <Stack.Screen name="transfers" options={{ title: 'Transfer Gudang' }} />
     <Stack.Screen name="adjustments" options={{ title: 'Adjustment Stok' }} />

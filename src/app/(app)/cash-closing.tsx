@@ -1,19 +1,19 @@
 import { useEffect, useState } from 'react';
 import { ActivityIndicator, Image, Modal, Platform, Pressable, RefreshControl, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { File } from 'expo-file-system';
+import * as Print from 'expo-print';
 import * as ImagePicker from 'expo-image-picker';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { Banknote, CalendarDays, Camera, Check, ChevronLeft, ChevronRight, ImagePlus, Paperclip, RotateCcw, ShieldCheck, X } from 'lucide-react-native';
+import { Banknote, Bluetooth, CalendarDays, Camera, Check, ChevronLeft, ChevronRight, ImagePlus, Paperclip, Printer, RotateCcw, ShieldCheck, X } from 'lucide-react-native';
 import { useAuth } from '../../auth/auth-provider';
 import { ApiError } from '../../lib/api';
 import { formatDate, formatStatus } from '../../lib/display';
+import { formatCashClosingReceipt, getPairedPrinters, getSavedPrinter, openAndroidBluetoothSettings, printThermalCashClosingReceipt, savePrinter, type CashClosingReceipt, type PairedPrinter } from '../../lib/receipt-printer';
 
 type Branch = { id: string; name: string; code: string };
 type Page<T> = { data: T[]; meta?: { totalPages: number; total: number } };
-type CashClosing = {
+type CashClosing = CashClosingReceipt & {
   id: string;
-  closingNumber: string;
-  status: string;
   actualCash: string;
   expectedCash: string;
   difference: string;
@@ -22,10 +22,6 @@ type CashClosing = {
   netTotal: string;
   cashIn: string;
   cashOut: string;
-  transactionCount: number;
-  periodStart: string | null;
-  periodEnd: string | null;
-  closedAt?: string;
   note?: string | null;
   branch?: Branch;
   attachments?: Array<{ id: string; url: string; fileName: string; mimeType: string }>;
@@ -56,6 +52,7 @@ type Preview = {
 };
 type Evidence = ImagePicker.ImagePickerAsset;
 const money = (value?: string | number | null) => `Rp ${Number(value ?? 0).toLocaleString('id-ID', { maximumFractionDigits: 0 })}`;
+const escapeHtml = (value: string) => value.replace(/[&<>"']/g, (character) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[character]!);
 const paymentRows: Array<[string, keyof Preview]> = [['Cash', 'cashSales'], ['QRIS', 'qrisSales'], ['Transfer', 'transferSales'], ['Grab', 'grabSales'], ['GoBiz', 'gobizSales'], ['Kartu', 'cardSales'], ['Lainnya', 'otherSales']];
 const refundRows: Array<[string, keyof Preview]> = [['Cash', 'cashRefund'], ['QRIS', 'qrisRefund'], ['Transfer', 'transferRefund'], ['Grab', 'grabRefund'], ['GoBiz', 'gobizRefund'], ['Kartu', 'cardRefund'], ['Lainnya', 'otherRefund']];
 
@@ -82,6 +79,14 @@ export default function CashClosingScreen() {
   const [evidence, setEvidence] = useState<Evidence[]>([]);
   const [selected, setSelected] = useState<CashClosing | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
+  const [printer, setPrinter] = useState<PairedPrinter | null>(null);
+  const [printerPickerVisible, setPrinterPickerVisible] = useState(false);
+  const [printerDevices, setPrinterDevices] = useState<PairedPrinter[]>([]);
+  const [printerLoading, setPrinterLoading] = useState(false);
+  const [printing, setPrinting] = useState(false);
+  const [printError, setPrintError] = useState('');
+
+  useEffect(() => { void getSavedPrinter().then(setPrinter).catch(() => setPrinter(null)); }, []);
 
   useEffect(() => {
     let active = true;
@@ -172,9 +177,56 @@ export default function CashClosingScreen() {
   async function openDetail(row: CashClosing) {
     setSelected(row);
     setDetailLoading(true);
+    setPrintError('');
     try { setSelected(await authorizedRequest<CashClosing>(`cash-closings/${row.id}`)); }
     catch (cause) { setError(cause instanceof Error ? cause.message : 'Detail closing belum dapat dimuat.'); }
     finally { setDetailLoading(false); }
+  }
+
+  async function showPrinterPicker() {
+    setPrinterPickerVisible(true);
+    setPrinterLoading(true);
+    setPrintError('');
+    try { setPrinterDevices(await getPairedPrinters()); }
+    catch (cause) { setPrintError(cause instanceof Error ? cause.message : 'Perangkat printer tidak dapat dimuat.'); }
+    finally { setPrinterLoading(false); }
+  }
+
+  async function sendBluetoothReceipt(target: PairedPrinter) {
+    if (!selected) return;
+    setPrinting(true);
+    setPrintError('');
+    try { await printThermalCashClosingReceipt(selected, target); }
+    catch (cause) { setPrintError(cause instanceof Error ? cause.message : 'Nota cash closing gagal dicetak.'); }
+    finally { setPrinting(false); }
+  }
+
+  async function choosePrinter(target: PairedPrinter) {
+    setPrinterLoading(true);
+    setPrintError('');
+    try {
+      await savePrinter(target);
+      setPrinter(target);
+      setPrinterPickerVisible(false);
+      await sendBluetoothReceipt(target);
+    } catch (cause) { setPrintError(cause instanceof Error ? cause.message : 'Printer gagal disimpan.'); }
+    finally { setPrinterLoading(false); }
+  }
+
+  async function printClosing() {
+    if (!selected || detailLoading || printing) return;
+    setPrintError('');
+    if (Platform.OS === 'android') {
+      if (!printer) { await showPrinterPicker(); return; }
+      await sendBluetoothReceipt(printer);
+      return;
+    }
+    setPrinting(true);
+    const receipt = formatCashClosingReceipt(selected);
+    const html = `<!doctype html><html><head><meta name="viewport" content="width=device-width, initial-scale=1"><style>@page{size:58mm auto;margin:3mm}*{box-sizing:border-box}body{width:52mm;margin:0 auto;color:#111;font:9px "Courier New",monospace}pre{white-space:pre-wrap;overflow-wrap:anywhere;line-height:1.35}</style></head><body><pre>${escapeHtml(receipt)}</pre></body></html>`;
+    try { await Print.printAsync({ html }); }
+    catch (cause) { setPrintError(cause instanceof Error ? cause.message : 'Nota cash closing gagal dicetak.'); }
+    finally { setPrinting(false); }
   }
 
   if (formVisible) return <View style={styles.screen}>
@@ -216,7 +268,59 @@ export default function CashClosingScreen() {
     {!loading && canRead && !filteredRows.length ? <Text style={styles.empty}>Belum ada closing pada filter ini.</Text> : null}
   </ScrollView>
   {canCreate ? <Pressable accessibilityRole="button" disabled={!preview?.transactionCount} onPress={() => { setFormVisible(true); setError(''); }} style={[styles.createButton, !preview?.transactionCount && styles.disabled]}><PlusIcon /><Text style={styles.createButtonText}>Tutup kas baru</Text></Pressable> : null}
-  <Modal visible={detailLoading || Boolean(selected)} transparent animationType="slide" onRequestClose={() => setSelected(null)}><View style={styles.modalBackdrop}><View style={[styles.detailSheet, { paddingBottom: Math.max(insets.bottom + 8, 24) }]}><View style={styles.detailHeader}><View><Text style={styles.cardTitle}>Detail transaksi</Text><Text style={styles.muted}>{selected?.closingNumber}</Text></View><Pressable accessibilityRole="button" accessibilityLabel="Tutup detail" onPress={() => setSelected(null)} style={styles.closeButton}><X size={19} color="#526276" /></Pressable></View>{detailLoading ? <ActivityIndicator style={styles.loader} color="#07885b" /> : selected ? <ScrollView style={styles.detailContent}><View style={styles.detailBanner}><Banknote size={19} color="#07885b" /><View style={styles.closingLabels}><Text style={styles.cardTitle}>Cash closing</Text><Text style={styles.muted}>{selected.closedAt ? formatDate(selected.closedAt) : '—'}</Text></View><Text style={styles.bannerAmount}>{money(selected.totalSales)}</Text></View><DetailRow label="Cabang" value={selected.branch?.name ?? '—'} /><DetailRow label="Periode" value={`${selected.periodStart ? formatDate(selected.periodStart) : '—'} - ${selected.periodEnd ? formatDate(selected.periodEnd) : '—'}`} /><DetailRow label="Total refund" value={money(selected.totalRefund)} /><DetailRow label="Kas masuk" value={money(selected.cashIn)} /><DetailRow label="Kas keluar" value={money(selected.cashOut)} /><DetailRow label="Kas seharusnya" value={money(selected.expectedCash)} /><DetailRow label="Kas fisik aktual" value={money(selected.actualCash)} /><View style={[styles.differenceRow, Number(selected.difference) === 0 ? styles.differenceMatch : styles.differenceWarn]}><Text style={styles.differenceLabel}>Selisih kas</Text><Text style={styles.differenceValue}>{money(selected.difference)}</Text></View>{selected.note ? <><Text style={styles.sectionTitle}>Catatan</Text><Text style={styles.muted}>{selected.note}</Text></> : null}<Text style={styles.sectionTitle}>Lampiran ({selected.attachments?.length ?? 0})</Text><View style={styles.evidenceGrid}>{selected.attachments?.map((attachment) => <Image key={attachment.id} source={{ uri: attachment.url }} accessibilityLabel={attachment.fileName} style={styles.evidenceImage} />)}</View></ScrollView> : null}</View></View></Modal>
+  <Modal visible={detailLoading || Boolean(selected)} transparent animationType="slide" onRequestClose={() => setSelected(null)}>
+    <View style={styles.modalBackdrop}>
+      <View style={[styles.detailSheet, { paddingBottom: Math.max(insets.bottom + 8, 24) }]}>
+        <View style={styles.detailHeader}>
+          <View><Text style={styles.cardTitle}>Detail cash closing</Text><Text style={styles.muted}>{selected?.closingNumber}</Text></View>
+          <View style={styles.detailActions}>
+            <Pressable accessibilityRole="button" accessibilityLabel="Cetak nota cash closing" disabled={detailLoading || printing || !selected} onPress={() => void printClosing()} style={[styles.printAction, (detailLoading || printing || !selected) && styles.disabled]}>
+              {printing ? <ActivityIndicator size="small" color="#087f5b" /> : <Printer size={18} color="#087f5b" />}
+            </Pressable>
+            {Platform.OS === 'android' ? <Pressable accessibilityRole="button" accessibilityLabel="Pilih printer Bluetooth" onPress={() => void showPrinterPicker()} style={styles.printAction}><Bluetooth size={18} color="#087f5b" /></Pressable> : null}
+            <Pressable accessibilityRole="button" accessibilityLabel="Tutup detail" onPress={() => setSelected(null)} style={styles.closeButton}><X size={19} color="#526276" /></Pressable>
+          </View>
+        </View>
+        {printError ? <Text style={styles.printError}>{printError}</Text> : null}
+        {detailLoading ? <ActivityIndicator style={styles.loader} color="#07885b" /> : selected ? <ScrollView style={styles.detailContent}>
+          <View style={styles.detailBanner}><Banknote size={19} color="#07885b" /><View style={styles.closingLabels}><Text style={styles.cardTitle}>Total penjualan</Text><Text style={styles.muted}>{selected.closedAt ? formatDate(selected.closedAt) : '—'}</Text></View><Text style={styles.bannerAmount}>{money(selected.totalSales)}</Text></View>
+          <Text style={styles.sectionTitle}>Rincian pemasukan per metode</Text>
+          <DetailRow label="Cash" value={money(selected.cashSales)} />
+          <DetailRow label="QRIS" value={money(selected.qrisSales)} />
+          <DetailRow label="Transfer" value={money(selected.transferSales)} />
+          <DetailRow label="Grab" value={money(selected.grabSales)} />
+          <DetailRow label="GoBiz" value={money(selected.gobizSales)} />
+          <DetailRow label="Kartu" value={money(selected.cardSales)} />
+          <DetailRow label="Lainnya" value={money(selected.otherSales)} />
+          <View style={[styles.differenceRow, styles.differenceMatch]}><Text style={styles.differenceLabel}>Total penjualan</Text><Text style={styles.differenceValue}>{money(selected.totalSales)}</Text></View>
+          <DetailRow label="Cabang" value={selected.branch?.name ?? '—'} />
+          <DetailRow label="Periode" value={`${selected.periodStart ? formatDate(selected.periodStart) : '—'} - ${selected.periodEnd ? formatDate(selected.periodEnd) : '—'}`} />
+          <DetailRow label="Total refund" value={money(selected.totalRefund)} />
+          <Text style={styles.sectionTitle}>Pergerakan kas</Text>
+          <DetailRow label="Kas masuk" value={money(selected.cashIn)} />
+          <DetailRow label="Kas keluar" value={money(selected.cashOut)} />
+          <DetailRow label="Kas seharusnya" value={money(selected.expectedCash)} />
+          <DetailRow label="Kas fisik aktual" value={money(selected.actualCash)} />
+          <View style={[styles.differenceRow, Number(selected.difference) === 0 ? styles.differenceMatch : styles.differenceWarn]}><Text style={styles.differenceLabel}>Selisih kas</Text><Text style={styles.differenceValue}>{money(selected.difference)}</Text></View>
+          {selected.note ? <><Text style={styles.sectionTitle}>Catatan</Text><Text style={styles.muted}>{selected.note}</Text></> : null}
+          <Text style={styles.sectionTitle}>Lampiran ({selected.attachments?.length ?? 0})</Text>
+          <View style={styles.evidenceGrid}>{selected.attachments?.map((attachment) => <Image key={attachment.id} source={{ uri: attachment.url }} accessibilityLabel={attachment.fileName} style={styles.evidenceImage} />)}</View>
+        </ScrollView> : null}
+      </View>
+    </View>
+  </Modal>
+  <Modal visible={printerPickerVisible} transparent animationType="slide" onRequestClose={() => setPrinterPickerVisible(false)}>
+    <View style={styles.modalBackdrop}>
+      <View style={[styles.printerSheet, { paddingBottom: Math.max(insets.bottom + 8, 24) }]}>
+        <View style={styles.printerHeader}><Text style={styles.printerTitle}>Pilih printer Bluetooth</Text><Pressable accessibilityRole="button" accessibilityLabel="Tutup pilihan printer" onPress={() => setPrinterPickerVisible(false)} style={styles.closeButton}><X size={19} color="#526276" /></Pressable></View>
+      {printError ? <Text style={styles.printError}>{printError}</Text> : null}
+        {printerLoading ? <ActivityIndicator style={styles.loader} color="#07885b" /> : null}
+        {!printerLoading && !printerDevices.length ? <Text style={styles.printerEmpty}>Tidak ada printer yang dipasangkan.</Text> : null}
+        {printerDevices.map((device) => <Pressable key={device.address} accessibilityRole="button" onPress={() => void choosePrinter(device)} style={styles.printerRow}><Bluetooth size={18} color="#087f5b" /><View style={styles.closingLabels}><Text style={styles.printerName}>{device.name}</Text><Text style={styles.muted}>{device.address}</Text></View><ChevronRight size={17} color="#7b8ba0" /></Pressable>)}
+        <Pressable accessibilityRole="button" onPress={openAndroidBluetoothSettings} style={styles.printerSettings}><Text style={styles.printerSettingsText}>Pengaturan Bluetooth</Text></Pressable>
+      </View>
+    </View>
+  </Modal>
   </View>;
 }
 
@@ -228,6 +332,17 @@ function PlusIcon() { return <Banknote size={17} color="#fff" />; }
 
 const styles = StyleSheet.create({
   screen: { flex: 1, backgroundColor: '#f5f8f7' },
+  detailActions: { flexDirection: 'row', alignItems: 'center', gap: 7 },
+  printAction: { width: 34, height: 34, alignItems: 'center', justifyContent: 'center', borderRadius: 9, backgroundColor: '#e6f7ef' },
+  printError: { marginBottom: 8, padding: 10, borderRadius: 9, color: '#a3332a', backgroundColor: '#fff1ef', fontSize: 9, lineHeight: 14 },
+  printerSheet: { paddingHorizontal: 15, paddingTop: 15, borderTopLeftRadius: 16, borderTopRightRadius: 16, backgroundColor: '#fff' },
+  printerHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 },
+  printerTitle: { color: '#25364a', fontSize: 13, fontWeight: '900' },
+  printerRow: { minHeight: 54, flexDirection: 'row', alignItems: 'center', gap: 10, borderBottomWidth: 1, borderBottomColor: '#edf1f4' },
+  printerName: { color: '#25364a', fontSize: 10, fontWeight: '800' },
+  printerEmpty: { paddingVertical: 14, color: '#8191a3', fontSize: 10, textAlign: 'center' },
+  printerSettings: { alignItems: 'center', marginTop: 10, padding: 10, borderRadius: 9, backgroundColor: '#edf7f2' },
+  printerSettingsText: { color: '#087f5b', fontSize: 10, fontWeight: '800' },
   listContent: { flex: 1 }, listBody: { padding: 16, paddingTop: 12, paddingBottom: 20 },
   formHeader: { minHeight: 52, flexDirection: 'row', alignItems: 'center', gap: 10, paddingHorizontal: 15, backgroundColor: '#fff' },
   backButton: { width: 34, height: 34, alignItems: 'center', justifyContent: 'center' }, formTitle: { color: '#172338', fontSize: 15, fontWeight: '900' },

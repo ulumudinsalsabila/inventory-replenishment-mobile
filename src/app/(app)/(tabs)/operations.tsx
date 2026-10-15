@@ -15,8 +15,7 @@ const adminFeatures: Feature[] = [
   { section: 'Stok & Gudang', title: 'Stok', description: 'Ketersediaan produk per gudang', destination: '/(app)/inventory', permission: 'inventory.read', icon: 'PackageSearch' },
   { section: 'Stok & Gudang', title: 'Pergerakan stok', description: 'Riwayat barang masuk dan keluar', destination: '/(app)/movements', permission: 'inventory.read', icon: 'ClipboardList' },
   { section: 'Stok & Gudang', title: 'Permintaan stok', description: 'Ajukan atau tinjau permintaan stok', destination: '/(app)/stock-requests', permission: 'inventory.read', icon: 'ClipboardList' },
-  { section: 'Kas', title: 'Cash in/out', description: 'Catat kas masuk atau keluar', destination: '/(app)/cash', permission: 'cash_transaction.create', icon: 'Banknote' },
-  { section: 'Kas', title: 'Cash closing', description: 'Rekonsiliasi dan penutupan kas', destination: '/(app)/cash-closing', permission: 'cash_closing.read', icon: 'Banknote' },
+  { section: 'Kas', title: 'Cash in/out', description: 'Catat kas masuk atau keluar', destination: '/(app)/cash-in-out', permission: 'cash_transaction.create', icon: 'Banknote' },
   { section: 'Akun', title: 'Akun / profil', description: 'Peran, akses, dan pengaturan akun', destination: '/(app)/(tabs)/account', icon: 'UserRound' },
 ];
 const employeeFeatures: Feature[] = [
@@ -24,8 +23,7 @@ const employeeFeatures: Feature[] = [
   { section: 'Stok & Gudang', title: 'Stok', description: 'Ketersediaan produk di gudang', destination: '/(app)/inventory', permission: 'inventory.read', icon: 'PackageSearch' },
   { section: 'Stok & Gudang', title: 'Pergerakan stok', description: 'Riwayat barang masuk dan keluar', destination: '/(app)/movements', permission: 'inventory.read', icon: 'ClipboardList' },
   { section: 'Stok & Gudang', title: 'Permintaan stok', description: 'Ajukan dan pantau permintaan stok', destination: '/(app)/stock-requests', permission: 'inventory.read', icon: 'ClipboardList' },
-  { section: 'Kas', title: 'Cash in/out', description: 'Catat kas masuk atau keluar', destination: '/(app)/cash', permission: 'cash_transaction.create', icon: 'Banknote' },
-  { section: 'Kas', title: 'Cash closing', description: 'Rekonsiliasi dan penutupan kas', destination: '/(app)/cash-closing', permission: 'cash_closing.read', icon: 'Banknote' },
+  { section: 'Kas', title: 'Cash in/out', description: 'Catat kas masuk atau keluar', destination: '/(app)/cash-in-out', permission: 'cash_transaction.create', icon: 'Banknote' },
   { section: 'Akun', title: 'Akun / profil', description: 'Peran, akses, dan pengaturan akun', destination: '/(app)/(tabs)/account', icon: 'UserRound' },
 ];
 
@@ -35,8 +33,7 @@ export default function OperationsScreen() {
   const features = isEmployee ? employeeFeatures : adminFeatures;
   const visibleFeatures = features.filter(({ permission, title }) =>
     !permission || user?.permissions.includes(permission) ||
-    (title === 'Permintaan stok' && (user?.permissions.includes('stock_request.create') || user?.permissions.includes('stock_request.review'))) ||
-    (title === 'Cash closing' && user?.permissions.includes('cash_closing.create')),
+    (title === 'Permintaan stok' && (user?.permissions.includes('stock_request.create') || user?.permissions.includes('stock_request.review'))),
   );
   const sections = [...new Set(visibleFeatures.map((feature) => feature.section))];
   return (
