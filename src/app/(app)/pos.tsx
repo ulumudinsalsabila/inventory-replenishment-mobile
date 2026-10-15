@@ -1,4 +1,4 @@
-﻿import { useEffect, useMemo, useState } from 'react';
+﻿import { useEffect, useMemo, useRef, useState } from 'react';
 import { Barcode, ChevronUp, LogOut, Minus, Plus, ShoppingCart, Utensils } from 'lucide-react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { ActivityIndicator, Image, Modal, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
@@ -55,6 +55,10 @@ export default function PosScreen() {
   const [takeaway, setTakeaway] = useState(true);
   const [selectedCategory, setSelectedCategory] = useState('Semua');
   const [displayOnly, setDisplayOnly] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
+  const [reloadKey, setReloadKey] = useState(0);
+  const [warehouseReloadKey, setWarehouseReloadKey] = useState(0);
+  const loadedWarehouseId = useRef('');
 
   useEffect(() => {
     let active = true;
@@ -76,27 +80,38 @@ export default function PosScreen() {
     if (!branchId) return;
     let active = true;
     // eslint-disable-next-line react-hooks/set-state-in-effect
-    setWarehouseId(''); setProducts([]);
+    setWarehouseId(''); setProducts([]); loadedWarehouseId.current = '';
     void authorizedRequest<{ data: Warehouse[] }>('catalog/warehouses?page=1&perPage=100')
-      .then((result) => { if (!active) return; const choices = result.data.filter((row) => row.branchId === branchId); setWarehouses(choices); if (choices[0]) setWarehouseId(choices[0].id); })
-      .catch((e: Error) => { if (active) setError(e.message); });
+      .then((result) => { if (!active) return; const choices = result.data.filter((row) => row.branchId === branchId); setWarehouses(choices); if (choices[0]) setWarehouseId(choices[0].id); else setProductsLoading(false); })
+      .catch((e: Error) => { if (active) { setError(e.message); setProductsLoading(false); } })
+      .finally(() => { if (active) setRefreshing(false); });
     return () => { active = false; };
-  }, [branchId, authorizedRequest]);
+  }, [branchId, warehouseReloadKey, authorizedRequest]);
 
   useEffect(() => {
     if (!warehouseId) return;
     let active = true;
-    // eslint-disable-next-line react-hooks/set-state-in-effect
-    setProducts([]); setProductsLoading(true); setError('');
+    // Keep the current catalog on screen during a refresh; only clear it when the warehouse changes.
+    if (loadedWarehouseId.current !== warehouseId) {
+      setProducts([]); setProductsLoading(true);
+    }
     void authorizedRequest<Product[]>(`pos/catalog?warehouseId=${encodeURIComponent(warehouseId)}`)
-      .then((rows) => { if (active) setProducts(rows); })
+      .then((rows) => { if (active) { setProducts(rows); setError(''); loadedWarehouseId.current = warehouseId; } })
       .catch((e: Error) => { if (active) setError(e.message); })
-      .finally(() => { if (active) setProductsLoading(false); });
+      .finally(() => { if (active) { setProductsLoading(false); setRefreshing(false); } });
     return () => { active = false; };
-  }, [warehouseId, authorizedRequest]);
+  }, [warehouseId, reloadKey, authorizedRequest]);
+
+  function refreshCatalog() {
+    setRefreshing(true);
+    if (warehouseId) setReloadKey((value) => value + 1);
+    else setWarehouseReloadKey((value) => value + 1);
+  }
 
   const categories = useMemo(() => ['Semua', ...new Set(products.map((product) => product.category?.name).filter((name): name is string => Boolean(name)))], [products]);
-  const visible = useMemo(() => products.filter((p) => (!displayOnly || Number(p.displayQuantity ?? 0) > 0) && (selectedCategory === 'Semua' || p.category?.name === selectedCategory) && `${p.name} ${p.sku} ${p.barcode ?? ''} ${p.category?.name ?? ''}`.toLowerCase().includes(search.toLowerCase())), [displayOnly, products, search, selectedCategory]);
+  // A category from a previous catalog may no longer exist; fall back to "Semua" instead of showing an empty grid.
+  const activeCategory = categories.includes(selectedCategory) ? selectedCategory : 'Semua';
+  const visible = useMemo(() => products.filter((p) => (!displayOnly || Number(p.displayQuantity ?? 0) > 0) && (activeCategory === 'Semua' || p.category?.name === activeCategory) && `${p.name} ${p.sku} ${p.barcode ?? ''} ${p.category?.name ?? ''}`.toLowerCase().includes(search.toLowerCase())), [activeCategory, displayOnly, products, search]);
   const priceFor = (line: Line) => Number(line.product.sellingUnits.find((unit) => unit.unitId === line.unitId)?.sellingPrice ?? line.product.basePrice) + Number(line.product.variants?.find((v) => v.id === line.variantId)?.priceDelta ?? 0) + line.addonIds.reduce((sum, id) => sum + Number(line.product.addons?.find((a) => a.id === id)?.basePrice ?? 0), 0);
   const subtotal = cart.reduce((sum, line) => sum + priceFor(line) * line.quantity, 0);
   const discountAmount = Math.min(Math.max(Number(discount) || 0, 0), subtotal);
@@ -155,6 +170,8 @@ export default function PosScreen() {
       setPendingOrder(paid);
       const completed = await authorizedRequest<Order>(`orders/${paid.id}/complete`, { method: 'POST' });
       setReceipt(completed); setPendingOrder(null); setCart([]); setCartVisible(false); setPaymentStep(false); setTakeaway(true); setCustomer(''); setDiscount('0');
+      // Stock changed on the server; reload the catalog so the next order sees current availability.
+      setReloadKey((value) => value + 1);
     } catch (e) { setError(e instanceof Error ? e.message : 'Transaksi gagal.'); }
     finally { setSubmitting(false); }
   }
@@ -257,13 +274,15 @@ export default function PosScreen() {
       userBranchId={user?.branchId ?? null}
       products={products}
       categories={categories}
-      selectedCategory={selectedCategory}
+      selectedCategory={activeCategory}
       displayOnly={displayOnly}
       search={search}
       visibleProducts={visible}
       cart={cart}
       total={total}
       loading={Boolean(warehouseId) && productsLoading}
+      refreshing={refreshing}
+      onRefresh={refreshCatalog}
       error={error}
       optionProduct={optionProduct}
       optionUnit={optionUnit}

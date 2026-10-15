@@ -5,6 +5,7 @@ import { Banknote, Box, ChevronDown, ChevronRight, ClipboardCheck, LockKeyhole, 
 import Svg, { Circle, Defs, G, LinearGradient, Rect, Stop } from 'react-native-svg';
 import { useAuth } from '../../../auth/auth-provider';
 import { ApiError } from '../../../lib/api';
+import { getRange, rangeOptions, type RangePreset } from '../../../lib/date-range';
 import { AdminDashboard } from '../../../components/admin-dashboard';
 
 type Dashboard = {
@@ -25,26 +26,11 @@ type Dashboard = {
 };
 type Branch = { id: string; name: string; code: string };
 type BranchPage = { data: Branch[] };
-type RangePreset = 'today' | '7days' | '30days' | 'month';
 
 const money = (value: string | number | null | undefined) => `Rp ${Number(value ?? 0).toLocaleString('id-ID', { maximumFractionDigits: 0 })}`;
 const timeFormatter = new Intl.DateTimeFormat('id-ID', { hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Jakarta' });
-const rangeOptions: Array<{ id: RangePreset; label: string; days?: number }> = [
-  { id: 'today', label: 'Hari ini', days: 1 }, { id: '7days', label: '7 hari', days: 7 },
-  { id: '30days', label: '30 hari', days: 30 }, { id: 'month', label: 'Bulan ini' },
-];
 const orderStatusLabel: Record<string, string> = { COMPLETED: 'SELESAI', PARTIALLY_REFUNDED: 'REFUND', REFUNDED: 'REFUND', PAID: 'DIBAYAR', PENDING_PAYMENT: 'MENUNGGU', CANCELLED: 'BATAL' };
 
-function jakartaDate() {
-  return new Intl.DateTimeFormat('sv-SE', { year: 'numeric', month: '2-digit', day: '2-digit', timeZone: 'Asia/Jakarta' }).format(new Date());
-}
-function getRange(preset: RangePreset) {
-  const to = jakartaDate();
-  const start = new Date(`${to}T00:00:00.000Z`);
-  if (preset === 'month') start.setUTCDate(1);
-  else start.setUTCDate(start.getUTCDate() - (rangeOptions.find((item) => item.id === preset)?.days ?? 1) + 1);
-  return { from: start.toISOString().slice(0, 10), to };
-}
 
 function PaymentChart({ methods }: { methods: Dashboard['salesByMethod'] }) {
   const rows = useMemo(() => {

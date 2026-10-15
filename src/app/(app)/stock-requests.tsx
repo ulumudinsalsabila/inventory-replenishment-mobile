@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { ActivityIndicator, Modal, Pressable, RefreshControl, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
-import { router } from 'expo-router';
-import { ChevronDown, ChevronRight, Minus, Package, PackagePlus, Plus, Search, X } from 'lucide-react-native';
+import { ActivityIndicator, Image, Modal, Platform, Pressable, RefreshControl, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
+import { File } from 'expo-file-system';
+import * as ImagePicker from 'expo-image-picker';
+import { Camera, Check, ChevronDown, ChevronRight, ImagePlus, Minus, Package, PackagePlus, Plus, Search, X } from 'lucide-react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useAuth } from '../../auth/auth-provider';
 import { ApiError } from '../../lib/api';
@@ -19,14 +20,25 @@ type StockRequest = {
   requestedBy?: Actor | null; reviewedBy?: Actor | null;
 };
 type RequestPage = { data: StockRequest[]; meta: { total: number } };
-type RequestDetail = StockRequest & { items: { id: string; productId: string; requestedQty: string; approvedQty?: string | null; allocatedQty: string; remainingTransferQty: string; sourceAvailable: string; product: { id: string; name: string; sku: string; unit?: { code: string } } }[] };
+type RequestAction = 'PROCESS' | 'SEND' | 'RECEIVE';
+type RequestDetail = StockRequest & {
+  items: { id: string; productId: string; transferItemId?: string; requestedQty: string; sentQty?: string | null; receivedQty?: string | null; product: { id: string; name: string; sku: string }; unit?: { code: string } | null }[];
+  evidenceImages?: { id: string; url: string; stage?: string | null; uploadedBy?: Actor | null }[];
+  history?: { id: string; action: string; createdAt: string; actor?: Actor | null }[];
+};
 type RequestItem = { productId: string; unitId?: string; requestedQty: string; note?: string };
 type Selector = 'branch' | 'source' | 'destination' | 'product' | null;
 
-const STATUS_LABEL: Record<string, string> = {
-  DRAFT: 'Draft', SUBMITTED: 'Diajukan', UNDER_REVIEW: 'Ditinjau', APPROVED: 'Disetujui',
-  PARTIAL_APPROVED: 'Disetujui sebagian', REJECTED: 'Ditolak', FULFILLED: 'Terpenuhi', CANCELLED: 'Dibatalkan',
+const WORKFLOW = ['SUBMITTED', 'PROCESSING', 'IN_TRANSIT', 'RECEIVED'] as const;
+const STATUS_LABEL: Record<string, string> = { SUBMITTED: 'Permintaan masuk', PROCESSING: 'Diproses', IN_TRANSIT: 'Dikirim', RECEIVED: 'Diterima' };
+// READY is the step name recorded for requests created before the four-step workflow.
+const HISTORY_LABEL: Record<string, string> = { SUBMITTED: 'Permintaan masuk', READY: 'Permintaan masuk', PROCESSED: 'Diproses', SENT: 'Dikirim', RECEIVED: 'Diterima' };
+const ACTION_COPY: Record<RequestAction, { button: string; done: string }> = {
+  PROCESS: { button: 'Proses permintaan', done: 'Permintaan diproses. Cabang sudah diberi tahu.' },
+  SEND: { button: 'Kirim barang', done: 'Barang dikirim. Stok gudang pusat sudah dikurangi.' },
+  RECEIVE: { button: 'Konfirmasi diterima', done: 'Penerimaan barang tersimpan.' },
 };
+const MAX_PHOTOS = 12;
 const requestPath = 'stock-requests?page=1&perPage=20&sortBy=createdAt&sortOrder=desc';
 
 function ShoppingBagIcon() { return <Package size={22} color="#c70d17" />; }
@@ -35,7 +47,7 @@ export default function StockRequestsScreen() {
   const { user, authorizedRequest } = useAuth();
   const insets = useSafeAreaInsets();
   const canCreate = user?.permissions.includes('stock_request.create') ?? false;
-  const canReview = user?.permissions.includes('stock_request.review') ?? false;
+  const canProcess = user?.permissions.includes('transfer.send') ?? false;
   const canRead = user?.permissions.includes('inventory.read') ?? false;
   const userBranchId = user?.branchId ?? '';
   const [requests, setRequests] = useState<StockRequest[]>([]);
@@ -57,13 +69,10 @@ export default function StockRequestsScreen() {
   const [detailId, setDetailId] = useState<string | null>(null);
   const [detail, setDetail] = useState<RequestDetail | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
-  const [approvalValues, setApprovalValues] = useState<Record<string, string>>({});
-  const [reviewNote, setReviewNote] = useState('');
-  const [transferVisible, setTransferVisible] = useState(false);
-  const [transferQuantities, setTransferQuantities] = useState<Record<string, string>>({});
-  const [transferNote, setTransferNote] = useState('');
-  const [transferError, setTransferError] = useState('');
-  const [transferSaving, setTransferSaving] = useState(false);
+  const [receiveValues, setReceiveValues] = useState<Record<string, string>>({});
+  const [photos, setPhotos] = useState<ImagePicker.ImagePickerAsset[]>([]);
+  const [actionSaving, setActionSaving] = useState(false);
+  const [actionError, setActionError] = useState('');
   const previousSourceWarehouseId = useRef('');
 
   // eslint-disable-next-line react-hooks/set-state-in-effect
@@ -159,82 +168,88 @@ export default function StockRequestsScreen() {
     setSaving(true); setError('');
     try {
       await authorizedRequest<StockRequest>('stock-requests', { method: 'POST', body: JSON.stringify({ branchId, sourceWarehouseId, destinationWarehouseId, note: note.trim() || undefined, items }) });
-      setFormVisible(false); setNotice('Draft permintaan berhasil dibuat. Kirim pengajuan setelah data diperiksa.'); setReloadKey((key) => key + 1);
+      setFormVisible(false); setNotice('Permintaan terkirim dan menunggu diproses gudang pusat.'); setReloadKey((key) => key + 1);
     } catch (cause) {
       setError(cause instanceof ApiError ? cause.message : 'Permintaan belum dapat dibuat.');
     } finally { setSaving(false); }
   }
 
-  async function runAction(id: string, action: 'submit' | 'cancel') {
-    setSaving(true); setError(''); setNotice('');
+  async function openDetail(id: string) {
+    setDetailId(id); setDetail(null); setReceiveValues({}); setPhotos([]); setActionError(''); setDetailLoading(true);
     try {
-      await authorizedRequest<StockRequest>(`stock-requests/${id}/${action}`, { method: 'POST' });
-      setNotice(action === 'submit' ? 'Permintaan berhasil diajukan.' : 'Permintaan dibatalkan.'); setReloadKey((key) => key + 1);
-    } catch (cause) { setError(cause instanceof ApiError ? cause.message : 'Aksi belum dapat diproses.'); }
-    finally { setSaving(false); }
-  }
-
-  async function openReview(id: string) {
-    setDetailId(id); setDetail(null); setReviewNote(''); setApprovalValues({}); setDetailLoading(true);
-    try {
-      const result = await authorizedRequest<RequestDetail>(`stock-requests/${id}`);
-      setDetail(result);
-      setApprovalValues(Object.fromEntries(result.items.map((item) => [item.id, item.approvedQty ?? item.requestedQty])));
+      setDetail(await authorizedRequest<RequestDetail>(`stock-requests/${id}`));
     } catch (cause) { setError(cause instanceof ApiError ? cause.message : 'Detail permintaan tidak dapat dimuat.'); setDetailId(null); }
     finally { setDetailLoading(false); }
   }
 
-  async function reviewAction(action: 'review' | 'approve' | 'reject') {
-    if (!detail) return;
-    if (action === 'reject' && !reviewNote.trim()) { setError('Alasan penolakan wajib diisi.'); return; }
-    if (action === 'approve' && detail.items.some((item) => !Number.isFinite(Number(approvalValues[item.id])) || Number(approvalValues[item.id]) < 0 || Number(approvalValues[item.id]) > Number(item.requestedQty))) { setError('Jumlah disetujui harus berada di antara 0 dan jumlah yang diminta.'); return; }
-    if (action === 'approve' && detail.items.every((item) => Number(approvalValues[item.id] ?? item.requestedQty) === 0) && !reviewNote.trim()) { setError('Catatan wajib diisi jika semua barang ditolak.'); return; }
-    setSaving(true); setError(''); setNotice('');
-    try {
-      const body = action === 'approve'
-        ? { items: detail.items.map((item) => ({ itemId: item.id, approvedQty: approvalValues[item.id] ?? item.requestedQty })), reviewNote: reviewNote.trim() || undefined }
-        : action === 'reject' ? { reviewNote: reviewNote.trim() } : undefined;
-      await authorizedRequest(`stock-requests/${detail.id}/${action}`, { method: 'POST', ...(body ? { body: JSON.stringify(body) } : {}) });
-      setNotice(action === 'review' ? 'Peninjauan dimulai. Periksa jumlah lalu setujui atau tolak permintaan.' : action === 'approve' ? 'Keputusan persetujuan berhasil dikirim.' : 'Permintaan berhasil ditolak.');
-      setReloadKey((key) => key + 1);
-      if (action === 'review' || action === 'approve') {
-        const refreshed = await authorizedRequest<RequestDetail>(`stock-requests/${detail.id}`);
-        setDetail(refreshed);
-        setApprovalValues(Object.fromEntries(refreshed.items.map((item) => [item.id, item.approvedQty ?? item.requestedQty])));
-      } else { setDetailId(null); setDetail(null); }
-    } catch (cause) { setError(cause instanceof ApiError ? cause.message : 'Aksi review belum dapat diproses.'); }
-    finally { setSaving(false); }
+  function closeDetail() {
+    if (actionSaving) return;
+    setDetailId(null); setDetail(null); setPhotos([]); setActionError('');
   }
 
-  function openTransferForm() {
-    if (!detail) return;
-    setTransferQuantities(Object.fromEntries(detail.items.filter((item) => Number(item.remainingTransferQty) > 0).map((item) => [item.id, item.remainingTransferQty])));
-    setTransferNote(''); setTransferError(''); setTransferVisible(true);
+  async function pickPhotos(useCamera: boolean) {
+    const remaining = MAX_PHOTOS - (detail?.evidenceImages?.length ?? 0) - photos.length;
+    if (remaining <= 0) { setActionError(`Maksimal ${MAX_PHOTOS} foto untuk satu permintaan.`); return; }
+    const permission = useCamera ? await ImagePicker.requestCameraPermissionsAsync() : await ImagePicker.requestMediaLibraryPermissionsAsync();
+    if (!permission.granted) { setActionError(useCamera ? 'Izin kamera diperlukan untuk mengambil foto.' : 'Izin galeri diperlukan untuk memilih foto.'); return; }
+    const result = useCamera
+      ? await ImagePicker.launchCameraAsync({ mediaTypes: ['images'], quality: 0.75 })
+      : await ImagePicker.launchImageLibraryAsync({ mediaTypes: ['images'], allowsMultipleSelection: true, selectionLimit: remaining, quality: 0.75 });
+    if (result.canceled || !result.assets.length) return;
+    if (result.assets.some((asset) => Number(asset.fileSize ?? 0) > 5 * 1024 * 1024)) { setActionError('Ukuran setiap foto maksimal 5 MB.'); return; }
+    setPhotos((current) => [...current, ...result.assets].slice(0, remaining + current.length));
+    setActionError('');
   }
 
-  async function createTransfer() {
+  async function uploadPhotos(id: string) {
+    const form = new FormData();
+    photos.forEach((asset, index) => {
+      const name = asset.fileName ?? asset.uri.split('/').pop() ?? `stock-request-${index}.jpg`;
+      if (Platform.OS === 'web') {
+        if (!asset.file) throw new Error('File foto dari browser tidak tersedia.');
+        form.append('images', asset.file, name);
+      } else form.append('images', new File(asset.uri), name);
+    });
+    await authorizedRequest(`stock-requests/${id}/evidence`, { method: 'POST', body: form });
+  }
+
+  async function runStep(action: RequestAction) {
     if (!detail) return;
-    const selectedItems = detail.items.filter((item) => Number(transferQuantities[item.id] ?? 0) > 0);
-    if (!selectedItems.length) { setTransferError('Isi minimal satu jumlah barang yang akan dikirim.'); return; }
-    if (selectedItems.some((item) => !Number.isFinite(Number(transferQuantities[item.id])) || Number(transferQuantities[item.id]) > Number(item.remainingTransferQty))) {
-      setTransferError('Jumlah kirim harus valid dan tidak boleh melebihi sisa approved.'); return;
-    }
-    setTransferSaving(true); setTransferError('');
-    try {
-      await authorizedRequest('warehouse-transfers', {
-        method: 'POST',
-        body: JSON.stringify({
-          stockRequestId: detail.id,
-          sourceWarehouseId: detail.sourceWarehouse.id,
-          destinationWarehouseId: detail.destinationWarehouse.id,
-          note: transferNote.trim() || undefined,
-          items: selectedItems.map((item) => ({ productId: item.productId ?? item.product.id, requestedQty: item.requestedQty, sentQty: transferQuantities[item.id] })),
-        }),
+    const id = detail.id;
+    let body: string | undefined;
+    if (action === 'RECEIVE') {
+      const lines = detail.items.map((item) => {
+        const expected = item.sentQty ?? item.requestedQty;
+        const receivedQty = (receiveValues[item.id] ?? expected).replace(',', '.');
+        return { item, expected, receivedQty };
       });
-      setTransferVisible(false); setDetailId(null); setDetail(null); setReloadKey((key) => key + 1);
-      router.push('/(app)/(tabs)/warehouse-transfers');
-    } catch (cause) { setTransferError(cause instanceof ApiError ? cause.message : 'Transfer gudang belum dapat dibuat.'); }
-    finally { setTransferSaving(false); }
+      if (lines.some((line) => line.receivedQty === '' || !Number.isFinite(Number(line.receivedQty)) || Number(line.receivedQty) < 0)) { setActionError('Isi jumlah diterima yang valid untuk setiap barang.'); return; }
+      body = JSON.stringify({
+        items: lines.map(({ item, expected, receivedQty }) => ({
+          itemId: item.transferItemId,
+          receivedQty,
+          ...(Number(receivedQty) !== Number(expected) ? { discrepancyReason: 'QUANTITY_ERROR', discrepancyNote: 'Selisih dicatat saat penerimaan permintaan stok.' } : {}),
+        })),
+      });
+    }
+    setActionSaving(true); setActionError('');
+    let stepDone = false;
+    try {
+      await authorizedRequest(`stock-requests/${id}/${action.toLowerCase()}`, { method: 'POST', ...(body ? { body } : {}) });
+      stepDone = true;
+      // Upload after the step succeeds so the photos are filed under the new status.
+      if (photos.length) await uploadPhotos(id);
+      setPhotos([]); setReceiveValues({});
+      setNotice(ACTION_COPY[action].done);
+      setDetail(await authorizedRequest<RequestDetail>(`stock-requests/${id}`));
+    } catch (cause) {
+      const message = cause instanceof Error ? cause.message : 'Aksi belum dapat diproses.';
+      setActionError(stepDone ? `Status sudah diperbarui, tetapi foto gagal diunggah: ${message}` : message);
+      if (stepDone) setDetail(await authorizedRequest<RequestDetail>(`stock-requests/${id}`).catch(() => detail));
+    } finally {
+      setActionSaving(false);
+      setReloadKey((key) => key + 1);
+    }
   }
 
   const selectorTitle = selector === 'branch' ? 'Pilih cabang' : selector === 'source' ? 'Pilih gudang asal' : selector === 'destination' ? 'Pilih gudang tujuan' : 'Pilih produk';
@@ -243,19 +258,21 @@ export default function StockRequestsScreen() {
   return (
     <View style={styles.screen}>
       <ScrollView contentContainerStyle={styles.page} refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => { setRefreshing(true); setReloadKey((key) => key + 1); }} tintColor="#c70d17" />}>
-        <View style={styles.headingRow}><View style={styles.heading}><Text style={styles.subtitle}>{canReview ? 'Tinjau pengajuan pegawai dan putuskan jumlah yang disetujui.' : 'Buat draft, lalu ajukan agar admin atau owner dapat meninjau.'}</Text></View>{canCreate ? <Pressable accessibilityRole="button" onPress={openCreateForm} style={styles.createButton}><Text style={styles.createButtonText}>＋ Buat</Text></Pressable> : null}</View>
-        {canReview ? <View style={styles.flowHint}><Text style={styles.flowHintTitle}>Alur admin / owner</Text><Text style={styles.flowHintText}>Buka permintaan berstatus Diajukan → Mulai review → atur jumlah → Setujui → buat transfer gudang.</Text></View> : canCreate ? <View style={styles.flowHint}><Text style={styles.flowHintTitle}>Alur pegawai</Text><Text style={styles.flowHintText}>Buat draft → tekan Ajukan. Admin atau owner akan menerima permintaan untuk ditinjau.</Text></View> : null}
+        <View style={styles.headingRow}><View style={styles.heading}><Text style={styles.subtitle}>{canProcess ? 'Proses, kirim, dan pantau permintaan stok dari cabang.' : 'Ajukan kebutuhan stok ke gudang pusat dan pantau prosesnya.'}</Text></View>{canCreate ? <Pressable accessibilityRole="button" onPress={openCreateForm} style={styles.createButton}><Text style={styles.createButtonText}>＋ Buat</Text></Pressable> : null}</View>
+        <View style={styles.flowHint}><Text style={styles.flowHintTitle}>Alur permintaan stok</Text><Text style={styles.flowHintText}>Permintaan masuk → Diproses → Dikirim → Diterima. {canProcess ? 'Buka permintaan untuk memproses atau mengirim, dan lampirkan foto bila perlu.' : 'Konfirmasi penerimaan saat barang tiba di cabang.'}</Text></View>
         {notice ? <View style={styles.notice}><Text style={styles.noticeText}>{notice}</Text></View> : null}
         {error ? <View style={styles.errorCard}><Text style={styles.errorText}>{error}</Text><Pressable accessibilityRole="button" onPress={() => { setLoading(true); setReloadKey((key) => key + 1); }}><Text style={styles.retry}>Coba lagi</Text></Pressable></View> : null}
         {!canRead ? <View style={styles.empty}><Text style={styles.emptyTitle}>Akses daftar tidak tersedia</Text><Text style={styles.emptyText}>Akun ini dapat membuat pengajuan, tetapi perlu permission inventory.read untuk melihat daftar permintaan.</Text></View> : null}
         {loading ? <ActivityIndicator style={styles.loader} color="#c70d17" size="large" /> : null}
         {canRead && !loading && !error && requests.length === 0 ? <View style={styles.empty}><Text style={styles.emptyTitle}>Belum ada permintaan</Text><Text style={styles.emptyText}>{canCreate ? 'Buat pengajuan pertama untuk mengisi ulang stok cabang.' : 'Permintaan stok akan tampil di sini.'}</Text></View> : null}
         {requests.map((request) => <View key={request.id} style={styles.requestCard}>
-          <View style={styles.requestTop}><View style={styles.requestTitle}><Text style={styles.requestNumber}>{request.requestNumber}</Text><Text style={styles.requestDate}>{formatDate(request.createdAt)} · {request._count.items} produk</Text></View><Text style={[styles.status, request.status === 'REJECTED' || request.status === 'CANCELLED' ? styles.statusMuted : request.status === 'APPROVED' || request.status === 'FULFILLED' ? styles.statusSuccess : styles.statusPending]}>{STATUS_LABEL[request.status] ?? formatStatus(request.status)}</Text></View>
+          <View style={styles.requestTop}><View style={styles.requestTitle}><Text style={styles.requestNumber}>{request.requestNumber}</Text><Text style={styles.requestDate}>{formatDate(request.createdAt)} · {request._count.items} produk</Text></View><Text style={[styles.status, request.status === 'RECEIVED' ? styles.statusSuccess : request.status === 'SUBMITTED' ? styles.statusPending : styles.statusActive]}>{STATUS_LABEL[request.status] ?? formatStatus(request.status)}</Text></View>
           <Text style={styles.route}>{request.branch.name} · {request.sourceWarehouse.name} → {request.destinationWarehouse.name}</Text>
-          <Text style={styles.actorLine}>Pemohon: {request.requestedBy?.name ?? '-'} · Approver: {request.reviewedBy?.name ?? '-'}</Text>
-          {request.reviewNote ? <Text style={styles.reviewNote}>Catatan: {request.reviewNote}</Text> : null}
-          <View style={styles.actions}>{canReview || request.availableActions.includes('CREATE_TRANSFER') ? <Pressable accessibilityRole="button" disabled={saving} onPress={() => void openReview(request.id)} style={styles.actionPrimary}><Text style={styles.actionPrimaryText}>{request.status === 'SUBMITTED' ? 'Tinjau permintaan' : request.status === 'UNDER_REVIEW' ? 'Lanjutkan review' : request.availableActions.includes('CREATE_TRANSFER') ? 'Buat transfer' : 'Detail'}</Text></Pressable> : null}{request.availableActions.includes('SUBMIT') ? <Pressable accessibilityRole="button" disabled={saving} onPress={() => void runAction(request.id, 'submit')} style={styles.actionPrimary}><Text style={styles.actionPrimaryText}>Ajukan</Text></Pressable> : null}{request.availableActions.includes('CANCEL') ? <Pressable accessibilityRole="button" disabled={saving} onPress={() => void runAction(request.id, 'cancel')} style={styles.actionSecondary}><Text style={styles.actionSecondaryText}>Batalkan</Text></Pressable> : null}</View>
+          <Text style={styles.actorLine}>Pemohon: {request.requestedBy?.name ?? '-'} · Diproses oleh: {request.reviewedBy?.name ?? '-'}</Text>
+          <View style={styles.actions}>{(() => {
+            const next = (['PROCESS', 'SEND', 'RECEIVE'] as const).find((name) => request.availableActions?.includes(name));
+            return <Pressable accessibilityRole="button" onPress={() => void openDetail(request.id)} style={next ? styles.actionPrimary : styles.actionSecondary}><Text style={next ? styles.actionPrimaryText : styles.actionSecondaryText}>{next ? ACTION_COPY[next].button : 'Lihat detail'}</Text></Pressable>;
+          })()}</View>
         </View>)}
         <Text style={styles.footerHint}>Tarik layar ke bawah untuk memperbarui status.</Text>
       </ScrollView>
@@ -292,41 +309,64 @@ export default function StockRequestsScreen() {
             })}</View>
             {!filteredProducts.length ? <Text style={styles.noItems}>{productSearch ? 'Barang tidak ditemukan.' : 'Tidak ada barang yang tersedia.'}</Text> : null}
             <View style={styles.noteCard}><Text style={styles.fieldLabel}>Catatan (opsional)</Text><TextInput multiline value={note} onChangeText={setNote} placeholder="Alasan atau informasi tambahan" placeholderTextColor="#8a968f" style={styles.noteInput} /></View>
-            <Text style={styles.formHint}>Pengajuan disimpan sebagai draft. Periksa kembali sebelum mengajukannya untuk ditinjau.</Text>
+            <Text style={styles.formHint}>Permintaan langsung masuk ke gudang pusat dengan status Permintaan masuk.</Text>
             {error ? <Text accessibilityRole="alert" style={styles.errorText}>{error}</Text> : null}
-          </ScrollView><View style={[styles.formFooter, { paddingBottom: Math.max(14, insets.bottom + 8) }]}><View style={styles.requestCartBar}><ShoppingBagIcon /><View style={styles.requestCartCopy}><Text style={styles.requestCartTitle}>{items.reduce((sum, item) => sum + (Number(item.requestedQty) || 0), 0)} barang diminta</Text><Text style={styles.requestCartSubtitle}>{items.length} jenis produk</Text></View><Text style={styles.requestCartCount}>{items.length}</Text></View><Pressable accessibilityRole="button" disabled={saving || !options || !items.length} onPress={() => void createRequest()} style={[styles.submitButton, (saving || !options || !items.length) && styles.disabled]}>{saving ? <ActivityIndicator color="#fff" /> : <Text style={styles.submitText}>Simpan draft</Text>}</Pressable></View>
+          </ScrollView><View style={[styles.formFooter, { paddingBottom: Math.max(14, insets.bottom + 8) }]}><View style={styles.requestCartBar}><ShoppingBagIcon /><View style={styles.requestCartCopy}><Text style={styles.requestCartTitle}>{items.reduce((sum, item) => sum + (Number(item.requestedQty) || 0), 0)} barang diminta</Text><Text style={styles.requestCartSubtitle}>{items.length} jenis produk</Text></View><Text style={styles.requestCartCount}>{items.length}</Text></View><Pressable accessibilityRole="button" disabled={saving || !options || !items.length} onPress={() => void createRequest()} style={[styles.submitButton, (saving || !options || !items.length) && styles.disabled]}>{saving ? <ActivityIndicator color="#fff" /> : <Text style={styles.submitText}>Kirim permintaan</Text>}</Pressable></View>
         </View>
       </Modal>
 
-      <Modal animationType="slide" visible={Boolean(detailId) && !transferVisible} onRequestClose={() => { setDetailId(null); setDetail(null); }}>
+      <Modal animationType="slide" visible={Boolean(detailId)} onRequestClose={closeDetail}>
         <View style={styles.modalScreen}>
-          <View style={[styles.modalHeader, { paddingTop: insets.top + 8, minHeight: 66 + insets.top }]}><Pressable onPress={() => { setDetailId(null); setDetail(null); }} style={styles.headerAction}><X size={19} color="#c70d17" /><Text style={styles.backText}>Tutup</Text></Pressable><Text style={styles.modalTitle}>Review permintaan</Text><View style={{ width: 46 }} /></View>
-          {detailLoading || !detail ? <ActivityIndicator style={styles.loader} color="#c70d17" size="large" /> : <ScrollView contentContainerStyle={styles.formPage} keyboardShouldPersistTaps="handled">
-            <Text style={styles.requestNumber}>{detail.requestNumber}</Text><Text style={styles.route}>{detail.branch.name} · {detail.sourceWarehouse.name} → {detail.destinationWarehouse.name}</Text><Text style={styles.status}>{STATUS_LABEL[detail.status] ?? formatStatus(detail.status)}</Text>
-            <View style={styles.actorCard}><View><Text style={styles.actorLabel}>PEMOHON</Text><Text style={styles.actorName}>{detail.requestedBy?.name ?? '-'}</Text></View><View><Text style={styles.actorLabel}>REVIEW / APPROVAL</Text><Text style={styles.actorName}>{detail.reviewedBy?.name ?? '-'}</Text></View></View>
-            <Text style={styles.fieldLabel}>Barang diminta dan jumlah persetujuan</Text>
-            {detail.items.map((item) => <View key={item.id} style={styles.reviewItem}><View style={styles.reviewProduct}><Text style={styles.selectText}>{item.product.name}</Text><Text style={styles.sku}>{item.product.sku} · diminta {item.requestedQty} {item.product.unit?.code ?? ''}</Text></View>{detail.availableActions.includes('APPROVE') ? <TextInput accessibilityLabel={`Jumlah disetujui ${item.product.name}`} keyboardType="decimal-pad" value={approvalValues[item.id] ?? item.requestedQty} onChangeText={(value) => setApprovalValues((current) => ({ ...current, [item.id]: value.replace(',', '.') }))} style={styles.qtyInput} /> : item.approvedQty ? <Text style={styles.approvedQty}>Disetujui {item.approvedQty}</Text> : null}</View>)}
-            {detail.availableActions.includes('APPROVE') || detail.availableActions.includes('REJECT') ? <><Text style={styles.fieldLabel}>Catatan review</Text><TextInput multiline value={reviewNote} onChangeText={setReviewNote} placeholder={detail.availableActions.includes('REJECT') ? 'Wajib diisi jika menolak' : 'Catatan untuk pegawai (opsional)'} placeholderTextColor="#8a968f" style={styles.noteInput} /></> : detail.reviewNote ? <Text style={styles.reviewNote}>Catatan: {detail.reviewNote}</Text> : null}
-            {detail.availableActions.includes('START_REVIEW') ? <Pressable accessibilityRole="button" disabled={saving} onPress={() => void reviewAction('review')} style={styles.submitButton}><Text style={styles.submitText}>{saving ? 'Memproses...' : 'Mulai review'}</Text></Pressable> : null}
-            {detail.availableActions.includes('APPROVE') ? <Pressable accessibilityRole="button" disabled={saving} onPress={() => void reviewAction('approve')} style={styles.submitButton}><Text style={styles.submitText}>{saving ? 'Memproses...' : 'Setujui permintaan'}</Text></Pressable> : null}
-            {detail.availableActions.includes('REJECT') ? <Pressable accessibilityRole="button" disabled={saving} onPress={() => void reviewAction('reject')} style={styles.rejectButton}><Text style={styles.rejectButtonText}>Tolak permintaan</Text></Pressable> : null}
-            {detail.availableActions.includes('CREATE_TRANSFER') ? <Pressable accessibilityRole="button" disabled={saving} onPress={openTransferForm} style={styles.transferButton}><Text style={styles.submitText}>Buat transfer gudang</Text></Pressable> : null}
-            {error ? <Text accessibilityRole="alert" style={styles.errorText}>{error}</Text> : null}
-          </ScrollView>}
-        </View>
-      </Modal>
+          <View style={[styles.modalHeader, { paddingTop: insets.top + 8, minHeight: 66 + insets.top }]}><Pressable accessibilityRole="button" disabled={actionSaving} onPress={closeDetail} style={styles.headerAction}><X size={19} color="#c70d17" /><Text style={styles.backText}>Tutup</Text></Pressable><Text style={styles.modalTitle}>Detail permintaan</Text><View style={{ width: 46 }} /></View>
+          {detailLoading || !detail ? <ActivityIndicator style={styles.loader} color="#c70d17" size="large" /> : (() => {
+            const currentStep = WORKFLOW.indexOf(detail.status as (typeof WORKFLOW)[number]);
+            const nextAction = (['PROCESS', 'SEND', 'RECEIVE'] as const).find((name) => detail.availableActions.includes(name));
+            const savedPhotos = detail.evidenceImages ?? [];
+            const canAddPhoto = Boolean(nextAction) && savedPhotos.length + photos.length < MAX_PHOTOS;
+            return <>
+              <ScrollView contentContainerStyle={styles.formPage} keyboardShouldPersistTaps="handled">
+                <Text style={styles.requestNumber}>{detail.requestNumber}</Text>
+                <Text style={styles.route}>{detail.branch.name} · {detail.sourceWarehouse.name} → {detail.destinationWarehouse.name}</Text>
 
-      <Modal animationType="slide" visible={transferVisible} onRequestClose={() => setTransferVisible(false)}>
-        <View style={styles.modalScreen}>
-          <View style={[styles.modalHeader, { paddingTop: insets.top + 8, minHeight: 66 + insets.top }]}><Pressable accessibilityRole="button" onPress={() => setTransferVisible(false)} style={styles.headerAction}><X size={19} color="#087f5b" /><Text style={styles.transferBackText}>Batal</Text></Pressable><Text style={styles.modalTitle}>Buat transfer gudang</Text><View style={{ width: 46 }} /></View>
-          {!detail ? null : <><ScrollView contentContainerStyle={styles.formPage} keyboardShouldPersistTaps="handled">
-            <Text style={styles.formHint}>Transfer dibuat dari jumlah yang sudah disetujui dan belum dialokasikan.</Text>
-            <View style={styles.transferRouteCard}><View style={styles.transferRouteColumn}><Text style={styles.locationLabel}>DARI GUDANG</Text><Text style={styles.transferRouteValue}>{detail.sourceWarehouse.name}</Text></View><Text style={styles.transferArrow}>→</Text><View style={styles.transferRouteColumn}><Text style={styles.locationLabel}>KE GUDANG</Text><Text style={styles.transferRouteValue}>{detail.destinationWarehouse.name}</Text></View></View>
-            <Text style={styles.fieldLabel}>Barang yang akan dikirim</Text>
-            {detail.items.filter((item) => Number(item.remainingTransferQty) > 0).map((item) => <View key={item.id} style={styles.transferItem}><View style={styles.reviewProduct}><Text style={styles.selectText}>{item.product.name}</Text><Text style={styles.sku}>Approved {item.approvedQty ?? '0'} · dialokasikan {item.allocatedQty} · tersedia {item.sourceAvailable}</Text><Text style={styles.remainingText}>Sisa yang dapat ditransfer: {item.remainingTransferQty} {item.product.unit?.code ?? ''}</Text></View><TextInput accessibilityLabel={`Jumlah kirim ${item.product.name}`} keyboardType="decimal-pad" value={transferQuantities[item.id] ?? ''} onChangeText={(value) => setTransferQuantities((current) => ({ ...current, [item.id]: value.replace(',', '.') }))} style={styles.transferQtyInput} /></View>)}
-            <Text style={styles.fieldLabel}>Catatan transfer (opsional)</Text><TextInput multiline value={transferNote} onChangeText={setTransferNote} placeholder="Informasi untuk tim gudang" placeholderTextColor="#8a968f" style={styles.noteInput} />
-            {transferError ? <Text accessibilityRole="alert" style={styles.errorText}>{transferError}</Text> : null}
-          </ScrollView><View style={[styles.formFooter, { paddingBottom: Math.max(14, insets.bottom + 8) }]}><Pressable accessibilityRole="button" disabled={transferSaving} onPress={() => void createTransfer()} style={[styles.transferSubmitButton, transferSaving && styles.disabled]}>{transferSaving ? <ActivityIndicator color="#fff" /> : <Text style={styles.submitText}>Buat transfer</Text>}</Pressable></View></>}
+                <View accessibilityLabel={`Tahap: ${STATUS_LABEL[detail.status] ?? detail.status}`} style={styles.stepper}>{WORKFLOW.map((step, index) => {
+                  const done = index < currentStep || (index === currentStep && step === 'RECEIVED');
+                  const active = index === currentStep && !done;
+                  return <View key={step} style={styles.step}>
+                    <View style={[styles.stepDot, done && styles.stepDotDone, active && styles.stepDotActive]}>{done ? <Check size={13} color="#fff" /> : <Text style={[styles.stepNumber, active && styles.stepNumberActive]}>{index + 1}</Text>}</View>
+                    <Text numberOfLines={2} style={[styles.stepLabel, index <= currentStep && styles.stepLabelReached]}>{STATUS_LABEL[step]}</Text>
+                  </View>;
+                })}</View>
+
+                <View style={styles.actorCard}><View><Text style={styles.actorLabel}>PEMOHON</Text><Text style={styles.actorName}>{detail.requestedBy?.name ?? '-'}</Text></View><View><Text style={styles.actorLabel}>DIPROSES OLEH</Text><Text style={styles.actorName}>{detail.reviewedBy?.name ?? '-'}</Text></View></View>
+                {detail.note ? <Text style={styles.detailNote}>Catatan: {detail.note}</Text> : null}
+
+                <Text style={styles.fieldLabel}>Barang</Text>
+                {detail.items.map((item) => {
+                  const unit = item.unit?.code ?? '';
+                  const expected = item.sentQty ?? item.requestedQty;
+                  return <View key={item.id} style={styles.reviewItem}>
+                    <View style={styles.reviewProduct}><Text style={styles.selectText}>{item.product.name}</Text><Text style={styles.sku}>Diminta {item.requestedQty} {unit}{item.sentQty != null && detail.status !== 'SUBMITTED' && detail.status !== 'PROCESSING' ? ` · dikirim ${item.sentQty} ${unit}` : ''}{item.receivedQty != null ? ` · diterima ${item.receivedQty} ${unit}` : ''}</Text></View>
+                    {nextAction === 'RECEIVE' ? <TextInput accessibilityLabel={`Jumlah diterima ${item.product.name}`} keyboardType="decimal-pad" value={receiveValues[item.id] ?? expected} onChangeText={(value) => setReceiveValues((current) => ({ ...current, [item.id]: value }))} style={styles.qtyInput} /> : null}
+                  </View>;
+                })}
+
+                <Text style={styles.fieldLabel}>Foto bukti {nextAction ? '(opsional)' : ''}</Text>
+                {savedPhotos.length || photos.length ? <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.photoRow}>
+                  {savedPhotos.map((image) => <View key={image.id} style={styles.photoTile}><Image source={{ uri: image.url }} style={styles.photo} /><Text numberOfLines={1} style={styles.photoStage}>{image.stage ? STATUS_LABEL[image.stage] ?? image.stage : 'Bukti'}</Text></View>)}
+                  {photos.map((asset, index) => <View key={`${asset.assetId ?? asset.uri}-${index}`} style={[styles.photoTile, styles.photoTileNew]}><Image source={{ uri: asset.uri }} style={styles.photo} /><Text style={[styles.photoStage, styles.photoStageNew]}>BARU</Text><Pressable accessibilityRole="button" accessibilityLabel={`Hapus foto ${index + 1}`} onPress={() => setPhotos((current) => current.filter((_, itemIndex) => itemIndex !== index))} style={styles.photoRemove}><X size={13} color="#fff" /></Pressable></View>)}
+                </ScrollView> : <Text style={styles.noItems}>{nextAction ? 'Belum ada foto. Lampirkan bila perlu.' : 'Belum ada foto bukti.'}</Text>}
+                {canAddPhoto ? <View style={styles.photoButtons}>
+                  <Pressable accessibilityRole="button" disabled={actionSaving} onPress={() => void pickPhotos(true)} style={styles.photoButton}><Camera size={17} color="#087f5b" /><Text style={styles.photoButtonText}>Kamera</Text></Pressable>
+                  <Pressable accessibilityRole="button" disabled={actionSaving} onPress={() => void pickPhotos(false)} style={styles.photoButton}><ImagePlus size={17} color="#087f5b" /><Text style={styles.photoButtonText}>Galeri</Text></Pressable>
+                </View> : null}
+                {nextAction && photos.length ? <Text style={styles.formHint}>Foto disimpan sebagai bukti tahap {STATUS_LABEL[WORKFLOW[currentStep + 1] ?? detail.status]}.</Text> : null}
+
+                {detail.history?.length ? <><Text style={styles.fieldLabel}>Riwayat</Text>{detail.history.map((entry) => <View key={entry.id} style={styles.historyRow}><View style={styles.historyDot} /><View style={styles.reviewProduct}><Text style={styles.historyAction}>{HISTORY_LABEL[entry.action] ?? formatStatus(entry.action)}</Text><Text style={styles.sku}>{entry.actor?.name ?? 'Sistem'} · {formatDate(entry.createdAt)}</Text></View></View>)}</> : null}
+                {actionError ? <Text accessibilityRole="alert" style={[styles.errorText, styles.actionError]}>{actionError}</Text> : null}
+              </ScrollView>
+              {nextAction ? <View style={[styles.formFooter, { paddingBottom: Math.max(14, insets.bottom + 8) }]}><Pressable accessibilityRole="button" disabled={actionSaving} onPress={() => void runStep(nextAction)} style={[styles.stepButton, actionSaving && styles.disabled]}>{actionSaving ? <ActivityIndicator color="#fff" /> : <Text style={styles.submitText}>{ACTION_COPY[nextAction].button}{photos.length ? ` + ${photos.length} foto` : ''}</Text>}</Pressable></View> : null}
+            </>;
+          })()}
         </View>
       </Modal>
 
@@ -350,12 +390,21 @@ const styles = StyleSheet.create({
   title: { color: '#172820', fontSize: 24, fontWeight: '800' }, subtitle: { marginTop: 5, color: '#718078', fontSize: 12 }, createButton: { paddingHorizontal: 12, paddingVertical: 10, borderRadius: 12, backgroundColor: '#c70d17' }, createButtonText: { color: '#fff', fontSize: 12, fontWeight: '800' },
   notice: { marginTop: 14, padding: 12, borderRadius: 12, backgroundColor: '#fbe7e8' }, noticeText: { color: '#c70d17', fontSize: 12, lineHeight: 18, fontWeight: '700' }, flowHint: { marginTop: 14, padding: 13, borderWidth: 1, borderColor: '#f0dadd', borderRadius: 14, backgroundColor: '#fff' }, flowHintTitle: { color: '#172820', fontSize: 12, fontWeight: '900' }, flowHintText: { marginTop: 4, color: '#718078', fontSize: 11, lineHeight: 17 },
   requestCard: { marginTop: 11, padding: 14, borderWidth: 1, borderColor: '#e6ece8', borderRadius: 16, backgroundColor: '#fff' }, requestTop: { flexDirection: 'row', alignItems: 'flex-start', justifyContent: 'space-between' }, requestTitle: { flex: 1 }, requestNumber: { color: '#26372e', fontSize: 14, fontWeight: '900' }, requestDate: { marginTop: 4, color: '#89958e', fontSize: 10 }, route: { marginTop: 12, color: '#59685f', fontSize: 11, lineHeight: 16 }, reviewNote: { marginTop: 8, color: '#a3332a', fontSize: 11, lineHeight: 16 },
-  status: { marginLeft: 8, paddingHorizontal: 8, paddingVertical: 5, borderRadius: 8, fontSize: 9, fontWeight: '900' }, statusPending: { backgroundColor: '#fff2d8', color: '#a86200' }, statusSuccess: { backgroundColor: '#e7f5ee', color: '#087f5b' }, statusMuted: { backgroundColor: '#f1f4f2', color: '#78857e' },
+  status: { marginLeft: 8, paddingHorizontal: 8, paddingVertical: 5, borderRadius: 8, fontSize: 9, fontWeight: '900' }, statusPending: { backgroundColor: '#fff2d8', color: '#a86200' }, statusSuccess: { backgroundColor: '#e7f5ee', color: '#087f5b' }, statusActive: { backgroundColor: '#e6effc', color: '#2659b5' }, statusMuted: { backgroundColor: '#f1f4f2', color: '#78857e' },
   actorLine: { marginTop: 7, color: '#718078', fontSize: 10, lineHeight: 15 }, actorCard: { flexDirection: 'row', justifyContent: 'space-between', gap: 14, marginTop: 14, padding: 13, borderRadius: 13, backgroundColor: '#e7f5ee' }, actorLabel: { color: '#087f5b', fontSize: 9, fontWeight: '900' }, actorName: { marginTop: 4, color: '#26372e', fontSize: 12, fontWeight: '800' },
   actions: { flexDirection: 'row', gap: 8, marginTop: 12 }, actionPrimary: { paddingHorizontal: 13, paddingVertical: 8, borderRadius: 10, backgroundColor: '#c70d17' }, actionPrimaryText: { color: '#fff', fontSize: 11, fontWeight: '800' }, actionSecondary: { paddingHorizontal: 13, paddingVertical: 8, borderRadius: 10, backgroundColor: '#f6f7f6' }, actionSecondaryText: { color: '#67756d', fontSize: 11, fontWeight: '800' },
   errorCard: { marginTop: 14, padding: 14, borderWidth: 1, borderColor: '#f1c8c5', borderRadius: 14, backgroundColor: '#fff6f5' }, errorText: { color: '#a3332a', fontSize: 12, lineHeight: 18 }, retry: { marginTop: 7, color: '#c70d17', fontSize: 12, fontWeight: '800' }, loader: { padding: 22 }, empty: { alignItems: 'center', marginTop: 18, padding: 22, borderRadius: 15, backgroundColor: '#fff' }, emptyTitle: { color: '#28372f', fontSize: 14, fontWeight: '800' }, emptyText: { marginTop: 6, color: '#819087', fontSize: 12, lineHeight: 18, textAlign: 'center' }, footerHint: { marginTop: 20, color: '#9aa59f', fontSize: 10, textAlign: 'center' },
   modalScreen: { flex: 1, backgroundColor: '#f5f7f6' }, modalHeader: { minHeight: 58, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 20, borderBottomWidth: 1, borderBottomColor: '#e6ece8', backgroundColor: '#fff' }, modalTitle: { color: '#172820', fontSize: 15, fontWeight: '900' }, formPage: { paddingHorizontal: 18, paddingTop: 18, paddingBottom: 20 }, formFooter: { paddingHorizontal: 18, paddingTop: 10, borderTopWidth: 1, borderTopColor: '#e5e9ed', backgroundColor: '#fff' }, formIntro: { flexDirection: 'row', alignItems: 'center', gap: 12, marginBottom: 8, padding: 14, borderWidth: 1, borderColor: '#f0dadd', borderRadius: 17, backgroundColor: '#fff' }, formIntroIcon: { width: 46, height: 46, alignItems: 'center', justifyContent: 'center', borderRadius: 14, backgroundColor: '#fbe7e8' }, formIntroCopy: { flex: 1 }, formIntroTitle: { color: '#172820', fontSize: 14, fontWeight: '900' }, formIntroText: { marginTop: 4, color: '#718078', fontSize: 11, lineHeight: 16 }, locationCard: { flexDirection: 'row', alignItems: 'stretch', marginTop: 8, padding: 12, borderWidth: 1, borderColor: '#e4e9ed', borderRadius: 16, backgroundColor: '#fff' }, locationColumn: { flex: 1, minWidth: 0 }, locationLabel: { marginBottom: 7, color: '#718078', fontSize: 10, fontWeight: '800' }, locationSelect: { minHeight: 38, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 4, paddingHorizontal: 8, borderRadius: 10, backgroundColor: '#f5f7f6' }, locationValue: { flex: 1, color: '#26372e', fontSize: 11, fontWeight: '800' }, locationDivider: { width: 1, marginHorizontal: 10, backgroundColor: '#e7ebee' }, catalogHeading: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginTop: 22, marginBottom: 11 }, catalogTitle: { color: '#172820', fontSize: 17, fontWeight: '900' }, catalogSubtitle: { marginTop: 4, color: '#84918b', fontSize: 11 }, catalogBadge: { width: 40, height: 40, alignItems: 'center', justifyContent: 'center', borderRadius: 13, backgroundColor: '#fbe7e8' }, productSearchRow: { height: 50, flexDirection: 'row', alignItems: 'center', gap: 9, paddingHorizontal: 13, borderWidth: 1, borderColor: '#dce4df', borderRadius: 15, backgroundColor: '#fff' }, productSearchInput: { flex: 1, height: '100%', color: '#172820', fontSize: 13 }, productGrid: { flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'space-between', rowGap: 10, marginTop: 12 }, stockProductCard: { width: '48.5%', minHeight: 210, padding: 10, borderWidth: 1, borderColor: '#e1e5e9', borderRadius: 19, backgroundColor: '#fff' }, stockProductSelected: { borderColor: '#efb8bd' }, stockProductArtwork: { height: 85, alignItems: 'center', justifyContent: 'center', borderRadius: 14, backgroundColor: '#f3e5fb' }, stockProductSku: { marginTop: 9, color: '#718078', fontSize: 9, fontWeight: '800' }, stockProductName: { minHeight: 34, marginTop: 4, color: '#172033', fontSize: 12, fontWeight: '900' }, stockProductUnit: { marginTop: 4, color: '#8994a0', fontSize: 9 }, stockProductBottom: { flex: 1, flexDirection: 'row', alignItems: 'flex-end', justifyContent: 'flex-end', gap: 7, marginTop: 9 }, addProductCircle: { width: 39, height: 39, alignItems: 'center', justifyContent: 'center', borderRadius: 20, backgroundColor: '#c70d17' }, quantityButton: { width: 34, height: 34, alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: '#e1e5e9', borderRadius: 11, backgroundColor: '#fff' }, quantityButtonActive: { width: 34, height: 34, alignItems: 'center', justifyContent: 'center', borderRadius: 11, backgroundColor: '#c70d17' }, catalogQtyInput: { width: 40, height: 34, paddingHorizontal: 2, color: '#172820', textAlign: 'center', fontSize: 13, fontWeight: '900' }, noteCard: { marginTop: 17, padding: 13, borderWidth: 1, borderColor: '#e6ece8', borderRadius: 16, backgroundColor: '#fff' }, requestCartBar: { minHeight: 54, flexDirection: 'row', alignItems: 'center', gap: 10, marginBottom: 10, paddingHorizontal: 13, borderWidth: 1, borderColor: '#e3e7eb', borderRadius: 15, backgroundColor: '#fff' }, requestCartCopy: { flex: 1 }, requestCartTitle: { color: '#172033', fontSize: 12, fontWeight: '900' }, requestCartSubtitle: { marginTop: 2, color: '#718078', fontSize: 10 }, requestCartCount: { minWidth: 25, paddingHorizontal: 7, paddingVertical: 4, overflow: 'hidden', borderRadius: 10, backgroundColor: '#fbe7e8', color: '#c70d17', textAlign: 'center', fontSize: 11, fontWeight: '900' }, fieldLabel: { marginTop: 16, marginBottom: 7, color: '#34453b', fontSize: 12, fontWeight: '800' }, selectField: { minHeight: 54, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 13, borderWidth: 1, borderColor: '#dce4df', borderRadius: 15, backgroundColor: '#fff' }, selectText: { flex: 1, color: '#26372e', fontSize: 12, fontWeight: '700' }, chevron: { color: '#c70d17', fontSize: 17, fontWeight: '800' }, itemHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginTop: 3 }, addProduct: { color: '#c70d17', fontSize: 12, fontWeight: '900' },
   formItem: { minHeight: 68, flexDirection: 'row', alignItems: 'center', gap: 7, marginBottom: 7, paddingHorizontal: 10, borderWidth: 1, borderColor: '#e6ece8', borderRadius: 15, backgroundColor: '#fff' }, formProduct: { flex: 1, minWidth: 0 }, sku: { marginTop: 3, color: '#89958e', fontSize: 10 }, qtyInput: { width: 62, height: 40, paddingHorizontal: 8, borderWidth: 1, borderColor: '#dce4df', borderRadius: 9, color: '#172820', textAlign: 'center', fontSize: 13 }, unitText: { color: '#718078', fontSize: 10 }, removeItem: { paddingHorizontal: 4, color: '#b42318', fontSize: 22 }, noItems: { paddingVertical: 13, color: '#89958e', fontSize: 11, textAlign: 'center' }, noteInput: { minHeight: 76, padding: 12, borderWidth: 1, borderColor: '#dce4df', borderRadius: 13, backgroundColor: '#fff', color: '#172820', fontSize: 12, textAlignVertical: 'top' }, formHint: { marginTop: 10, color: '#819087', fontSize: 10, lineHeight: 16 }, submitButton: { height: 54, alignItems: 'center', justifyContent: 'center', marginTop: 18, borderRadius: 16, backgroundColor: '#c70d17' }, submitText: { color: '#fff', fontSize: 13, fontWeight: '900' }, disabled: { opacity: 0.5 },
   reviewItem: { minHeight: 58, flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 8, padding: 11, borderWidth: 1, borderColor: '#e6ece8', borderRadius: 12, backgroundColor: '#fff' }, reviewProduct: { flex: 1, minWidth: 0 }, approvedQty: { color: '#087f5b', fontSize: 11, fontWeight: '800' }, rejectButton: { height: 48, alignItems: 'center', justifyContent: 'center', marginTop: 9, borderWidth: 1, borderColor: '#f1c8c5', borderRadius: 14, backgroundColor: '#fff6f5' }, rejectButtonText: { color: '#b42318', fontSize: 13, fontWeight: '900' }, transferButton: { height: 54, alignItems: 'center', justifyContent: 'center', marginTop: 12, borderRadius: 16, backgroundColor: '#087f5b' }, transferBackText: { color: '#087f5b', fontSize: 13, fontWeight: '800' }, transferRouteCard: { flexDirection: 'row', alignItems: 'center', gap: 10, marginTop: 16, padding: 14, borderWidth: 1, borderColor: '#d8ebe1', borderRadius: 15, backgroundColor: '#fff' }, transferRouteColumn: { flex: 1, minWidth: 0 }, transferRouteValue: { marginTop: 5, color: '#26372e', fontSize: 12, fontWeight: '900' }, transferArrow: { color: '#087f5b', fontSize: 18, fontWeight: '900' }, transferItem: { minHeight: 88, flexDirection: 'row', alignItems: 'center', gap: 10, marginBottom: 9, padding: 12, borderWidth: 1, borderColor: '#e6ece8', borderRadius: 14, backgroundColor: '#fff' }, remainingText: { marginTop: 5, color: '#087f5b', fontSize: 10, fontWeight: '800' }, transferQtyInput: { width: 78, height: 43, paddingHorizontal: 8, borderWidth: 1, borderColor: '#b8ddcd', borderRadius: 10, color: '#172820', textAlign: 'center', fontSize: 13, fontWeight: '900' }, transferSubmitButton: { height: 54, alignItems: 'center', justifyContent: 'center', borderRadius: 16, backgroundColor: '#087f5b' },
+  stepper: { flexDirection: 'row', marginTop: 16, padding: 12, borderWidth: 1, borderColor: '#e6ece8', borderRadius: 14, backgroundColor: '#fff' }, step: { flex: 1, alignItems: 'center', gap: 6 },
+  stepDot: { width: 28, height: 28, alignItems: 'center', justifyContent: 'center', borderRadius: 14, backgroundColor: '#eef1ef' }, stepDotDone: { backgroundColor: '#087f5b' }, stepDotActive: { borderWidth: 2, borderColor: '#087f5b', backgroundColor: '#e7f5ee' },
+  stepNumber: { color: '#9aa59f', fontSize: 11, fontWeight: '900' }, stepNumberActive: { color: '#087f5b' }, stepLabel: { color: '#9aa59f', fontSize: 9, fontWeight: '800', textAlign: 'center' }, stepLabelReached: { color: '#26372e' },
+  detailNote: { marginTop: 10, color: '#59685f', fontSize: 11, lineHeight: 16 },
+  photoRow: { gap: 8, paddingVertical: 2 }, photoTile: { width: 84, overflow: 'hidden', borderWidth: 1, borderColor: '#e1e7e3', borderRadius: 12, backgroundColor: '#fff' }, photoTileNew: { borderWidth: 2, borderColor: '#5fc39b' }, photo: { width: '100%', height: 70, backgroundColor: '#eef1ef' },
+  photoStage: { paddingHorizontal: 5, paddingVertical: 4, color: '#59685f', fontSize: 9, fontWeight: '800', textAlign: 'center' }, photoStageNew: { color: '#087f5b' }, photoRemove: { position: 'absolute', top: 4, right: 4, width: 22, height: 22, alignItems: 'center', justifyContent: 'center', borderRadius: 11, backgroundColor: '#0a1729b3' },
+  photoButtons: { flexDirection: 'row', gap: 8, marginTop: 10 }, photoButton: { flex: 1, minHeight: 42, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 7, borderWidth: 1, borderColor: '#b8ddcd', borderRadius: 12, backgroundColor: '#f1faf6' }, photoButtonText: { color: '#087f5b', fontSize: 12, fontWeight: '800' },
+  historyRow: { flexDirection: 'row', alignItems: 'flex-start', gap: 10, paddingVertical: 7 }, historyDot: { width: 8, height: 8, marginTop: 5, borderRadius: 4, backgroundColor: '#087f5b' }, historyAction: { color: '#26372e', fontSize: 12, fontWeight: '800' },
+  actionError: { marginTop: 14 }, stepButton: { height: 54, alignItems: 'center', justifyContent: 'center', borderRadius: 16, backgroundColor: '#087f5b' },
   selectorBackdrop: { flex: 1, justifyContent: 'flex-end', backgroundColor: '#0006' }, selectorPanel: { maxHeight: '82%', paddingHorizontal: 17, paddingTop: 15, paddingBottom: 24, borderTopLeftRadius: 22, borderTopRightRadius: 22, backgroundColor: '#f8faf9' }, selectorHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }, selectorSearch: { height: 44, marginBottom: 9, paddingHorizontal: 12, borderWidth: 1, borderColor: '#dce4df', borderRadius: 12, backgroundColor: '#fff', color: '#172820' }, optionRow: { minHeight: 55, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 10, borderBottomWidth: 1, borderBottomColor: '#e8eeea' }, optionInfo: { flex: 1 },
 });
