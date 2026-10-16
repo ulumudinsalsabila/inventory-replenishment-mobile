@@ -179,7 +179,7 @@ const styles = StyleSheet.create({
   placeholder: { color: '#91a0ae', fontWeight: '400' },
   amountField: { minHeight: 46, flexDirection: 'row', alignItems: 'center', gap: 8, paddingHorizontal: 11, borderWidth: 1, borderColor: '#dce5eb', borderRadius: 10, backgroundColor: '#fff' },
   currency: { color: '#71839a', fontSize: 11, fontWeight: '700' },
-  amountInput: { flex: 1, height: 42, color: '#25364a', fontSize: 13, fontWeight: '800' },
+  amountInput: { flex: 1, height: 42, color: '#25364a', fontSize: 12, fontWeight: '800' },
   reasonGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 7 },
   reasonOption: { width: '48%', minHeight: 39, flexDirection: 'row', alignItems: 'center', gap: 8, paddingHorizontal: 9, borderWidth: 1, borderColor: '#e4eaee', borderRadius: 9, backgroundColor: '#fff' },
   reasonOptionActive: { borderColor: '#95d9b8', backgroundColor: '#f1fbf6' },

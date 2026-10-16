@@ -76,7 +76,7 @@ const styles = StyleSheet.create({
   storeIcon: { width: 42, height: 42, alignItems: 'center', justifyContent: 'center', borderRadius: 13, backgroundColor: '#ddf7ed' },
   headerCompact: { minHeight: 68, paddingHorizontal: 18, gap: 4 },
   compactLeading: { flex: 1, minWidth: 0, marginRight: 8 },
-  title: { color: '#172338', fontSize: 18, fontWeight: '900' },
+  title: { color: '#172338', fontSize: 14, fontWeight: '900' },
   branchButton: { flex: 1, minWidth: 0, flexDirection: 'row', alignItems: 'center', borderRadius: 13 },
   identity: { flex: 1, minWidth: 0, marginHorizontal: 10 },
   branchLine: { flexDirection: 'row', alignItems: 'center', gap: 4 },

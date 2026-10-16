@@ -41,7 +41,7 @@ const styles = StyleSheet.create({
   backdrop: { flex: 1, justifyContent: 'flex-end', backgroundColor: '#13221c80' },
   sheet: { maxHeight: '72%', paddingHorizontal: 17, paddingTop: 17, borderTopLeftRadius: 22, borderTopRightRadius: 22, backgroundColor: '#fff' },
   header: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 },
-  title: { color: '#172338', fontSize: 16, fontWeight: '800' },
+  title: { color: '#172338', fontSize: 14, fontWeight: '800' },
   close: { width: 34, height: 34, alignItems: 'center', justifyContent: 'center', borderRadius: 17, backgroundColor: '#f1f4f6' },
   list: { gap: 6, paddingBottom: 4 },
   option: { minHeight: 48, flexDirection: 'row', alignItems: 'center', paddingHorizontal: 13, borderWidth: 1, borderColor: '#e7edef', borderRadius: 12 },

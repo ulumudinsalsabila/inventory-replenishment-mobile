@@ -59,8 +59,8 @@ export default function OperationsScreen() {
 const styles = StyleSheet.create({
   page: { padding: 20, paddingTop: 24, paddingBottom: 28 },
   eyebrow: { color: '#087f5b', fontSize: 10, fontWeight: '800', letterSpacing: 1.2 },
-  title: { marginTop: 7, color: '#172820', fontSize: 26, fontWeight: '800' },
-  subtitle: { marginTop: 6, color: '#718078', fontSize: 13 },
+  title: { marginTop: 7, color: '#172820', fontSize: 25, fontWeight: '800' },
+  subtitle: { marginTop: 6, color: '#718078', fontSize: 12 },
   section: { marginTop: 26 },
   sectionTitle: { marginBottom: 10, color: '#53635a', fontSize: 12, fontWeight: '800' },
   list: { gap: 8 },
