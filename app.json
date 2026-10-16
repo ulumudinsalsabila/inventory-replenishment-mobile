@@ -1,0 +1,74 @@
+{
+  "expo": {
+    "name": "Inventory Replenishment",
+    "slug": "inventory-replenishment-mobile",
+    "scheme": "invreplenishment",
+    "version": "1.0.0",
+    "orientation": "default",
+    "icon": "./assets/brand-icon.png",
+    "userInterfaceStyle": "light",
+    "plugins": [
+      "expo-router",
+      "expo-secure-store",
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "Izinkan Inventory Replenishment memilih foto bukti transfer.",
+          "cameraPermission": "Izinkan Inventory Replenishment mengambil foto bukti transfer.",
+          "microphonePermission": false
+        }
+      ],
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "Izinkan Inventory Replenishment menggunakan kamera untuk scan barcode.",
+          "microphonePermission": false,
+          "recordAudioAndroid": false,
+          "barcodeScannerEnabled": true
+        }
+      ],
+      [
+        "expo-notifications",
+        {
+          "color": "#10B981",
+          "defaultChannel": "operations"
+        }
+      ],
+      "@react-native-community/datetimepicker",
+      "expo-font"
+    ],
+    "experiments": {
+      "typedRoutes": true
+    },
+    "ios": {
+      "bundleIdentifier": "com.storemanagement.inventoryreplenishment",
+      "supportsTablet": true,
+      "infoPlist": {
+        "ITSAppUsesNonExemptEncryption": false
+      }
+    },
+    "android": {
+      "package": "com.storemanagement.inventoryreplenishment",
+      "permissions": [
+        "android.permission.BLUETOOTH_CONNECT",
+        "android.permission.CAMERA"
+      ],
+      "adaptiveIcon": {
+        "backgroundColor": "#F0FDF4",
+        "foregroundImage": "./assets/brand-foreground.png",
+        "monochromeImage": "./assets/brand-monochrome.png"
+      },
+      "predictiveBackGestureEnabled": false
+    },
+    "web": {
+      "favicon": "./assets/brand-favicon.png"
+    },
+    "extra": {
+      "router": {},
+      "eas": {
+        "projectId": "5dfe7a72-54b4-4766-81d3-4823996773ab"
+      }
+    },
+    "owner": "dagoraapp-team"
+  }
+}

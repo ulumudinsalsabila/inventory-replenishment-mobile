@@ -1,0 +1,357 @@
+﻿import { useEffect, useMemo, useRef, useState } from 'react';
+import { Barcode, ChevronUp, LogOut, Minus, Plus, ShoppingCart, Utensils } from 'lucide-react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { ActivityIndicator, Image, Modal, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
+import * as Print from 'expo-print';
+import { useAuth } from '../../auth/auth-provider';
+import { BarcodeScanner } from '../../components/barcode-scanner';
+import { PosCatalogScreen, PosCheckoutFlow, PosReceiptScreen, type PosLine, type PosMethod, type PosProduct } from '../../components/pos-flow';
+import { formatOrderReceipt, getPairedPrinters, getSavedPrinter, openAndroidBluetoothSettings, printThermalReceipt, savePrinter, type PairedPrinter, type ReceiptOrder } from '../../lib/receipt-printer';
+import { ThermalPreview } from '../../components/thermal-preview';
+import { formatDate, formatStatus } from '../../lib/display';
+
+type Branch = { id: string; name: string; address?: string | null };
+type Warehouse = { id: string; name: string; branchId: string | null };
+type Variant = { id: string; name: string; priceDelta: string };
+type Addon = { id: string; name: string; basePrice: string };
+type SellingUnit = { unitId: string; conversionFactor: string; sellingPrice: string; unit: { id: string; code: string; name: string } };
+type Product = PosProduct & { barcode?: string | null };
+type Order = ReceiptOrder;
+type Line = PosLine & { product: Product };
+type Method = PosMethod;
+const money = (amount: number) => `Rp ${Math.max(0, amount).toLocaleString('id-ID', { maximumFractionDigits: 0 })}`;
+
+export default function PosScreen() {
+  const { user, authorizedRequest, signOut } = useAuth();
+  const insets = useSafeAreaInsets();
+  const [branches, setBranches] = useState<Branch[]>([]);
+  const [warehouses, setWarehouses] = useState<Warehouse[]>([]);
+  const [products, setProducts] = useState<Product[]>([]);
+  const [branchId, setBranchId] = useState(user?.branchId ?? '');
+  const [warehouseId, setWarehouseId] = useState('');
+  const [cart, setCart] = useState<Line[]>([]);
+  const [optionProduct, setOptionProduct] = useState<Product | null>(null);
+  const [optionVariant, setOptionVariant] = useState('');
+  const [optionUnit, setOptionUnit] = useState('');
+  const [optionAddons, setOptionAddons] = useState<string[]>([]);
+  const [search, setSearch] = useState('');
+  const [customer, setCustomer] = useState('');
+  const [discount, setDiscount] = useState('0');
+  const [method, setMethod] = useState<Method>('CASH');
+  const [productsLoading, setProductsLoading] = useState(true);
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState('');
+  const [receipt, setReceipt] = useState<Order | null>(null);
+  const [printing, setPrinting] = useState(false);
+  const [printError, setPrintError] = useState('');
+  const [printer, setPrinter] = useState<PairedPrinter | null>(null);
+  const [printerPickerVisible, setPrinterPickerVisible] = useState(false);
+  const [printerDevices, setPrinterDevices] = useState<PairedPrinter[]>([]);
+  const [printerLoading, setPrinterLoading] = useState(false);
+  const [printAfterPrinterSelection, setPrintAfterPrinterSelection] = useState(false);
+  const [previewVisible, setPreviewVisible] = useState(false);
+  const [pendingOrder, setPendingOrder] = useState<Order | null>(null);
+  const [scannerVisible, setScannerVisible] = useState(false);
+  const [cartVisible, setCartVisible] = useState(false);
+  const [paymentStep, setPaymentStep] = useState(false);
+  const [takeaway, setTakeaway] = useState(true);
+  const [selectedCategory, setSelectedCategory] = useState('Semua');
+  const [displayOnly, setDisplayOnly] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
+  const [reloadKey, setReloadKey] = useState(0);
+  const [warehouseReloadKey, setWarehouseReloadKey] = useState(0);
+  const loadedWarehouseId = useRef('');
+
+  useEffect(() => {
+    let active = true;
+    void getSavedPrinter().then((saved) => { if (active) setPrinter(saved); });
+    return () => { active = false; };
+  }, []);
+
+  useEffect(() => {
+    let active = true;
+    void authorizedRequest<{ data: Branch[] }>('catalog/branches?page=1&perPage=100')
+      .then((result) => { if (active) { setBranches(result.data); if (!branchId && result.data[0]) setBranchId(result.data[0].id); } })
+      .catch((e: Error) => { if (active) setError(e.message); });
+    return () => { active = false; };
+  // Initial branch options are loaded once; the user-scoped branch is stable for this session.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [authorizedRequest]);
+
+  useEffect(() => {
+    if (!branchId) return;
+    let active = true;
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setWarehouseId(''); setProducts([]); loadedWarehouseId.current = '';
+    void authorizedRequest<{ data: Warehouse[] }>('catalog/warehouses?page=1&perPage=100')
+      .then((result) => { if (!active) return; const choices = result.data.filter((row) => row.branchId === branchId); setWarehouses(choices); if (choices[0]) setWarehouseId(choices[0].id); else setProductsLoading(false); })
+      .catch((e: Error) => { if (active) { setError(e.message); setProductsLoading(false); } })
+      .finally(() => { if (active) setRefreshing(false); });
+    return () => { active = false; };
+  }, [branchId, warehouseReloadKey, authorizedRequest]);
+
+  useEffect(() => {
+    if (!warehouseId) return;
+    let active = true;
+    // Keep the current catalog on screen during a refresh; only clear it when the warehouse changes.
+    if (loadedWarehouseId.current !== warehouseId) {
+      setProducts([]); setProductsLoading(true);
+    }
+    void authorizedRequest<Product[]>(`pos/catalog?warehouseId=${encodeURIComponent(warehouseId)}`)
+      .then((rows) => { if (active) { setProducts(rows); setError(''); loadedWarehouseId.current = warehouseId; } })
+      .catch((e: Error) => { if (active) setError(e.message); })
+      .finally(() => { if (active) { setProductsLoading(false); setRefreshing(false); } });
+    return () => { active = false; };
+  }, [warehouseId, reloadKey, authorizedRequest]);
+
+  function refreshCatalog() {
+    setRefreshing(true);
+    if (warehouseId) setReloadKey((value) => value + 1);
+    else setWarehouseReloadKey((value) => value + 1);
+  }
+
+  const categories = useMemo(() => ['Semua', ...new Set(products.map((product) => product.category?.name).filter((name): name is string => Boolean(name)))], [products]);
+  // A category from a previous catalog may no longer exist; fall back to "Semua" instead of showing an empty grid.
+  const activeCategory = categories.includes(selectedCategory) ? selectedCategory : 'Semua';
+  const visible = useMemo(() => products.filter((p) => (!displayOnly || Number(p.displayQuantity ?? 0) > 0) && (activeCategory === 'Semua' || p.category?.name === activeCategory) && `${p.name} ${p.sku} ${p.barcode ?? ''} ${p.category?.name ?? ''}`.toLowerCase().includes(search.toLowerCase())), [activeCategory, displayOnly, products, search]);
+  const priceFor = (line: Line) => Number(line.product.sellingUnits.find((unit) => unit.unitId === line.unitId)?.sellingPrice ?? line.product.basePrice) + Number(line.product.variants?.find((v) => v.id === line.variantId)?.priceDelta ?? 0) + line.addonIds.reduce((sum, id) => sum + Number(line.product.addons?.find((a) => a.id === id)?.basePrice ?? 0), 0);
+  const subtotal = cart.reduce((sum, line) => sum + priceFor(line) * line.quantity, 0);
+  const discountAmount = Math.min(Math.max(Number(discount) || 0, 0), subtotal);
+  const total = subtotal - discountAmount;
+
+  function conversionFactor(product: Product, unitId: string) {
+    return Number(product.sellingUnits.find((unit) => unit.unitId === unitId)?.conversionFactor ?? 1);
+  }
+  function canAddUnit(product: Product, unitId = product.unit?.id ?? product.sellingUnits[0]?.unitId ?? '') {
+    if (!product.trackInventory) return true;
+    const usedBaseQuantity = cart.filter((line) => line.product.id === product.id).reduce((sum, line) => sum + line.quantity * conversionFactor(product, line.unitId), 0);
+    return usedBaseQuantity + conversionFactor(product, unitId) <= Math.max(Number(product.available) || 0, 0) + 0.000001;
+  }
+  function reportStockLimit(product: Product, unitId: string) {
+    const usedBaseQuantity = cart.filter((line) => line.product.id === product.id).reduce((sum, line) => sum + line.quantity * conversionFactor(product, line.unitId), 0);
+    const remainingBaseQuantity = Math.max(Number(product.available) - usedBaseQuantity, 0);
+    const maxUnitQuantity = remainingBaseQuantity / conversionFactor(product, unitId);
+    const unit = product.sellingUnits.find((entry) => entry.unitId === unitId)?.unit.code ?? product.unit?.code ?? '';
+    setError(`Stok ${product.name} tidak cukup. Sisa maksimal ${maxUnitQuantity.toLocaleString('id-ID', { maximumFractionDigits: 3 })} ${unit}.`);
+  }
+
+  function add(product: Product) {
+    if ((product.sellingUnits?.length ?? 0) > 1 || (product.variants?.length ?? 0) > 0 || (product.addons?.length ?? 0) > 0) {
+      setOptionProduct(product); setOptionUnit(product.sellingUnits[0]?.unitId ?? product.unit?.id ?? ''); setOptionVariant(''); setOptionAddons([]); setError('');
+      return;
+    }
+    addConfigured(product, product.sellingUnits[0]?.unitId ?? product.unit?.id ?? '', '', []);
+  }
+  function addConfigured(product: Product, unitId: string, variantId: string, addonIds: string[]) {
+    if (!canAddUnit(product, unitId)) { reportStockLimit(product, unitId); return; }
+    const key = `${product.id}:${unitId}:${variantId}:${[...addonIds].sort().join(',')}`;
+    setError('');
+    setCart((current) => {
+      const found = current.find((line) => line.key === key);
+      return found ? current.map((line) => line.key === key ? { ...line, quantity: line.quantity + 1 } : line) : [...current, { key, product, unitId, quantity: 1, variantId, addonIds }];
+    });
+  }
+  function quantity(lineKey: string, delta: number) {
+    const line = cart.find((entry) => entry.key === lineKey);
+    if (delta > 0 && line && !canAddUnit(line.product, line.unitId)) { reportStockLimit(line.product, line.unitId); return; }
+    setError('');
+    setCart((current) => current.flatMap((line) => line.key !== lineKey ? [line] : line.quantity + delta <= 0 ? [] : [{ ...line, quantity: line.quantity + delta }]));
+  }
+  async function checkout() {
+    if (!customer.trim()) return setError('Nama pelanggan wajib diisi.');
+    if (total <= 0) return setError('Total pembayaran harus lebih dari Rp 0.');
+    if (!branchId || !warehouseId) return setError('Pilih cabang dan gudang terlebih dahulu.');
+    setSubmitting(true); setError('');
+    try {
+      let order = pendingOrder;
+      if (!order) {
+        order = await authorizedRequest<Order>('orders', { method: 'POST', body: JSON.stringify({ branchId, warehouseId, customerName: customer.trim(), discountAmount: String(discountAmount), items: cart.map((line) => ({ productId: line.product.id, unitId: line.unitId, variantId: line.variantId || undefined, quantity: String(line.quantity), addons: line.addonIds.map((addonId) => ({ addonId, quantity: '1' })) })) }) });
+        setPendingOrder(order);
+      }
+      const paid = order.status === 'PAID' ? order : await authorizedRequest<Order>(`orders/${order.id}/pay`, { method: 'POST', body: JSON.stringify({ payments: [{ method, amount: order.grandTotal, ...(method === 'CASH' ? { receivedAmount: order.grandTotal } : {}) }] }) });
+      setPendingOrder(paid);
+      const completed = await authorizedRequest<Order>(`orders/${paid.id}/complete`, { method: 'POST' });
+      setReceipt(completed); setPendingOrder(null); setCart([]); setCartVisible(false); setPaymentStep(false); setTakeaway(true); setCustomer(''); setDiscount('0');
+      // Stock changed on the server; reload the catalog so the next order sees current availability.
+      setReloadKey((value) => value + 1);
+    } catch (e) { setError(e instanceof Error ? e.message : 'Transaksi gagal.'); }
+    finally { setSubmitting(false); }
+  }
+
+  async function printReceipt() {
+    if (!receipt) return;
+    setPrintError('');
+    if (Platform.OS === 'android') {
+      // Bluetooth printing always goes through the preview; a missing printer is picked first.
+      if (!printer) { await showPrinterPicker(true); return; }
+      setPreviewVisible(true);
+      return;
+    }
+    setPrinting(true);
+    const esc = (value: string) => value.replace(/[&<>"']/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[char]!);
+    const date = receipt.completedAt ?? receipt.createdAt;
+    const rows = (receipt.items ?? []).map((item) => `<div class="item"><div class="row"><span>${esc(item.productNameSnapshot)}${item.variantNameSnapshot ? ` (${esc(item.variantNameSnapshot)})` : ''}</span><span>${money(Number(item.totalPrice))}</span></div><div class="sub">${Number(item.inputQuantity ?? item.quantity)} ${esc(item.unit?.code ?? '')} x ${money(Number(item.unitPrice))}</div>${(item.addons ?? []).map((addon) => `<div class="sub">+ ${esc(addon.addonNameSnapshot)} x ${Number(addon.quantity)} (${money(Number(addon.totalPrice))})</div>`).join('')}</div>`).join('');
+    const html = `<!doctype html><html><head><meta name="viewport" content="width=device-width, initial-scale=1"><style>@page{margin:5mm}*{box-sizing:border-box}body{font:12px Arial,sans-serif;color:#111;width:72mm;margin:0 auto}.center{text-align:center}.title{font-size:18px;font-weight:bold}.muted{color:#555;font-size:10px}.line{border-top:1px dashed #555;margin:9px 0}.row{display:flex;justify-content:space-between;gap:8px}.item{margin:8px 0}.sub{color:#555;font-size:10px;margin-top:3px}.total{font-weight:bold;font-size:15px}</style></head><body><div class="center"><div class="title">${esc(receipt.branch?.name ?? 'NOTA PEMBELIAN')}</div>${receipt.branch?.code ? `<div class="muted">${esc(receipt.branch.code)}</div>` : ''}<div class="line"></div><div>${esc(receipt.orderNumber)}</div><div class="muted">${date ? formatDate(date) : ''}</div>${receipt.customerName ? `<div>Pelanggan: ${esc(receipt.customerName)}</div>` : ''}</div><div class="line"></div>${rows}<div class="line"></div><div class="row"><span>Subtotal</span><span>${money(Number(receipt.subtotal))}</span></div><div class="row"><span>Diskon</span><span>-${money(Number(receipt.discountAmount))}</span></div>${Number(receipt.taxAmount ?? 0) ? `<div class="row"><span>Pajak</span><span>${money(Number(receipt.taxAmount))}</span></div>` : ''}${Number(receipt.serviceCharge ?? 0) ? `<div class="row"><span>Layanan</span><span>${money(Number(receipt.serviceCharge))}</span></div>` : ''}<div class="row total"><span>TOTAL</span><span>${money(Number(receipt.grandTotal))}</span></div>${(receipt.payments ?? []).map((payment) => `<div class="row"><span>${esc(formatStatus(payment.method))}</span><span>${money(Number(payment.amount))}</span></div>${payment.receivedAmount ? `<div class="row"><span>Diterima</span><span>${money(Number(payment.receivedAmount))}</span></div>` : ''}${payment.changeAmount ? `<div class="row"><span>Kembalian</span><span>${money(Number(payment.changeAmount))}</span></div>` : ''}`).join('')}<div class="line"></div><div class="center">Terima kasih</div></body></html>`;
+    try { await Print.printAsync({ html }); }
+    catch (e) { setPrintError(e instanceof Error ? e.message : 'Nota gagal dicetak.'); }
+    finally { setPrinting(false); }
+  }
+
+  async function showPrinterPicker(printAfterSelection = false) {
+    setPrintError(''); setPrintAfterPrinterSelection(printAfterSelection); setPrinterPickerVisible(true); setPrinterLoading(true);
+    try { setPrinterDevices(await getPairedPrinters()); }
+    catch (e) { setPrintError(e instanceof Error ? e.message : 'Tidak dapat membaca perangkat Bluetooth.'); }
+    finally { setPrinterLoading(false); }
+  }
+
+  async function sendBluetoothReceipt(target: PairedPrinter) {
+    if (!receipt) return;
+    setPrinting(true); setPrintError('');
+    try { await printThermalReceipt(receipt, target); setPreviewVisible(false); }
+    catch (e) { setPrintError(e instanceof Error ? e.message : 'Nota gagal dikirim ke printer.'); }
+    finally { setPrinting(false); }
+  }
+
+  async function choosePrinter(target: PairedPrinter) {
+    setPrinterLoading(true); setPrintError('');
+    try {
+      await savePrinter(target);
+      setPrinter(target);
+      setPrinterPickerVisible(false);
+      if (printAfterPrinterSelection) setPreviewVisible(true);
+    } catch (e) { setPrintError(e instanceof Error ? e.message : 'Printer gagal disimpan.'); }
+    finally { setPrinterLoading(false); setPrintAfterPrinterSelection(false); }
+  }
+
+  const thermalPreview = receipt ? <ThermalPreview
+    visible={previewVisible}
+    title={`Nota ${receipt.orderNumber}`}
+    text={formatOrderReceipt(receipt)}
+    printer={printer}
+    printing={printing}
+    error={printError}
+    onPrint={() => { if (printer) void sendBluetoothReceipt(printer); }}
+    onChangePrinter={() => { setPreviewVisible(false); void showPrinterPicker(true); }}
+    onClose={() => { setPreviewVisible(false); setPrintError(''); }}
+  /> : null;
+
+
+  if (receipt && receipt.orderNumber.length > 0) return <>{thermalPreview}<PosReceiptScreen
+    order={receipt}
+    topInset={insets.top + 8}
+    bottomInset={insets.bottom}
+    cashierName={user?.name ?? 'Kasir'}
+    printing={printing}
+    printError={printError}
+    printer={printer}
+    printerPickerVisible={printerPickerVisible}
+    printerDevices={printerDevices}
+    printerLoading={printerLoading}
+    onPrint={() => void printReceipt()}
+    onNewOrder={() => { setReceipt(null); setPendingOrder(null); setPrintError(''); setError(''); }}
+    onChoosePrinter={(target) => void choosePrinter(target)}
+    onClosePrinterPicker={() => setPrinterPickerVisible(false)}
+    onOpenBluetoothSettings={openAndroidBluetoothSettings}
+  /></>;
+
+  if (cartVisible) return <PosCheckoutFlow
+    lines={cart}
+    topInset={insets.top + 8}
+    paymentStep={paymentStep}
+    onPaymentStepChange={setPaymentStep}
+    customer={customer}
+    onCustomerChange={setCustomer}
+    discount={discount}
+    onDiscountChange={setDiscount}
+    method={method}
+    onMethodChange={setMethod}
+    total={total}
+    subtotal={subtotal}
+    discountAmount={discountAmount}
+    priceFor={priceFor}
+    onQuantity={quantity}
+    canIncrease={(line) => canAddUnit(line.product, line.unitId)}
+    onCheckout={() => void checkout()}
+    onClear={() => { setCart([]); setPendingOrder(null); setPaymentStep(false); setError(''); }}
+    onClose={() => { setCartVisible(false); setPaymentStep(false); }}
+    submitting={submitting}
+    error={error}
+    onError={setError}
+    takeaway={takeaway}
+    onTakeawayChange={setTakeaway}
+    bottomInset={insets.bottom}
+  />;
+    if (!receipt && !cartVisible) return <PosCatalogScreen
+      branches={branches}
+      warehouses={warehouses}
+      branchId={branchId}
+      warehouseId={warehouseId}
+      userBranchId={user?.branchId ?? null}
+      products={products}
+      categories={categories}
+      selectedCategory={activeCategory}
+      displayOnly={displayOnly}
+      search={search}
+      visibleProducts={visible}
+      cart={cart}
+      total={total}
+      loading={Boolean(warehouseId) && productsLoading}
+      refreshing={refreshing}
+      onRefresh={refreshCatalog}
+      error={error}
+      optionProduct={optionProduct}
+      optionUnit={optionUnit}
+      optionVariant={optionVariant}
+      optionAddons={optionAddons}
+      topInset={0}
+      bottomInset={0}
+      onBranchChange={setBranchId}
+      onWarehouseChange={setWarehouseId}
+      onCategoryChange={setSelectedCategory}
+      onDisplayOnlyChange={setDisplayOnly}
+      onSearchChange={setSearch}
+      onAdd={add}
+      onQuantity={quantity}
+      canAdd={(product, unitId) => canAddUnit(product as Product, unitId)}
+      priceFor={priceFor}
+      onOpenCart={() => { setPaymentStep(false); setCartVisible(true); }}
+      onClear={() => { setCart([]); setPendingOrder(null); setError(''); }}
+      onScan={(value) => { const match = products.find((product) => product.barcode === value || product.sku === value); if (match) add(match); else { setSearch(value); setError('Barcode tidak ditemukan pada katalog gudang ini.'); } }}
+      onCloseOption={() => setOptionProduct(null)}
+      onOptionUnitChange={setOptionUnit}
+      onOptionVariantChange={setOptionVariant}
+      onOptionAddonsChange={setOptionAddons}
+      onAddConfigured={() => { if (optionProduct) addConfigured(optionProduct, optionUnit, optionVariant, optionAddons); setOptionProduct(null); }}
+  />;
+  if (receipt) return <ScrollView style={styles.screen} contentContainerStyle={[styles.page, { paddingTop: 18 + insets.top }]}><Text style={styles.eyebrow}>TRANSAKSI BERHASIL</Text><Text style={styles.title}>Nota pembayaran</Text><View style={styles.receiptCard}><Text style={styles.receiptStore}>{receipt.branch?.name ?? 'Inventory Replenishment'}</Text><Text style={styles.muted}>{receipt.orderNumber}{receipt.createdAt ? ` Â· ${formatDate(receipt.createdAt)}` : ''}</Text>{receipt.customerName ? <Text style={styles.receiptCustomer}>Pelanggan: {receipt.customerName}</Text> : null}<View style={styles.receiptDivider} />{receipt.items?.map((item, index) => <View key={`${item.productNameSnapshot}-${index}`} style={styles.receiptItem}><View style={styles.receiptRow}><Text style={styles.receiptItemName}>{item.productNameSnapshot}{item.variantNameSnapshot ? ` (${item.variantNameSnapshot})` : ''}</Text><Text style={styles.receiptItemPrice}>{money(Number(item.totalPrice))}</Text></View><Text style={styles.muted}>{Number(item.quantity)} Ã— {money(Number(item.unitPrice))}</Text>{item.addons?.map((addon, addIndex) => <Text key={`${addon.addonNameSnapshot}-${addIndex}`} style={styles.muted}>+ {addon.addonNameSnapshot} Ã— {Number(addon.quantity)} Â· {money(Number(addon.totalPrice))}</Text>)}</View>)}<View style={styles.receiptDivider} /><Text style={styles.receiptRow}>Subtotal<Text>{money(Number(receipt.subtotal))}</Text></Text><Text style={styles.receiptRow}>Diskon<Text>-{money(Number(receipt.discountAmount))}</Text></Text>{Number(receipt.taxAmount ?? 0) > 0 ? <Text style={styles.receiptRow}>Pajak<Text>{money(Number(receipt.taxAmount))}</Text></Text> : null}{Number(receipt.serviceCharge ?? 0) > 0 ? <Text style={styles.receiptRow}>Layanan<Text>{money(Number(receipt.serviceCharge))}</Text></Text> : null}<Text style={styles.receiptTotal}>TOTAL<Text>{money(Number(receipt.grandTotal))}</Text></Text>{receipt.payments?.map((payment, index) => <View key={`${payment.method}-${index}`}><Text style={styles.receiptRow}>{formatStatus(payment.method)}<Text>{money(Number(payment.amount))}</Text></Text>{payment.receivedAmount ? <Text style={styles.receiptRow}>Diterima<Text>{money(Number(payment.receivedAmount))}</Text></Text> : null}{payment.changeAmount && Number(payment.changeAmount) > 0 ? <Text style={styles.receiptRow}>Kembalian<Text>{money(Number(payment.changeAmount))}</Text></Text> : null}</View>)}<View style={styles.receiptDivider} /><Text style={styles.receiptThanks}>Terima kasih</Text></View>{Platform.OS === 'android' ? <View style={styles.printerBox}><View style={styles.productInfo}><Text style={styles.label}>Printer Bluetooth</Text><Text style={styles.printerName}>{printer?.name ?? 'Belum dipilih'}</Text></View><Pressable onPress={() => void showPrinterPicker(false)} style={styles.scanButton}><Text style={styles.scanText}>{printer ? 'Ganti' : 'Pilih'}</Text></Pressable></View> : null}{printError ? <View style={styles.errorBox}><Text style={styles.errorText}>{printError}</Text></View> : null}<Pressable disabled={printing} style={[styles.primary, printing && styles.disabled]} onPress={() => void printReceipt()}><Text style={styles.primaryText}>{printing ? 'Mencetak nota...' : 'Cetak nota'}</Text></Pressable><Text style={styles.printHint}>{Platform.OS === 'android' ? 'Printer tersimpan akan tersambung otomatis saat cetak. Pastikan printer sudah dipasangkan di pengaturan Bluetooth Android.' : 'Buka layanan cetak yang tersedia untuk mencetak atau menyimpan nota.'}</Text><Pressable style={styles.secondary} onPress={() => { setReceipt(null); setPrintError(''); }}><Text style={styles.secondaryText}>Transaksi baru</Text></Pressable><Modal visible={printerPickerVisible} animationType="slide" transparent onRequestClose={() => { setPrinterPickerVisible(false); setPrintAfterPrinterSelection(false); }}><View style={styles.modalBackdrop}><View style={styles.optionPanel}><Text style={styles.sectionTitle}>Pilih printer Bluetooth</Text><Text style={styles.muted}>Pilih perangkat thermal yang sudah dipasangkan di pengaturan Android.</Text>{printError ? <View style={styles.errorBox}><Text style={styles.errorText}>{printError}</Text></View> : null}{printerLoading ? <ActivityIndicator style={styles.loader} color="#087f5b" /> : printerDevices.length ? printerDevices.map((device) => <Pressable key={device.address} disabled={printerLoading} onPress={() => void choosePrinter(device)} style={styles.optionRow}><Text style={styles.optionText}>{device.name}</Text><Text style={styles.muted}>{device.address}</Text></Pressable>) : !printerLoading ? <Text style={styles.empty}>Belum ada perangkat Bluetooth yang dipasangkan.</Text> : null}<View style={styles.modalActions}><Pressable style={styles.cancelButton} onPress={openAndroidBluetoothSettings}><Text style={styles.cancelText}>Pengaturan Bluetooth</Text></Pressable><Pressable style={styles.primary} disabled={printerLoading} onPress={() => void showPrinterPicker(printAfterPrinterSelection)}><Text style={styles.primaryText}>Muat ulang</Text></Pressable></View><Pressable style={styles.cancelButton} onPress={() => { setPrinterPickerVisible(false); setPrintAfterPrinterSelection(false); }}><Text style={styles.cancelText}>Tutup</Text></Pressable></View></View></Modal></ScrollView>;
+
+  if (cartVisible) return <View style={[styles.cartFlow, { paddingTop: insets.top + 8 }]}>
+    <View style={styles.sheetHeader}><Text style={styles.sheetTitle}>{paymentStep ? 'Pembayaran' : `Pesanan (${cart.reduce((n, line) => n + line.quantity, 0)})`}</Text><Pressable onPress={() => { setCart([]); setPaymentStep(false); }}><Text style={styles.clearCart}>Hapus</Text></Pressable><Pressable onPress={() => setCartVisible(false)}><Text style={styles.sheetClose}>âŒ„</Text></Pressable></View>
+    <View style={styles.stepTabs}><Pressable onPress={() => setPaymentStep(false)} style={[styles.stepTab, !paymentStep && styles.stepTabActive]}><Text style={[styles.stepTabText, !paymentStep && styles.stepTabTextActive]}>1 Pesanan</Text></Pressable><Pressable disabled={!cart.length} onPress={() => setPaymentStep(true)} style={[styles.stepTab, paymentStep && styles.stepTabActive]}><Text style={[styles.stepTabText, paymentStep && styles.stepTabTextActive]}>2 Bayar</Text></Pressable></View>
+    {!paymentStep ? <ScrollView style={styles.flowContent} keyboardShouldPersistTaps="handled"><TextInput autoFocus style={styles.flowInput} value={customer} onChangeText={setCustomer} placeholder="Nama customer" placeholderTextColor="#75808d"/><View style={styles.flowChoices}><Pressable style={[styles.choiceChip, !takeaway && styles.choiceChipActive]} onPress={() => setTakeaway(false)}><Text style={[styles.choiceText, !takeaway && styles.choiceTextActive]}>Dine in</Text></Pressable><Pressable style={[styles.choiceChip, takeaway && styles.choiceChipActive]} onPress={() => setTakeaway(true)}><Text style={[styles.choiceText, takeaway && styles.choiceTextActive]}>Take away</Text></Pressable></View>{cart.map((line) => <View key={line.key} style={styles.flowItem}><Text style={styles.productName}>{line.product.name}</Text><Text style={styles.muted}>{line.product.variants?.find((v) => v.id === line.variantId)?.name ?? line.product.sku}</Text><View style={styles.flowItemBottom}><View style={styles.flowChoices}><Pressable style={styles.qtyButton} onPress={() => quantity(line.key, -1)}><Minus size={16} color="#c70d17" /></Pressable><Text style={styles.qty}>{line.quantity}</Text><Pressable style={styles.qtyButton} onPress={() => quantity(line.key, 1)}><Plus size={16} color="#c70d17" /></Pressable></View><Text style={styles.price}>{money(priceFor(line) * line.quantity)}</Text></View></View>)}</ScrollView> : <ScrollView style={styles.flowContent} keyboardShouldPersistTaps="handled"><TextInput style={styles.flowInput} value={customer} onChangeText={setCustomer} placeholder="Nama customer" placeholderTextColor="#75808d"/><TextInput style={styles.flowInput} value={discount} onChangeText={setDiscount} keyboardType="numeric" placeholder="Diskon nominal" placeholderTextColor="#75808d"/><Text style={styles.label}>METODE PEMBAYARAN</Text><View style={styles.flowChoices}>{(['CASH', 'QRIS', 'TRANSFER', 'GRAB', 'GOBIZ'] as Method[]).map((item) => <Pressable key={item} onPress={() => setMethod(item)} style={[styles.choiceChip, method === item && styles.choiceChipActive]}><Text style={[styles.choiceText, method === item && styles.choiceTextActive]}>{item === 'CASH' ? 'Cash' : item === 'GOBIZ' ? 'GoBiz' : item}</Text></Pressable>)}</View><View style={styles.paymentSummary}><Text style={styles.paymentSummaryLine}>Subtotal <Text>{money(subtotal)}</Text></Text><Text style={styles.paymentSummaryLine}>Diskon <Text>{money(discountAmount)}</Text></Text><Text style={styles.paymentGrandTotal}>Total <Text>{money(total)}</Text></Text></View>{error ? <Text style={styles.errorText}>{error}</Text> : null}</ScrollView>}
+    {paymentStep ? <View style={[styles.flowChoices, { paddingHorizontal: 16, marginVertical: 0 }]}><Pressable onPress={() => setMethod('GOBIZ')} style={[styles.choiceChip, method === 'GOBIZ' && styles.choiceChipActive]}><Text style={[styles.choiceText, method === 'GOBIZ' && styles.choiceTextActive]}>GoBiz</Text></Pressable></View> : null}
+    <View style={[styles.flowFooter, { paddingBottom: Math.max(16, insets.bottom + 8) }]}>{paymentStep ? <Pressable onPress={() => setPaymentStep(false)} style={styles.footerSecondary}><Text style={styles.footerSecondaryText}>Kembali</Text></Pressable> : null}<Pressable disabled={!cart.length || submitting} onPress={() => paymentStep ? void checkout() : setPaymentStep(true)} style={[styles.footerPrimary, (!cart.length || submitting) && styles.disabled]}><Text style={styles.footerPrimaryText}>{paymentStep ? submitting ? 'Memproses...' : `Bayar ${money(total)}` : `Lanjut Â· ${money(total)}`}</Text></Pressable></View>
+  </View>;
+
+  return <View style={styles.posRoot}><ScrollView style={styles.screen} contentContainerStyle={[styles.page, { paddingTop: 18 + insets.top, paddingBottom: 18 }]} keyboardShouldPersistTaps="handled">
+    <View style={styles.posHeader}><View style={styles.brandMark}><Image accessibilityLabel="Logo Inventory Replenishment" source={require('../../../assets/brand-splash.png')} style={styles.brandMarkImage} resizeMode="contain" /></View><View style={styles.brandDetails}><Text numberOfLines={1} style={styles.brandName}>{branches.find((b) => b.id === branchId)?.name ?? 'Kasir'}</Text><Text numberOfLines={1} style={styles.brandEmail}>{user?.email ?? user?.name}</Text></View><Pressable accessibilityRole="button" accessibilityLabel="Keluar dari akun" onPress={() => void signOut()} style={styles.logoutButton}><LogOut size={22} color="#c70d17" /></Pressable></View>
+    <View style={styles.branchWarehouseCard}><View style={styles.locationSide}><Text style={styles.locationSideLabel}>Cabang</Text>{user?.branchId ? <Text numberOfLines={1} ellipsizeMode="tail" style={styles.locationSideValue}>{branches.find((b) => b.id === branchId)?.name ?? 'Memuat cabang...'}</Text> : <ScrollView horizontal showsHorizontalScrollIndicator={false}>{branches.map((b) => <Pressable key={b.id} onPress={() => setBranchId(b.id)} style={[styles.locationChip, branchId === b.id && styles.locationChipActive]}><Text numberOfLines={1} ellipsizeMode="tail" style={[styles.locationText, branchId === b.id && styles.locationTextActive]}>{b.name}</Text></Pressable>)}</ScrollView>}</View><View style={styles.locationDivider} /><View style={styles.locationSide}><Text style={styles.locationSideLabel}>Gudang</Text>{warehouses.length ? <ScrollView horizontal showsHorizontalScrollIndicator={false}>{warehouses.map((w) => <Pressable key={w.id} onPress={() => setWarehouseId(w.id)} style={[styles.locationChip, warehouseId === w.id && styles.locationChipActive]}><Text numberOfLines={1} ellipsizeMode="tail" style={[styles.locationText, warehouseId === w.id && styles.locationTextActive]}>{warehouses.length === 1 ? 'Stok cabang' : w.name}</Text></Pressable>)}</ScrollView> : <Text numberOfLines={1} style={styles.locationSideEmpty}>{branchId ? 'Belum ada gudang' : 'Pilih cabang'}</Text>}</View></View>
+    <View style={styles.searchRow}><TextInput style={[styles.search, styles.searchFlex, styles.catalogSearch]} value={search} onChangeText={setSearch} placeholder="Cari menu atau SKU..." placeholderTextColor="#87948c" /><Pressable accessibilityRole="button" accessibilityLabel="Scan barcode" onPress={() => setScannerVisible(true)} style={styles.scanButton}><Barcode size={22} color="#fff" /></Pressable></View>
+    <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.categoryList}>{categories.map((category) => <Pressable key={category} onPress={() => setSelectedCategory(category)} style={[styles.categoryChip, selectedCategory === category && styles.categoryChipActive]}><Text style={[styles.categoryText, selectedCategory === category && styles.categoryTextActive]}>{category}</Text></Pressable>)}</ScrollView>
+    {productsLoading ? <ActivityIndicator style={styles.loader} color="#087f5b" /> : null}
+    {error ? <View style={styles.errorBox}><Text style={styles.errorText}>{error}</Text></View> : null}
+    <View style={styles.catalogGrid}>{visible.map((p) => { const selectedQuantity = cart.filter((line) => line.product.id === p.id).reduce((sum, line) => sum + line.quantity, 0); const selectedLine = cart.find((line) => line.product.id === p.id); return <View key={p.id} style={styles.catalogCard}><View style={styles.productArtwork}><Utensils size={38} color="#8145d8" /></View><Text style={styles.productCategory}>{p.category?.name ?? 'Produk'}</Text><Text numberOfLines={2} style={styles.catalogProductName}>{p.name}</Text><Text style={styles.catalogStock}>{p.available} {p.unit?.code ?? ''} tersedia</Text><View style={styles.productCardBottom}><Text numberOfLines={1} style={styles.price}>{money(Number(p.basePrice))}</Text>{selectedQuantity && selectedLine ? <View style={styles.productQtyControls}><Pressable accessibilityRole="button" accessibilityLabel={'Kurangi ' + p.name} style={styles.productQtyButton} onPress={() => quantity(selectedLine.key, -1)}><Minus size={17} color="#c70d17" /></Pressable><Text style={styles.productQtyValue}>{selectedQuantity}</Text><Pressable accessibilityRole="button" accessibilityLabel={'Tambah ' + p.name} style={styles.productQtyButtonActive} onPress={() => add(p)}><Plus size={18} color="#fff" /></Pressable></View> : <Pressable accessibilityRole="button" accessibilityLabel={'Tambah ' + p.name} style={styles.addCircle} onPress={() => add(p)}><Plus size={25} color="#fff" strokeWidth={2.5} /></Pressable>}</View></View>; })}</View>
+    {!productsLoading && !visible.length ? <Text style={styles.empty}>Produk tidak ditemukan di gudang ini.</Text> : null}
+    <Modal visible={Boolean(optionProduct)} animationType="slide" transparent onRequestClose={() => setOptionProduct(null)}>
+      <View style={styles.modalBackdrop}><View style={styles.optionPanel}><Text style={styles.sectionTitle}>{optionProduct?.name}</Text><Text style={styles.muted}>Pilih varian dan add-on</Text>
+        {(optionProduct?.sellingUnits?.length ?? 0) > 1 ? <><Text style={styles.label}>Satuan</Text>{optionProduct?.sellingUnits.map((entry) => <Pressable key={entry.unitId} onPress={() => setOptionUnit(entry.unitId)} style={[styles.optionRow, optionUnit === entry.unitId && styles.optionSelected]}><Text style={styles.optionText}>{entry.unit.name} ({entry.unit.code})</Text><Text style={styles.optionText}>{money(Number(entry.sellingPrice))}{optionUnit === entry.unitId ? '  ✓' : ''}</Text></Pressable>)}</> : null}
+        {(optionProduct?.variants?.length ?? 0) > 0 ? <><Text style={styles.label}>Varian</Text><Pressable onPress={() => setOptionVariant('')} style={[styles.optionRow, !optionVariant && styles.optionSelected]}><Text style={styles.optionText}>Tanpa varian</Text><Text style={styles.optionText}>âœ“</Text></Pressable>{optionProduct?.variants?.map((v) => <Pressable key={v.id} onPress={() => setOptionVariant(v.id)} style={[styles.optionRow, optionVariant === v.id && styles.optionSelected]}><Text style={styles.optionText}>{v.name}</Text><Text style={styles.optionText}>{money(Number(v.priceDelta))}{optionVariant === v.id ? '  âœ“' : ''}</Text></Pressable>)}</> : null}
+        {(optionProduct?.addons?.length ?? 0) > 0 ? <><Text style={styles.label}>Add-on</Text>{optionProduct?.addons?.map((addon) => { const active = optionAddons.includes(addon.id); return <Pressable key={addon.id} onPress={() => setOptionAddons((current) => active ? current.filter((id) => id !== addon.id) : [...current, addon.id])} style={[styles.optionRow, active && styles.optionSelected]}><Text style={styles.optionText}>{addon.name}</Text><Text style={styles.optionText}>{money(Number(addon.basePrice))}{active ? '  âœ“' : ''}</Text></Pressable>; })}</> : null}
+        <View style={styles.modalActions}><Pressable style={styles.cancelButton} onPress={() => setOptionProduct(null)}><Text style={styles.cancelText}>Batal</Text></Pressable><Pressable style={styles.primary} onPress={() => { if (optionProduct) addConfigured(optionProduct, optionUnit, optionVariant, optionAddons); setOptionProduct(null); }}><Text style={styles.primaryText}>Tambah ke keranjang</Text></Pressable></View>
+      </View></View>
+    </Modal>
+<BarcodeScanner visible={scannerVisible} onClose={() => setScannerVisible(false)} onScanned={(value) => { setScannerVisible(false); const match = products.find((product) => product.barcode === value || product.sku === value); if (match) add(match); else { setSearch(value); setError('Barcode tidak ditemukan pada katalog gudang ini.'); } }} />
+  </ScrollView><Pressable accessibilityRole="button" onPress={() => { setPaymentStep(false); setCartVisible(true); }} style={styles.cartBar}><ShoppingCart size={23} color="#c70d17" /><Text style={styles.cartBarTitle}>{cart.length ? `Pesanan (${cart.reduce((n, line) => n + line.quantity, 0)})` : 'Keranjang kosong'}</Text><Text style={styles.cartBarTotal}>{money(total)}</Text><ChevronUp size={20} color="#172033" /></Pressable></View>;
+}
+
+const styles = StyleSheet.create({ posRoot: { flex: 1, backgroundColor: '#f5f7f6' }, cartFlow: { flex: 1, backgroundColor: '#fff' }, flowContent: { flex: 1, paddingHorizontal: 18, paddingTop: 14 }, flowFooter: { flexDirection: 'row', gap: 10, padding: 16, borderTopWidth: 1, borderTopColor: '#e5e9ed', backgroundColor: '#fff' }, sheetHeader: { minHeight: 58, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 20 }, sheetTitle: { flex: 1, color: '#111827', fontSize: 14, fontWeight: '900' }, clearCart: { color: '#c70d17', fontWeight: '800' }, sheetClose: { color: '#111827', fontSize: 24 }, stepTabs: { flexDirection: 'row', gap: 8, padding: 12 }, stepTab: { flex: 1, alignItems: 'center', padding: 12, borderRadius: 16, backgroundColor: '#fbe7e8' }, stepTabActive: { backgroundColor: '#c70d17' }, stepTabText: { color: '#718078', fontSize: 12, fontWeight: '800' }, stepTabTextActive: { color: '#fff' }, flowInput: { height: 54, marginBottom: 12, paddingHorizontal: 15, borderWidth: 1, borderColor: '#e1e5e9', borderRadius: 15, color: '#172033' }, flowChoices: { flexDirection: 'row', alignItems: 'center', gap: 8, marginVertical: 8 }, choiceChip: { padding: 10, borderWidth: 1, borderColor: '#e1e5e9', borderRadius: 14 }, choiceChipActive: { borderColor: '#c70d17', backgroundColor: '#c70d17' }, choiceText: { color: '#344052', fontSize: 11, fontWeight: '800' }, choiceTextActive: { color: '#fff' }, flowItem: { marginTop: 12, padding: 15, borderWidth: 1, borderColor: '#e1e5e9', borderRadius: 18 }, flowItemBottom: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginTop: 12 }, paymentSummary: { marginTop: 16, padding: 16, borderRadius: 18, backgroundColor: '#fbe7e8' }, paymentSummaryLine: { flexDirection: 'row', justifyContent: 'space-between', paddingVertical: 6, color: '#26372e', fontSize: 12 }, paymentGrandTotal: { flexDirection: 'row', justifyContent: 'space-between', marginTop: 8, paddingTop: 12, color: '#c70d17', fontSize: 15, fontWeight: '900' }, footerPrimary: { flex: 1, minHeight: 54, alignItems: 'center', justifyContent: 'center', borderRadius: 16, backgroundColor: '#c70d17' }, footerPrimaryText: { color: '#fff', fontSize: 14, fontWeight: '900' }, footerSecondary: { minWidth: 90, minHeight: 54, alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: '#e1e5e9', borderRadius: 16 }, footerSecondaryText: { color: '#172033', fontWeight: '800' }, cartBar: { minHeight: 62, flexDirection: 'row', alignItems: 'center', gap: 10, marginHorizontal: 14, marginTop: 5, marginBottom: 8, paddingHorizontal: 15, borderWidth: 1, borderColor: '#e3e7eb', borderRadius: 18, backgroundColor: '#fff', elevation: 5 }, cartIcon: { fontSize: 19 }, cartBarTitle: { flex: 1, color: '#172033', fontSize: 12, fontWeight: '900' }, cartBarTotal: { color: '#b20e17', fontSize: 14, fontWeight: '900' }, cartChevron: { fontSize: 18, fontWeight: '900' }, posHeader: { flexDirection: 'row', alignItems: 'center', gap: 10, marginHorizontal: -18, marginTop: -18, marginBottom: 12, paddingHorizontal: 18, paddingVertical: 16, borderBottomWidth: 1, borderBottomColor: '#e5e9ed', backgroundColor: '#fff' }, brandMark: { width: 54, height: 54, alignItems: 'center', justifyContent: 'center', borderRadius: 16, backgroundColor: '#ecfdf5', padding: 6 }, brandMarkImage: { width: '100%', height: '100%' }, brandDetails: { flex: 1, minWidth: 0 }, brandName: { color: '#172033', fontSize: 14, fontWeight: '900' }, brandEmail: { marginTop: 3, color: '#718078', fontSize: 11 }, logoutButton: { width: 40, height: 44, alignItems: 'center', justifyContent: 'center' }, logoutText: { color: '#172033', fontSize: 28, fontWeight: '700' }, locationChip: { maxWidth: 135, marginRight: 7, paddingHorizontal: 11, paddingVertical: 7, borderRadius: 10, backgroundColor: '#f1f4f6' }, locationChipActive: { backgroundColor: '#fbe7e8' }, locationText: { color: '#66746c', fontSize: 10, fontWeight: '800' }, locationTextActive: { color: '#c70d17' }, branchWarehouseCard: { flexDirection: 'row', alignItems: 'stretch', marginTop: 8, padding: 12, borderWidth: 1, borderColor: '#e4e9ed', borderRadius: 16, backgroundColor: '#fff' }, locationSide: { flex: 1, minWidth: 0, justifyContent: 'center' }, locationSideLabel: { marginBottom: 7, color: '#718078', fontSize: 10, fontWeight: '800' }, locationSideValue: { color: '#172033', fontSize: 12, fontWeight: '800' }, locationSideEmpty: { color: '#84918b', fontSize: 11 }, locationDivider: { width: 1, marginHorizontal: 10, backgroundColor: '#e7ebee' }, catalogSearch: { height: 54, borderRadius: 17, fontSize: 14 }, categoryList: { gap: 8, paddingVertical: 12 }, categoryChip: { paddingHorizontal: 16, paddingVertical: 10, borderWidth: 1, borderColor: '#e2e6ea', borderRadius: 15, backgroundColor: '#fff' }, categoryChipActive: { borderColor: '#c70d17', backgroundColor: '#c70d17' }, categoryText: { color: '#344052', fontSize: 11, fontWeight: '800' }, categoryTextActive: { color: '#fff' }, catalogGrid: { flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'space-between', rowGap: 10, marginTop: 5 }, catalogCard: { width: '48.5%', minHeight: 300, padding: 9, borderWidth: 1, borderColor: '#e1e5e9', borderRadius: 23, backgroundColor: '#fff' }, productArtwork: { height: 145, alignItems: 'center', justifyContent: 'center', borderRadius: 19, backgroundColor: '#f3e5fb' }, productArtworkIcon: { color: '#8145d8', fontSize: 45 }, productCategory: { marginTop: 10, color: '#718078', fontSize: 10, fontWeight: '700' }, catalogProductName: { marginTop: 7, color: '#172033', fontSize: 14, fontWeight: '900' }, catalogStock: { marginTop: 5, color: '#8994a0', fontSize: 9 }, productCardBottom: { flex: 1, flexDirection: 'row', alignItems: 'flex-end', justifyContent: 'space-between', gap: 5, marginTop: 15 }, productQtyControls: { flexDirection: 'row', alignItems: 'center', gap: 5 }, productQtyButton: { width: 34, height: 34, alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: '#e1e5e9', borderRadius: 12, backgroundColor: '#fff' }, productQtyButtonActive: { width: 36, height: 36, alignItems: 'center', justifyContent: 'center', borderRadius: 18, backgroundColor: '#c70d17' }, productQtyValue: { minWidth: 18, color: '#172033', textAlign: 'center', fontSize: 12, fontWeight: '900' }, addCircle: { width: 48, height: 48, alignItems: 'center', justifyContent: 'center', borderRadius: 24, backgroundColor: '#c70d17' }, addCircleText: { color: '#fff', fontSize: 25, fontWeight: '700' }, categoryPlaceholder: {}, screen: { flex: 1, backgroundColor: '#f5f7f6' }, page: { padding: 18, paddingBottom: 40 }, eyebrow: { color: '#c70d17', fontSize: 10, fontWeight: '900', letterSpacing: 1.2 }, title: { marginTop: 6, color: '#172820', fontSize: 25, fontWeight: '900' }, subtitle: { marginTop: 5, marginBottom: 14, color: '#718078', fontSize: 12, lineHeight: 18 }, selector: { marginTop: 8, padding: 12, borderRadius: 14, backgroundColor: '#fff' }, label: { marginTop: 10, marginBottom: 7, color: '#59685f', fontSize: 11, fontWeight: '800' }, selectorValue: { color: '#26372e', fontSize: 12, fontWeight: '700' }, chip: { marginRight: 7, paddingHorizontal: 12, paddingVertical: 9, borderRadius: 10, backgroundColor: '#f1f4f2' }, chipActive: { backgroundColor: '#c70d17' }, chipText: { color: '#66746c', fontSize: 11, fontWeight: '800' }, chipTextActive: { color: '#fff' }, search: { height: 46, marginTop: 12, paddingHorizontal: 13, borderWidth: 1, borderColor: '#dce4df', borderRadius: 13, backgroundColor: '#fff', color: '#172820' }, searchRow: { flexDirection: 'row', gap: 8, alignItems: 'center' }, searchFlex: { flex: 1 }, scanButton: { marginTop: 12, paddingHorizontal: 14, height: 46, alignItems: 'center', justifyContent: 'center', borderRadius: 13, backgroundColor: '#c70d17' }, scanText: { color: '#fff', fontSize: 12, fontWeight: '800' }, loader: { margin: 18 }, products: { marginTop: 10, gap: 8 }, product: { minHeight: 78, flexDirection: 'row', alignItems: 'center', padding: 12, borderWidth: 1, borderColor: '#e6ece8', borderRadius: 15, backgroundColor: '#fff' }, productInfo: { flex: 1 }, productName: { color: '#26372e', fontSize: 12, fontWeight: '800' }, muted: { marginTop: 4, color: '#84918b', fontSize: 10 }, price: { marginTop: 6, color: '#b20e17', fontSize: 12, fontWeight: '900' }, addButton: { paddingHorizontal: 11, paddingVertical: 10, borderRadius: 10, backgroundColor: '#fbe7e8' }, addText: { color: '#c70d17', fontSize: 11, fontWeight: '900' }, empty: { marginTop: 14, padding: 18, borderRadius: 14, backgroundColor: '#fff', color: '#84918b', textAlign: 'center' }, section: { marginTop: 18, padding: 14, borderRadius: 17, backgroundColor: '#fff' }, sectionTitle: { color: '#172820', fontSize: 14, fontWeight: '900' }, cartLine: { minHeight: 55, flexDirection: 'row', alignItems: 'center', borderBottomWidth: 1, borderBottomColor: '#edf1ee' }, qtyButton: { width: 32, height: 32, alignItems: 'center', justifyContent: 'center', borderRadius: 10, backgroundColor: '#fbe7e8' }, qtyText: { color: '#c70d17', fontSize: 18, fontWeight: '900' }, qty: { width: 28, textAlign: 'center', color: '#26372e', fontWeight: '800' }, input: { height: 44, paddingHorizontal: 12, borderWidth: 1, borderColor: '#dce4df', borderRadius: 12, color: '#26372e' }, methods: { flexDirection: 'row' }, summary: { marginTop: 14, padding: 12, borderRadius: 12, backgroundColor: '#f3f7f4' }, summaryLine: { flexDirection: 'row', justifyContent: 'space-between', paddingVertical: 4, color: '#59685f', fontSize: 12 }, grandTotal: { paddingTop: 9, color: '#172820', fontSize: 15, fontWeight: '900' }, change: { marginTop: 6, color: '#c70d17', fontSize: 12, fontWeight: '800' }, primary: { minHeight: 50, alignItems: 'center', justifyContent: 'center', marginTop: 14, borderRadius: 14, backgroundColor: '#c70d17' }, primaryText: { color: '#fff', fontSize: 12, fontWeight: '900' }, disabled: { opacity: 0.45 }, errorBox: { marginTop: 10, padding: 12, borderRadius: 12, backgroundColor: '#fff1f0' }, errorText: { color: '#a3332a', fontSize: 11, lineHeight: 17 }, card: { marginTop: 18, padding: 20, borderRadius: 18, backgroundColor: '#fff' }, orderNo: { marginTop: 5, color: '#172820', fontSize: 14, fontWeight: '900' }, total: { marginTop: 18, color: '#c70d17', fontSize: 25, fontWeight: '900' }, modalBackdrop: { flex: 1, justifyContent: 'flex-end', backgroundColor: '#0007' }, optionPanel: { maxHeight: '80%', padding: 20, borderTopLeftRadius: 22, borderTopRightRadius: 22, backgroundColor: '#fff' }, optionRow: { minHeight: 48, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 12, marginBottom: 6, borderWidth: 1, borderColor: '#e6ece8', borderRadius: 11 }, optionSelected: { borderColor: '#c70d17', backgroundColor: '#eff9f3' }, optionText: { color: '#34453b', fontSize: 12, fontWeight: '700' }, modalActions: { flexDirection: 'row', gap: 8, marginTop: 10 }, cancelButton: { minHeight: 48, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 16, marginTop: 14, borderRadius: 14, backgroundColor: '#f1f4f2' }, cancelText: { color: '#59685f', fontSize: 12, fontWeight: '800' }, receiptCard: { marginTop: 16, padding: 18, borderRadius: 16, backgroundColor: '#fff', borderWidth: 1, borderColor: '#e5ebe7' }, receiptStore: { color: '#172820', textAlign: 'center', fontSize: 14, fontWeight: '900' }, receiptCustomer: { marginTop: 8, color: '#59685f', fontSize: 11 }, receiptDivider: { marginVertical: 12, borderTopWidth: 1, borderStyle: 'dashed', borderColor: '#cfd9d3' }, receiptItem: { paddingVertical: 6 }, receiptRow: { flexDirection: 'row', justifyContent: 'space-between', marginTop: 6, color: '#59685f', fontSize: 12 }, receiptItemName: { flex: 1, paddingRight: 8, color: '#26372e', fontSize: 12, fontWeight: '700' }, receiptItemPrice: { color: '#26372e', fontSize: 12, fontWeight: '700' }, receiptTotal: { flexDirection: 'row', justifyContent: 'space-between', marginTop: 10, color: '#172820', fontSize: 15, fontWeight: '900' }, receiptThanks: { color: '#59685f', textAlign: 'center', fontSize: 11 }, printHint: { marginTop: 10, color: '#718078', fontSize: 11, lineHeight: 17, textAlign: 'center' }, secondary: { minHeight: 48, alignItems: 'center', justifyContent: 'center', marginTop: 10, borderRadius: 14, backgroundColor: '#fbe7e8' }, secondaryText: { color: '#c70d17', fontSize: 12, fontWeight: '900' }, printerBox: { flexDirection: 'row', alignItems: 'center', marginTop: 14, padding: 12, borderRadius: 13, backgroundColor: '#fff' }, printerName: { color: '#26372e', fontSize: 12, fontWeight: '800' } });
