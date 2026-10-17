@@ -1,9 +1,9 @@
 import { useEffect, useState } from 'react';
-import { ActivityIndicator, Pressable, RefreshControl, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
-import { router } from 'expo-router';
+import { ActivityIndicator, Pressable, RefreshControl, StyleSheet, Text, TextInput, View } from 'react-native';
 import { BarcodeScanner } from '../../components/barcode-scanner';
 import { useAuth } from '../../auth/auth-provider';
 import { ApiError } from '../../lib/api';
+import { KeyboardAwareScrollView } from 'react-native-keyboard-controller';
 
 type InventoryRow = {
   id: string;
@@ -63,7 +63,7 @@ export default function InventoryScreen() {
 
   return (
     <View style={styles.screen}>
-      <ScrollView contentContainerStyle={styles.page} keyboardShouldPersistTaps="handled" refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => { setRefreshing(true); setReloadKey((key) => key + 1); }} tintColor="#087f5b" />}>
+      <KeyboardAwareScrollView bottomOffset={24} contentContainerStyle={styles.page} keyboardShouldPersistTaps="handled" refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => { setRefreshing(true); setReloadKey((key) => key + 1); }} tintColor="#087f5b" />}>
         <Text style={styles.subtitle}>{total.toLocaleString('id-ID')} item · tarik ke bawah untuk memperbarui</Text>
 
         <View style={styles.searchRow}>
@@ -97,7 +97,7 @@ export default function InventoryScreen() {
         })}
 
         {rows.length > 0 ? <View style={styles.pagination}><Pressable accessibilityRole="button" disabled={page <= 1} onPress={() => setPage((current) => current - 1)} style={[styles.pageButton, page <= 1 && styles.disabled]}><Text style={styles.pageButtonText}>‹ Sebelumnya</Text></Pressable><Text style={styles.pageLabel}>{page} / {totalPages}</Text><Pressable accessibilityRole="button" disabled={page >= totalPages} onPress={() => setPage((current) => current + 1)} style={[styles.pageButton, page >= totalPages && styles.disabled]}><Text style={styles.pageButtonText}>Berikutnya ›</Text></Pressable></View> : null}
-      </ScrollView>
+      </KeyboardAwareScrollView>
       <BarcodeScanner visible={scannerVisible} onClose={() => setScannerVisible(false)} onScanned={(value) => { setScannerVisible(false); setSearchInput(value); setPage(1); setSearch(value); }} />
     </View>
   );

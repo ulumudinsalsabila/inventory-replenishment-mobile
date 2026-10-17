@@ -1,10 +1,10 @@
 import { useEffect, useState } from 'react';
-import { ActivityIndicator, Pressable, RefreshControl, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
-import { router } from 'expo-router';
-import { ArrowDownLeft, ArrowLeftRight, ArrowUpRight, ChevronLeft, Search } from 'lucide-react-native';
+import { ActivityIndicator, Pressable, RefreshControl, StyleSheet, Text, TextInput, View } from 'react-native';
+import { ArrowDownLeft, ArrowLeftRight, ArrowUpRight, Search } from 'lucide-react-native';
 import { useAuth } from '../../auth/auth-provider';
 import { ApiError } from '../../lib/api';
 import { formatDate, formatStatus } from '../../lib/display';
+import { KeyboardAwareScrollView } from 'react-native-keyboard-controller';
 
 type Movement = {
   id: string;
@@ -38,7 +38,7 @@ export default function StockMovementsScreen() {
   const [reload, setReload] = useState(0);
 
   useEffect(() => {
-    if (!canRead) { setLoading(false); return; }
+    if (!canRead) return;
     let active = true;
     const params = new URLSearchParams({ page: '1', perPage: '20', sortBy: 'createdAt', sortOrder: 'desc' });
     if (search) params.set('search', search);
@@ -49,7 +49,7 @@ export default function StockMovementsScreen() {
     return () => { active = false; };
   }, [authorizedRequest, canRead, reload, search]);
 
-  return <ScrollView style={styles.screen} contentContainerStyle={styles.page} refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => { setRefreshing(true); setReload((value) => value + 1); }} tintColor="#07885b" />}>
+  return <KeyboardAwareScrollView bottomOffset={24} style={styles.screen} contentContainerStyle={styles.page} refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => { setRefreshing(true); setReload((value) => value + 1); }} tintColor="#07885b" />}>
     {canRead ? <>
       <View style={styles.searchRow}><View style={styles.searchBox}><Search size={17} color="#71839a" /><TextInput accessibilityLabel="Cari pergerakan stok" value={searchInput} onChangeText={setSearchInput} onSubmitEditing={() => setSearch(searchInput.trim())} placeholder="Cari produk atau referensi" placeholderTextColor="#8b99a8" style={styles.searchInput} returnKeyType="search" /></View><Pressable accessibilityRole="button" accessibilityLabel="Cari" onPress={() => setSearch(searchInput.trim())} style={styles.searchButton}><Search size={18} color="#fff" /></Pressable></View>
       {error ? <Text style={styles.error}>{error}</Text> : null}
@@ -67,7 +67,7 @@ export default function StockMovementsScreen() {
         </View>;
       })}
     </> : <View style={styles.empty}><Text style={styles.emptyTitle}>Akses tidak tersedia</Text><Text style={styles.emptyText}>Akun ini belum memiliki izin melihat stok.</Text></View>}
-  </ScrollView>;
+  </KeyboardAwareScrollView>;
 }
 
 const styles = StyleSheet.create({

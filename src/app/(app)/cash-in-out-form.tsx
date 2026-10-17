@@ -7,6 +7,7 @@ import { ArrowDownToLine, ArrowLeft, ArrowUpFromLine, Camera, Check, ChevronDown
 import { router } from 'expo-router';
 import { useAuth } from '../../auth/auth-provider';
 import { ApiError } from '../../lib/api';
+import { KeyboardAwareScrollView } from 'react-native-keyboard-controller';
 
 type Branch = { id: string; name: string; code: string };
 type Page<T> = { data: T[] };
@@ -105,7 +106,7 @@ export default function CashInOutFormScreen() {
     <View style={styles.header}><Pressable accessibilityRole="button" accessibilityLabel="Kembali ke daftar kas" onPress={() => router.back()} style={styles.headerBack}><ArrowLeft size={21} color="#26372e" /></Pressable><Text style={styles.title}>Catat kas masuk / keluar</Text></View>
     <View style={styles.steps}>{['Detail', 'Lampiran', 'Konfirmasi'].map((label, index) => <Pressable key={label} accessibilityRole="button" disabled={index >= step} onPress={() => setStep(index)} style={styles.step}><View style={[styles.stepNumber, index <= step && styles.stepNumberActive]}>{index < step ? <Check size={12} color="#fff" /> : <Text style={[styles.stepNumberText, index === step && styles.stepNumberTextActive]}>{index + 1}</Text>}</View><Text style={[styles.stepLabel, index === step && styles.stepLabelActive]}>{label}</Text></Pressable>)}</View>
     {error ? <Text style={styles.error}>{error}</Text> : null}
-    {step === 0 ? <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
+    {step === 0 ? <KeyboardAwareScrollView bottomOffset={24} contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
       <View style={styles.card}>
         <Text style={styles.label}>Jenis transaksi <Text style={styles.required}>*</Text></Text>
         <View style={styles.typeChoices}>
@@ -126,7 +127,7 @@ export default function CashInOutFormScreen() {
         {selectedReasons.includes('Lainnya') ? <TextInput accessibilityLabel="Alasan lainnya" value={otherReason} onChangeText={setOtherReason} placeholder="Tulis alasan lainnya" placeholderTextColor="#90a0ad" maxLength={200} style={styles.input} /> : null}
         <Text style={styles.label}>Catatan (opsional)</Text><TextInput accessibilityLabel="Catatan transaksi kas" value={note} onChangeText={setNote} placeholder="Tambahkan catatan..." placeholderTextColor="#90a0ad" maxLength={200} multiline style={[styles.input, styles.noteInput]} />
       </View>
-    </ScrollView> : null}
+    </KeyboardAwareScrollView> : null}
     {step === 1 ? <ScrollView contentContainerStyle={styles.content}>
       <View style={styles.card}><View style={styles.sectionHeading}><View><Text style={styles.sectionTitle}>Foto bukti (opsional)</Text><Text style={styles.muted}>Maksimal 5 foto, 5 MB per file.</Text></View><Paperclip size={18} color="#738497" /></View>
         <View style={styles.evidenceGrid}>{evidence.map((asset, index) => <View key={`${asset.assetId ?? asset.uri}-${index}`} style={styles.evidenceWrap}><Image source={{ uri: asset.uri }} style={styles.evidenceImage} /><Pressable accessibilityRole="button" accessibilityLabel={`Hapus foto ${index + 1}`} onPress={() => setEvidence((current) => current.filter((_, itemIndex) => itemIndex !== index))} style={styles.removeEvidence}><X size={12} color="#fff" /></Pressable></View>)}</View>

@@ -7,6 +7,7 @@ import { AppShellHeader } from './app-shell-header';
 import { BarcodeScanner } from './barcode-scanner';
 import { formatDate, formatStatus } from '../lib/display';
 import type { PairedPrinter, ReceiptOrder } from '../lib/receipt-printer';
+import { KeyboardAwareScrollView } from 'react-native-keyboard-controller';
 
 export type PosMethod = 'CASH' | 'QRIS' | 'TRANSFER' | 'GRAB' | 'GOBIZ';
 
@@ -341,7 +342,7 @@ export function PosCheckoutFlow(props: CheckoutProps) {
     </View>
 
     {!props.paymentStep ? <>
-      <ScrollView style={styles.content} contentContainerStyle={styles.contentBody} keyboardShouldPersistTaps="handled">
+      <KeyboardAwareScrollView bottomOffset={24} style={styles.content} contentContainerStyle={styles.contentBody} keyboardShouldPersistTaps="handled">
         <View style={styles.customerCard}>
           <Text style={styles.fieldLabel}>PELANGGAN</Text>
           <TextInput accessibilityLabel="Nama pelanggan" autoFocus style={styles.customerInput} value={props.customer} onChangeText={props.onCustomerChange} placeholder="Nama pelanggan" placeholderTextColor="#8a97a8" />
@@ -366,7 +367,7 @@ export function PosCheckoutFlow(props: CheckoutProps) {
           <View style={styles.summaryDivider} /><SummaryRow label="Total" value={money(props.total)} strong />
         </View>
         {props.error ? <Text style={styles.errorText}>{props.error}</Text> : null}
-      </ScrollView>
+      </KeyboardAwareScrollView>
       <View style={[styles.footer, { paddingBottom: Math.max(props.bottomInset + 8, 12) }]}>
         <Pressable accessibilityRole="button" onPress={props.onClose} style={styles.secondaryButton}><Text style={styles.secondaryText}>Kembali</Text></Pressable>
         <Pressable accessibilityRole="button" onPress={continueToPayment} disabled={!props.lines.length} style={[styles.primaryButton, !props.lines.length && styles.disabled]}><Text style={styles.primaryText}>Lanjut ke pembayaran</Text><ChevronRight size={18} color="#fff" /></Pressable>

@@ -14,6 +14,7 @@
     "web": "expo start --web",
     "lint": "expo lint",
     "typecheck": "tsc --noEmit",
+    "apk:local": "cd android && .\\gradlew.bat assembleRelease -PreactNativeArchitectures=arm64-v8a,armeabi-v7a",
     "apk:release": "npx eas-cli@latest build --platform android --profile preview",
     "build:development": "npx eas-cli@latest build --profile development",
     "build:preview": "npx eas-cli@latest build --profile preview",
@@ -41,14 +42,26 @@
     "react-dom": "19.2.3",
     "react-native": "0.86.3",
     "react-native-bluetooth-classic": "1.73.0-rc.17",
+    "react-native-keyboard-controller": "1.21.9",
+    "react-native-reanimated": "4.5.1",
     "react-native-safe-area-context": "~5.7.0",
     "react-native-svg": "15.15.4",
-    "react-native-web": "^0.21.3"
+    "react-native-web": "^0.21.3",
+    "react-native-worklets": "0.10.1"
   },
   "devDependencies": {
     "@types/react": "~19.2.2",
     "eslint": "^9.39.5",
     "eslint-config-expo": "~57.0.2",
     "typescript": "~6.0.3"
+  },
+  "expo": {
+    "doctor": {
+      "reactNativeDirectoryCheck": {
+        "exclude": [
+          "react-native-bluetooth-classic"
+        ]
+      }
+    }
   }
 }

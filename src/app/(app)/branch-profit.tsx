@@ -9,7 +9,7 @@ import { OptionSheet } from '../../components/option-sheet';
 import { compactMoney, jakartaToday, money, monthLabel, monthRange, percent, recentMonths, shortDateLabel } from '../../lib/report';
 
 type Totals = { revenue: number; cost: number; profit: number; margin: number; orderCount: number };
-type BranchProfit = { summary: Totals; daily: Array<Totals & { date: string }>; branches: Array<Totals & { branchId: string; name: string; code: string }> };
+type BranchProfit = { summary: Totals; daily: (Totals & { date: string })[]; branches: (Totals & { branchId: string; name: string; code: string })[] };
 type Granularity = 'day' | 'week';
 
 const series = [
@@ -28,7 +28,7 @@ function niceMax(value: number) {
   return Math.ceil(value / (step * magnitude)) * step * magnitude;
 }
 
-function ProfitChart({ buckets }: { buckets: Array<Totals & { label: string; showLabel: boolean }> }) {
+function ProfitChart({ buckets }: { buckets: (Totals & { label: string; showLabel: boolean })[] }) {
   const [width, setWidth] = useState(0);
   const height = 210;
   const left = 34;
@@ -81,7 +81,6 @@ export default function BranchProfitScreen() {
     if (!accessToken) return;
     let active = true;
     const { from, to } = monthRange(month);
-    setLoading(true);
     void Promise.all([
       authorizedRequest<BranchProfit>(`reports/branch-profit?from=${from}&to=${to}`),
       branchId ? authorizedRequest<BranchProfit>(`reports/branch-profit?from=${from}&to=${to}&branchId=${encodeURIComponent(branchId)}`) : Promise.resolve(null),
@@ -97,7 +96,7 @@ export default function BranchProfitScreen() {
   const buckets = useMemo(() => {
     const daily = view?.daily ?? [];
     if (granularity === 'day') return daily.map((row, index) => ({ ...row, label: shortDateLabel(row.date), showLabel: index === 0 || (index + 1) % 5 === 0 }));
-    const weeks: Array<Totals & { label: string; showLabel: boolean }> = [];
+    const weeks: (Totals & { label: string; showLabel: boolean })[] = [];
     daily.forEach((row, index) => {
       const week = Math.floor(index / 7);
       weeks[week] ??= { revenue: 0, cost: 0, profit: 0, margin: 0, orderCount: 0, label: `Mg ${week + 1}`, showLabel: true };

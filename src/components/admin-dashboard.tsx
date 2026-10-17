@@ -16,14 +16,14 @@ type Dashboard = {
   estimatedProfit: string | number;
   orderCountToday: number;
   itemSoldCount: string | number;
-  branchSales: Array<{ branchId: string; branch: { id: string; name: string } | null; netSales: string | number }>;
-  bestSellers: Array<{ productId: string; name: string; quantity: string | number }>;
+  branchSales: { branchId: string; branch: { id: string; name: string } | null; netSales: string | number }[];
+  bestSellers: { productId: string; name: string; quantity: string | number }[];
 };
 type StockSummary = { summary: { totalQuantity: number; productCount: number; stockValue: number } };
 type Preset = 'today' | '7days' | '30days' | 'month';
 type IconType = ComponentType<{ size?: number; color?: string }>;
 
-const presets: Array<{ id: Preset; label: string }> = [
+const presets: { id: Preset; label: string }[] = [
   { id: 'today', label: 'Hari ini' }, { id: '7days', label: '7 Hari' }, { id: '30days', label: '30 Hari' }, { id: 'month', label: 'Bulan ini' },
 ];
 const barColors = ['#07956f', '#2fc48d', '#3f7fe8', '#e0901c', '#9a5be0', '#e05a7a'];
@@ -80,7 +80,7 @@ export function AdminDashboard() {
   const [data, setData] = useState<Dashboard | null>(null);
   const [previous, setPrevious] = useState<Dashboard | null>(null);
   const [stock, setStock] = useState<StockSummary['summary'] | null>(null);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(user?.permissions.includes('report.read') ?? false);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState('');
   const [reloadKey, setReloadKey] = useState(0);
@@ -92,7 +92,7 @@ export function AdminDashboard() {
   const selectedBranch = branches.find((item) => item.id === branchId);
 
   useEffect(() => {
-    if (!accessToken || !canReadReports) { setLoading(false); return; }
+    if (!accessToken || !canReadReports) return;
     let active = true;
     const query = (from: string, to: string) => {
       const params = new URLSearchParams({ from, to });
@@ -101,7 +101,6 @@ export function AdminDashboard() {
     };
     const stockParams = new URLSearchParams({ page: '1', perPage: '10' });
     if (branchId) stockParams.set('branchId', branchId);
-    setLoading(true);
     void Promise.all([
       authorizedRequest<Dashboard>(`dashboard?${query(range.from, range.to)}`),
       authorizedRequest<Dashboard>(`dashboard?${query(range.previous.from, range.previous.to)}`).catch(() => null),

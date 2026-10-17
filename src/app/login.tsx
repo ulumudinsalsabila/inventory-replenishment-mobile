@@ -2,10 +2,7 @@ import { useState } from 'react';
 import {
   ActivityIndicator,
   Image,
-  KeyboardAvoidingView,
-  Platform,
   Pressable,
-  ScrollView,
   StyleSheet,
   Text,
   TextInput,
@@ -14,6 +11,7 @@ import {
 import { Redirect } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import { ArrowRight, BarChart3, Eye, EyeOff, LockKeyhole, UserRound } from 'lucide-react-native';
+import { KeyboardAwareScrollView } from 'react-native-keyboard-controller';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useAuth } from '../auth/auth-provider';
 import { ApiError } from '../lib/api';
@@ -66,9 +64,10 @@ export default function LoginScreen() {
   const disabled = submitting || !cleanUsername || password.length < 6;
 
   return (
-    <KeyboardAvoidingView style={styles.page} behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
+    <View style={styles.page}>
       <StatusBar style="light" />
-      <ScrollView
+      <KeyboardAwareScrollView
+        bottomOffset={24}
         bounces={false}
         contentContainerStyle={styles.content}
         keyboardShouldPersistTaps="handled"
@@ -153,8 +152,8 @@ export default function LoginScreen() {
             </Pressable>
           </View>
         </View>
-      </ScrollView>
-    </KeyboardAvoidingView>
+      </KeyboardAwareScrollView>
+    </View>
   );
 }
 

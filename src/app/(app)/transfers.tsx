@@ -2,12 +2,12 @@ import { useEffect, useState } from 'react';
 import { ActivityIndicator, Image, Modal, Platform, Pressable, RefreshControl, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { File } from 'expo-file-system';
 import * as ImagePicker from 'expo-image-picker';
-import { router } from 'expo-router';
 import { Minus, Plus, RefreshCw, X } from 'lucide-react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useAuth } from '../../auth/auth-provider';
 import { ApiError } from '../../lib/api';
 import { formatDate, formatStatus } from '../../lib/display';
+import { KeyboardAwareScrollView } from 'react-native-keyboard-controller';
 
 type Actor = { id: string; name: string };
 type TransferSummary = {
@@ -145,7 +145,7 @@ export default function TransfersScreen() {
 
   return (
     <View style={styles.screen}>
-      <ScrollView contentContainerStyle={[styles.page, { paddingTop: 16 }]} refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => { setRefreshing(true); setReloadKey((key) => key + 1); }} tintColor="#087f5b" />}>
+      <KeyboardAwareScrollView bottomOffset={24} contentContainerStyle={[styles.page, { paddingTop: 16 }]} refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => { setRefreshing(true); setReloadKey((key) => key + 1); }} tintColor="#087f5b" />}>
         <Text style={styles.subtitle}>Pantau pengiriman dan konfirmasi barang yang diterima.</Text>
         <View style={styles.searchRow}><TextInput accessibilityLabel="Cari nomor transfer" returnKeyType="search" onSubmitEditing={() => { setPage(1); setSearch(searchInput.trim()); }} value={searchInput} onChangeText={setSearchInput} placeholder="Cari nomor transfer" placeholderTextColor="#8a968f" style={styles.searchInput} /><Pressable accessibilityRole="button" onPress={() => { setPage(1); setSearch(searchInput.trim()); }} style={styles.searchButton}><Text style={styles.searchButtonText}>Cari</Text></Pressable></View>
         {error ? <View style={styles.errorCard}><Text style={styles.errorText}>{error}</Text><Pressable onPress={() => setReloadKey((key) => key + 1)}><Text style={styles.retry}>Coba lagi</Text></Pressable></View> : null}
@@ -159,11 +159,11 @@ export default function TransfersScreen() {
           <Text style={styles.openHint}>Buka detail  ›</Text>
         </Pressable>)}
         {rows.length > 0 ? <View style={styles.pagination}><Pressable disabled={page <= 1} onPress={() => setPage((value) => value - 1)} style={[styles.pageButton, page <= 1 && styles.disabled]}><Text style={styles.pageText}>‹ Sebelumnya</Text></Pressable><Text style={styles.pageCount}>{page} / {totalPages}</Text><Pressable disabled={page >= totalPages} onPress={() => setPage((value) => value + 1)} style={[styles.pageButton, page >= totalPages && styles.disabled]}><Text style={styles.pageText}>Berikutnya ›</Text></Pressable></View> : null}
-      </ScrollView>
+      </KeyboardAwareScrollView>
 
       <Modal animationType="slide" visible={detailLoading || selected !== null} onRequestClose={() => setSelected(null)}>
         <View style={styles.modalScreen}><View style={[styles.modalHeader, { minHeight: 66 + insets.top, paddingTop: insets.top + 8 }]}><Pressable accessibilityLabel="Tutup detail transfer" accessibilityRole="button" hitSlop={8} onPress={() => setSelected(null)} style={({ pressed }) => [styles.headerAction, pressed && styles.headerActionPressed]}><X color="#087f5b" size={20} /><Text style={styles.headerActionText}>Tutup</Text></Pressable><Text numberOfLines={1} style={styles.modalTitle}>Detail transfer</Text><Pressable accessibilityLabel="Muat ulang detail transfer" accessibilityRole="button" disabled={detailLoading} hitSlop={8} onPress={() => void refreshSelected()} style={({ pressed }) => [styles.headerIconButton, pressed && styles.headerActionPressed]}><RefreshCw color="#087f5b" size={19} /></Pressable></View>
-          {detailLoading ? <ActivityIndicator style={styles.loader} color="#087f5b" size="large" /> : selected ? <ScrollView contentContainerStyle={[styles.detailPage, { paddingBottom: insets.bottom + 32 }]}>
+          {detailLoading ? <ActivityIndicator style={styles.loader} color="#087f5b" size="large" /> : selected ? <KeyboardAwareScrollView bottomOffset={24} contentContainerStyle={[styles.detailPage, { paddingBottom: insets.bottom + 32 }]}>
             <Text style={styles.eyebrow}>{selected.transferNumber}</Text><Text style={styles.detailStatus}>{statusLabels[selected.status] ?? formatStatus(selected.status)}</Text>
             <View style={styles.routeCard}><Text style={styles.routeLabel}>Gudang asal</Text><Text style={styles.routeValue}>{selected.sourceWarehouse.name}</Text><Text style={styles.routeArrow}>↓</Text><Text style={styles.routeLabel}>Gudang tujuan</Text><Text style={styles.routeValue}>{selected.destinationWarehouse.name}</Text></View>
             <View style={styles.actorCard}><Text style={styles.actorText}>Dibuat: {selected.createdBy?.name ?? '-'}</Text><Text style={styles.actorText}>Disiapkan: {selected.preparedBy?.name ?? '-'}</Text><Text style={styles.actorText}>Dikirim: {selected.sentBy?.name ?? '-'}</Text><Text style={styles.actorText}>Diterima: {selected.receivedBy?.name ?? '-'}</Text></View>
@@ -186,7 +186,7 @@ export default function TransfersScreen() {
             {error ? <View style={styles.errorCard}><Text style={styles.errorText}>{error}</Text></View> : null}
             {selected.availableActions.includes('RECEIVE') ? <Pressable accessibilityRole="button" disabled={receiving} onPress={() => void receiveTransfer()} style={[styles.primaryAction, receiving && styles.disabled]}>{receiving ? <ActivityIndicator color="#fff" /> : <Text style={styles.primaryActionText}>Konfirmasi penerimaan</Text>}</Pressable> : null}
             {selected.availableActions.filter((action) => action !== 'RECEIVE').map((action) => <Pressable key={action} accessibilityRole="button" disabled={actionLoading} onPress={() => void transition(action)} style={[action === 'CANCEL' ? styles.secondaryAction : styles.primaryAction, actionLoading && styles.disabled]}>{actionLoading ? <ActivityIndicator color={action === 'CANCEL' ? '#087f5b' : '#fff'} /> : <Text style={action === 'CANCEL' ? styles.secondaryActionText : styles.primaryActionText}>{action === 'PREPARE' ? 'Mulai siapkan' : action === 'READY' ? 'Tandai siap dikirim' : action === 'SEND' ? 'Kirim transfer' : 'Batalkan transfer'}</Text>}</Pressable>)}
-          </ScrollView> : null}
+          </KeyboardAwareScrollView> : null}
         </View>
       </Modal>
     </View>

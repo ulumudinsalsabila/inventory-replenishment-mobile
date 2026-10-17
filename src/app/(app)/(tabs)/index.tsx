@@ -19,9 +19,9 @@ type Dashboard = {
   averageTransaction: string | number;
   lowStockCount: number;
   pendingRequestCount: number;
-  orderStatuses: Array<{ status: string; count: number }>;
-  salesByMethod: Array<{ method: string; amount: string | number; count: number }>;
-  recentOrders: Array<{ id: string; orderNumber: string; status: string; grandTotal: string | number; createdAt: string; paymentMethod: string | null; _count: { items: number } }>;
+  orderStatuses: { status: string; count: number }[];
+  salesByMethod: { method: string; amount: string | number; count: number }[];
+  recentOrders: { id: string; orderNumber: string; status: string; grandTotal: string | number; createdAt: string; paymentMethod: string | null; _count: { items: number } }[];
   cashClosing: { status: string; closingNumber: string; closedAt: string } | null;
 };
 type Branch = { id: string; name: string; code: string };
@@ -72,7 +72,7 @@ function EmployeeDashboard() {
   const [selectedBranchId, setSelectedBranchId] = useState(user?.branchId ?? '');
   const [rangePreset, setRangePreset] = useState<RangePreset>('today');
   const [branchPickerVisible, setBranchPickerVisible] = useState(false);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(user?.permissions.includes('report.read') ?? false);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState('');
   const [reloadKey, setReloadKey] = useState(0);
@@ -91,7 +91,7 @@ function EmployeeDashboard() {
   }, [accessToken, authorizedRequest, user?.branchId]);
 
   useEffect(() => {
-    if (!accessToken || !canReadReports) { setLoading(false); return; }
+    if (!accessToken || !canReadReports) return;
     let active = true;
     const params = new URLSearchParams({ from, to });
     const branchId = user?.branchId ?? selectedBranchId;

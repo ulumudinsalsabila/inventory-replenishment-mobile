@@ -22,7 +22,6 @@ export default function CashInOutDetailScreen() {
 
   useEffect(() => {
     let active = true;
-    setLoading(true);
     void authorizedRequest<CashDetail>(`cash-transactions/${encodeURIComponent(id)}`)
       .then((result) => { if (active) setDetail(result); })
       .catch((cause: unknown) => { if (active) setError(cause instanceof ApiError ? cause.message : 'Detail transaksi belum dapat dimuat.'); })

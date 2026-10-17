@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useState } from 'react';
-import { ActivityIndicator, Pressable, RefreshControl, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
-import { router } from 'expo-router';
+import { ActivityIndicator, Pressable, RefreshControl, StyleSheet, Text, TextInput, View } from 'react-native';
 import { useAuth } from '../../auth/auth-provider';
 import { ApiError } from '../../lib/api';
 import { formatDate, formatStatus } from '../../lib/display';
+import { KeyboardAwareScrollView } from 'react-native-keyboard-controller';
 
 type Warehouse = { id: string; name: string; code: string };
 type WarehousePage = { data: Warehouse[] };
@@ -93,7 +93,7 @@ export default function OpnamesScreen() {
     finally { setSaving(false); }
   }
 
-  return <View style={styles.screen}><ScrollView keyboardShouldPersistTaps="handled" contentContainerStyle={styles.page} refreshControl={<RefreshControl refreshing={loading && !creating && !selected} onRefresh={() => setReload((value) => value + 1)} tintColor="#087f5b" />}>
+  return <View style={styles.screen}><KeyboardAwareScrollView bottomOffset={24} keyboardShouldPersistTaps="handled" contentContainerStyle={styles.page} refreshControl={<RefreshControl refreshing={loading && !creating && !selected} onRefresh={() => setReload((value) => value + 1)} tintColor="#087f5b" />}>
     <Text style={styles.subtitle}>Catat jumlah fisik dan sesuaikan stok setelah pemeriksaan.</Text>
     {error ? <View style={styles.errorCard}><Text style={styles.errorText}>{error}</Text><Pressable onPress={() => setReload((value) => value + 1)}><Text style={styles.retry}>Coba lagi</Text></Pressable></View> : null}
     {loading && !selected && !creating ? <ActivityIndicator style={styles.loader} color="#087f5b" size="large" /> : null}
@@ -117,7 +117,7 @@ export default function OpnamesScreen() {
       {rows.map((row) => <Pressable accessibilityRole="button" key={row.id} onPress={() => void openOpname(row.id)} style={styles.itemCard}><View style={styles.row}><View style={styles.flex}><Text style={styles.number}>{row.opnameNumber}</Text><Text style={styles.muted}>{row.warehouse.name} · {row.items.length} produk · {formatDate(row.createdAt)}</Text></View><Text style={styles.status}>{statusLabels[row.status] ?? formatStatus(row.status)}</Text></View></Pressable>)}
       {!loading && !rows.length ? <View style={styles.empty}><Text style={styles.product}>Belum ada stock opname</Text><Text style={styles.muted}>Opname yang dibuat akan tampil di sini.</Text></View> : null}
     </>}
-  </ScrollView></View>;
+  </KeyboardAwareScrollView></View>;
 }
 
 const styles = StyleSheet.create({ screen: { flex: 1, backgroundColor: '#f5f7f6' }, page: { padding: 20, paddingBottom: 36 }, back: { alignSelf: 'flex-start', marginBottom: 15, paddingVertical: 4 }, backText: { color: '#087f5b', fontSize: 12, fontWeight: '800' }, eyebrow: { color: '#087f5b', fontSize: 10, fontWeight: '900', letterSpacing: 1.2 }, title: { marginTop: 6, color: '#172820', fontSize: 25, fontWeight: '900' }, subtitle: { marginTop: 5, color: '#718078', fontSize: 12, lineHeight: 18 }, loader: { padding: 24 }, sectionTitle: { marginTop: 20, marginBottom: 9, color: '#26372e', fontSize: 15, fontWeight: '900' }, itemCard: { marginTop: 8, padding: 13, borderWidth: 1, borderColor: '#e6ece8', borderRadius: 14, backgroundColor: '#fff' }, summary: { marginTop: 8, padding: 15, borderRadius: 15, backgroundColor: '#fff' }, number: { color: '#26372e', fontSize: 14, fontWeight: '900' }, status: { color: '#087f5b', fontSize: 10, fontWeight: '900' }, muted: { marginTop: 4, color: '#84918b', fontSize: 11 }, product: { color: '#26372e', fontSize: 12, fontWeight: '800' }, qtyRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginTop: 12, paddingTop: 9, borderTopWidth: 1, borderTopColor: '#edf1ee' }, diff: { color: '#718078', fontSize: 12, fontWeight: '900' }, diffChanged: { color: '#087f5b' }, primary: { minHeight: 48, alignItems: 'center', justifyContent: 'center', marginTop: 14, paddingHorizontal: 14, borderRadius: 13, backgroundColor: '#087f5b' }, primaryText: { color: '#fff', fontSize: 12, fontWeight: '900' }, secondary: { minHeight: 45, alignItems: 'center', justifyContent: 'center', marginTop: 8, borderWidth: 1, borderColor: '#dce4df', borderRadius: 13, backgroundColor: '#fff' }, secondaryText: { color: '#68766e', fontSize: 12, fontWeight: '800' }, disabled: { opacity: 0.5 }, errorCard: { marginTop: 14, padding: 13, borderRadius: 14, backgroundColor: '#fff1f0' }, errorText: { color: '#a3332a', fontSize: 12 }, retry: { marginTop: 7, color: '#087f5b', fontSize: 12, fontWeight: '900' }, row: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 10 }, flex: { flex: 1 }, warehouseRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 }, warehouse: { paddingHorizontal: 11, paddingVertical: 9, borderRadius: 10, backgroundColor: '#fff' }, warehouseSelected: { backgroundColor: '#e7f5ee' }, warehouseText: { color: '#718078', fontSize: 11, fontWeight: '700' }, warehouseTextSelected: { color: '#087f5b' }, search: { height: 45, paddingHorizontal: 12, borderWidth: 1, borderColor: '#dce4df', borderRadius: 11, backgroundColor: '#fff', color: '#172820' }, countInput: { width: 92, height: 42, paddingHorizontal: 8, borderWidth: 1, borderColor: '#dce4df', borderRadius: 10, color: '#172820', textAlign: 'center' }, pagination: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginTop: 12 }, pageButton: { paddingHorizontal: 10, paddingVertical: 9, borderRadius: 10, backgroundColor: '#e7f5ee' }, pageText: { color: '#087f5b', fontSize: 10, fontWeight: '800' }, empty: { alignItems: 'center', marginTop: 15, padding: 22, borderRadius: 15, backgroundColor: '#fff' } });

@@ -15,7 +15,7 @@ type Option = { id: string; name: string };
 type Tab = 'all' | 'branch' | 'category';
 type Sort = 'name' | 'quantity' | 'value';
 
-const tabs: Array<{ id: Tab; label: string }> = [{ id: 'all', label: 'Semua' }, { id: 'branch', label: 'Per cabang' }, { id: 'category', label: 'Per kategori' }];
+const tabs: { id: Tab; label: string }[] = [{ id: 'all', label: 'Semua' }, { id: 'branch', label: 'Per cabang' }, { id: 'category', label: 'Per kategori' }];
 const sortOptions = [{ id: 'name', label: 'Nama produk (A-Z)' }, { id: 'quantity', label: 'Sisa stok terbanyak' }, { id: 'value', label: 'Nilai stok terbesar' }];
 const escapeHtml = (value: string) => value.replace(/[&<>"]/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[char] ?? char);
 
@@ -63,7 +63,6 @@ export default function UnsoldStockScreen() {
   useEffect(() => {
     if (!accessToken) return;
     let active = true;
-    setLoading(true);
     void authorizedRequest<StockValue>(`reports/stock-value?${buildQuery(1, 50)}`)
       .then((response) => { if (active) { setResult(response); setItems(response.data); setPage(1); setError(''); } })
       .catch((cause: unknown) => { if (active) setError(cause instanceof ApiError ? cause.message : 'Data stok belum dapat dimuat.'); })

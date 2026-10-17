@@ -7,6 +7,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useAuth } from '../../auth/auth-provider';
 import { ApiError } from '../../lib/api';
 import { formatDate, formatStatus } from '../../lib/display';
+import { KeyboardAvoidingView, KeyboardAwareScrollView } from 'react-native-keyboard-controller';
 
 type NamedOption = { id: string; name: string; code?: string; branchId?: string | null };
 type ProductUnit = { unitId: string; conversionFactor: string; unit: { id: string; code: string; name: string } };
@@ -75,7 +76,7 @@ export default function StockRequestsScreen() {
   const [actionError, setActionError] = useState('');
   const previousSourceWarehouseId = useRef('');
 
-  // eslint-disable-next-line react-hooks/set-state-in-effect
+
   useEffect(() => {
     let active = true;
     if (!canRead) return;
@@ -280,7 +281,7 @@ export default function StockRequestsScreen() {
       <Modal animationType="slide" visible={formVisible} onRequestClose={() => setFormVisible(false)}>
         <View style={styles.modalScreen}>
           <View style={[styles.modalHeader, { paddingTop: insets.top + 8, minHeight: 66 + insets.top }]}><Pressable accessibilityRole="button" onPress={() => setFormVisible(false)} style={styles.headerAction}><X size={19} color="#c70d17" /><Text style={styles.backText}>Batal</Text></Pressable><Text style={styles.modalTitle}>Pengajuan stok</Text><View style={{ width: 46 }} /></View>
-          <ScrollView contentContainerStyle={styles.formPage} keyboardShouldPersistTaps="handled">
+          <KeyboardAwareScrollView bottomOffset={24} contentContainerStyle={styles.formPage} keyboardShouldPersistTaps="handled">
             <View style={styles.formIntro}><View style={styles.formIntroIcon}><PackagePlus size={22} color="#c70d17" /></View><View style={styles.formIntroCopy}><Text style={styles.formIntroTitle}>Ajukan kebutuhan stok</Text><Text style={styles.formIntroText}>Tentukan cabang tujuan, lalu cari dan tambah barang seperti saat berbelanja di POS.</Text></View></View>
             <View style={styles.locationCard}>
               <View style={styles.locationColumn}><Text style={styles.locationLabel}>Cabang</Text><Pressable disabled={Boolean(user?.branchId)} onPress={() => setSelector('branch')} style={styles.locationSelect}><Text numberOfLines={1} style={styles.locationValue}>{selectedBranch?.name ?? 'Pilih cabang'}</Text>{user?.branchId ? null : <ChevronDown size={17} color="#718078" />}</Pressable></View>
@@ -311,7 +312,7 @@ export default function StockRequestsScreen() {
             <View style={styles.noteCard}><Text style={styles.fieldLabel}>Catatan (opsional)</Text><TextInput multiline value={note} onChangeText={setNote} placeholder="Alasan atau informasi tambahan" placeholderTextColor="#8a968f" style={styles.noteInput} /></View>
             <Text style={styles.formHint}>Permintaan langsung masuk ke gudang pusat dengan status Permintaan masuk.</Text>
             {error ? <Text accessibilityRole="alert" style={styles.errorText}>{error}</Text> : null}
-          </ScrollView><View style={[styles.formFooter, { paddingBottom: Math.max(14, insets.bottom + 8) }]}><View style={styles.requestCartBar}><ShoppingBagIcon /><View style={styles.requestCartCopy}><Text style={styles.requestCartTitle}>{items.reduce((sum, item) => sum + (Number(item.requestedQty) || 0), 0)} barang diminta</Text><Text style={styles.requestCartSubtitle}>{items.length} jenis produk</Text></View><Text style={styles.requestCartCount}>{items.length}</Text></View><Pressable accessibilityRole="button" disabled={saving || !options || !items.length} onPress={() => void createRequest()} style={[styles.submitButton, (saving || !options || !items.length) && styles.disabled]}>{saving ? <ActivityIndicator color="#fff" /> : <Text style={styles.submitText}>Kirim permintaan</Text>}</Pressable></View>
+          </KeyboardAwareScrollView><View style={[styles.formFooter, { paddingBottom: Math.max(14, insets.bottom + 8) }]}><View style={styles.requestCartBar}><ShoppingBagIcon /><View style={styles.requestCartCopy}><Text style={styles.requestCartTitle}>{items.reduce((sum, item) => sum + (Number(item.requestedQty) || 0), 0)} barang diminta</Text><Text style={styles.requestCartSubtitle}>{items.length} jenis produk</Text></View><Text style={styles.requestCartCount}>{items.length}</Text></View><Pressable accessibilityRole="button" disabled={saving || !options || !items.length} onPress={() => void createRequest()} style={[styles.submitButton, (saving || !options || !items.length) && styles.disabled]}>{saving ? <ActivityIndicator color="#fff" /> : <Text style={styles.submitText}>Kirim permintaan</Text>}</Pressable></View>
         </View>
       </Modal>
 
@@ -324,7 +325,7 @@ export default function StockRequestsScreen() {
             const savedPhotos = detail.evidenceImages ?? [];
             const canAddPhoto = Boolean(nextAction) && savedPhotos.length + photos.length < MAX_PHOTOS;
             return <>
-              <ScrollView contentContainerStyle={styles.formPage} keyboardShouldPersistTaps="handled">
+              <KeyboardAwareScrollView bottomOffset={24} contentContainerStyle={styles.formPage} keyboardShouldPersistTaps="handled">
                 <Text style={styles.requestNumber}>{detail.requestNumber}</Text>
                 <Text style={styles.route}>{detail.branch.name} · {detail.sourceWarehouse.name} → {detail.destinationWarehouse.name}</Text>
 
@@ -363,7 +364,7 @@ export default function StockRequestsScreen() {
 
                 {detail.history?.length ? <><Text style={styles.fieldLabel}>Riwayat</Text>{detail.history.map((entry) => <View key={entry.id} style={styles.historyRow}><View style={styles.historyDot} /><View style={styles.reviewProduct}><Text style={styles.historyAction}>{HISTORY_LABEL[entry.action] ?? formatStatus(entry.action)}</Text><Text style={styles.sku}>{entry.actor?.name ?? 'Sistem'} · {formatDate(entry.createdAt)}</Text></View></View>)}</> : null}
                 {actionError ? <Text accessibilityRole="alert" style={[styles.errorText, styles.actionError]}>{actionError}</Text> : null}
-              </ScrollView>
+              </KeyboardAwareScrollView>
               {nextAction ? <View style={[styles.formFooter, { paddingBottom: Math.max(14, insets.bottom + 8) }]}><Pressable accessibilityRole="button" disabled={actionSaving} onPress={() => void runStep(nextAction)} style={[styles.stepButton, actionSaving && styles.disabled]}>{actionSaving ? <ActivityIndicator color="#fff" /> : <Text style={styles.submitText}>{ACTION_COPY[nextAction].button}{photos.length ? ` + ${photos.length} foto` : ''}</Text>}</Pressable></View> : null}
             </>;
           })()}
@@ -371,13 +372,13 @@ export default function StockRequestsScreen() {
       </Modal>
 
       <Modal animationType="slide" transparent visible={selector !== null} onRequestClose={() => setSelector(null)}>
-        <View style={styles.selectorBackdrop}><View style={[styles.selectorPanel, { paddingBottom: insets.bottom + 12 }]}><View style={styles.selectorHeader}><Text style={styles.modalTitle}>{selectorTitle}</Text><Pressable onPress={() => setSelector(null)}><Text style={styles.backText}>Tutup</Text></Pressable></View>
+        <KeyboardAvoidingView behavior="padding" style={styles.selectorBackdrop}><View style={[styles.selectorPanel, { paddingBottom: insets.bottom + 12 }]}><View style={styles.selectorHeader}><Text style={styles.modalTitle}>{selectorTitle}</Text><Pressable onPress={() => setSelector(null)}><Text style={styles.backText}>Tutup</Text></Pressable></View>
           {selector === 'product' ? <TextInput autoFocus value={productSearch} onChangeText={setProductSearch} placeholder="Cari nama atau SKU" placeholderTextColor="#8a968f" style={styles.selectorSearch} /> : null}
           <ScrollView keyboardShouldPersistTaps="handled">
             {selector === 'product' ? filteredProducts.map((product) => <Pressable key={product.id} onPress={() => { setItems((current) => [...current, { productId: product.id, requestedQty: '1' }]); setSelector(null); }} style={styles.optionRow}><View style={styles.optionInfo}><Text style={styles.selectText}>{product.name}</Text><Text style={styles.sku}>{product.sku} · {product.unit.code}</Text></View><Plus size={18} color="#c70d17" /></Pressable>) : selectorOptions.map((option) => <Pressable key={option.id} onPress={() => { if (selector === 'branch') selectBranch(option.id); if (selector === 'source') setSourceWarehouseId(option.id); if (selector === 'destination') setDestinationWarehouseId(option.id); setSelector(null); }} style={styles.optionRow}><View style={styles.optionInfo}><Text style={styles.selectText}>{option.name}</Text>{option.code ? <Text style={styles.sku}>{option.code}</Text> : null}</View><ChevronRight size={18} color="#718078" /></Pressable>)}
             {selector === 'product' && filteredProducts.length === 0 ? <Text style={styles.noItems}>Tidak ada produk lain yang cocok.</Text> : null}
           </ScrollView>
-        </View></View>
+        </View></KeyboardAvoidingView>
       </Modal>
     </View>
   );

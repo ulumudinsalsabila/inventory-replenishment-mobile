@@ -193,7 +193,7 @@ const center = (value: unknown, width: number) => {
 
 export function formatCashClosingReceipt(closing: CashClosingReceipt, width = 32) {
   const rule = '-'.repeat(width);
-  const sales: Array<[string, unknown]> = [
+  const sales: [string, unknown][] = [
     ['Cash Sales', closing.cashSales],
     ['QRIS Sales', closing.qrisSales],
     ['Transfer Sales', closing.transferSales],
@@ -201,7 +201,7 @@ export function formatCashClosingReceipt(closing: CashClosingReceipt, width = 32
     ['Card Sales', closing.cardSales],
     ['Other Sales', closing.otherSales],
   ];
-  const refunds: Array<[string, unknown]> = [
+  const refunds: [string, unknown][] = [
     ['Cash Refund', closing.cashRefund],
     ['QRIS Refund', closing.qrisRefund],
     ['Transfer Refund', closing.transferRefund],

@@ -1,5 +1,5 @@
 import { useCallback, useState } from 'react';
-import { ActivityIndicator, Modal, Pressable, RefreshControl, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
+import { ActivityIndicator, Modal, Pressable, RefreshControl, StyleSheet, Text, TextInput, View } from 'react-native';
 import { useFocusEffect, router } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { ArrowDownLeft, ArrowUpRight, Check, ChevronDown, ChevronRight, Plus, Search, X } from 'lucide-react-native';
@@ -7,6 +7,7 @@ import { useAuth } from '../../auth/auth-provider';
 import { ApiError } from '../../lib/api';
 import { getRange, rangeLabel, rangeOptions, type RangePreset } from '../../lib/date-range';
 import { formatDate } from '../../lib/display';
+import { KeyboardAwareScrollView } from 'react-native-keyboard-controller';
 
 type Branch = { id: string; name: string; code: string };
 type Page<T> = { data: T[]; meta?: { totalPages: number } };
@@ -28,7 +29,6 @@ export default function CashInOutScreen() {
   const [branchPickerVisible, setBranchPickerVisible] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
-  const [reload, setReload] = useState(0);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -53,7 +53,7 @@ export default function CashInOutScreen() {
     } finally { setLoading(false); }
   }, [assignedBranchId, authorizedRequest, canRead, rangePreset, search]);
 
-  useFocusEffect(useCallback(() => { void load(); }, [load, reload]));
+  useFocusEffect(useCallback(() => { void load(); }, [load]));
 
   const visibleTransactions = transactions.filter((row) =>
     (typeFilter === 'ALL' || row.type === typeFilter) &&
@@ -62,7 +62,7 @@ export default function CashInOutScreen() {
   );
 
   return <View style={styles.screen}>
-    <ScrollView contentContainerStyle={styles.page} keyboardShouldPersistTaps="handled" refreshControl={<RefreshControl refreshing={loading} onRefresh={() => setReload((value) => value + 1)} tintColor="#07885b" />}>
+    <KeyboardAwareScrollView bottomOffset={24} contentContainerStyle={styles.page} keyboardShouldPersistTaps="handled" refreshControl={<RefreshControl refreshing={loading} onRefresh={() => void load()} tintColor="#07885b" />}>
       {!assignedBranchId && branches.length ? <Pressable accessibilityRole="button" accessibilityState={{ disabled: Boolean(assignedBranchId) }} disabled={Boolean(assignedBranchId)} onPress={() => setBranchPickerVisible(true)} style={[styles.branchPicker, assignedBranchId && styles.branchPickerDisabled]}><View style={styles.branchIcon}><Text style={styles.branchInitial}>{branches.find((branch) => branch.id === branchId)?.name.slice(0, 1) ?? 'C'}</Text></View><View style={styles.branchTextWrap}><Text numberOfLines={1} style={styles.branchName}>{branches.find((branch) => branch.id === branchId)?.name ?? (assignedBranchId ? 'Cabang saya' : 'Semua cabang')}</Text><Text style={styles.branchCode}>{branches.find((branch) => branch.id === branchId)?.code ?? (assignedBranchId ? 'Cabang tetap' : 'Filter cabang')}</Text></View>{assignedBranchId ? null : <ChevronDown size={17} color="#71839a" />}</Pressable> : null}
       <Text style={styles.heading}>Kas masuk / keluar</Text>
       <Text style={styles.subtitle}>Pencatatan transaksi kas per cabang.</Text>
@@ -78,7 +78,7 @@ export default function CashInOutScreen() {
       </Pressable>) : null}
       {!loading && canRead && !visibleTransactions.length ? <Text style={styles.empty}>Belum ada transaksi kas untuk periode {rangeLabel(rangePreset).toLowerCase()}.</Text> : null}
       {!canRead && !canCreate ? <View style={styles.noAccess}><Text style={styles.noAccessTitle}>Akses tidak tersedia</Text><Text style={styles.noAccessText}>Akun ini belum memiliki izin untuk kas.</Text></View> : null}
-    </ScrollView>
+    </KeyboardAwareScrollView>
     {canCreate ? <Pressable accessibilityRole="button" onPress={() => router.push('/(app)/cash-in-out-form')} style={[styles.createButton, { marginBottom: Math.max(insets.bottom + 8, 14) }]}><Plus size={17} color="#fff" /><Text style={styles.createButtonText}>Catat kas masuk / keluar</Text></Pressable> : null}
     <Modal visible={branchPickerVisible} transparent animationType="slide" onRequestClose={() => setBranchPickerVisible(false)}><View style={styles.modalBackdrop}><View style={[styles.branchSheet, { paddingBottom: Math.max(insets.bottom + 8, 22) }]}><View style={styles.sheetHeader}><Text style={styles.sheetTitle}>Pilih cabang</Text><Pressable accessibilityRole="button" accessibilityLabel="Tutup pilihan cabang" onPress={() => setBranchPickerVisible(false)} style={styles.closeButton}><X size={18} color="#53677e" /></Pressable></View><Pressable accessibilityRole="button" accessibilityState={{ selected: !branchId }} onPress={() => { setBranchId(''); setBranchPickerVisible(false); }} style={styles.branchOption}><Text style={styles.branchOptionText}>Semua cabang</Text>{!branchId ? <Check size={17} color="#07885b" /> : null}</Pressable>{branches.map((branch) => <Pressable key={branch.id} accessibilityRole="button" accessibilityState={{ selected: branch.id === branchId }} onPress={() => { setBranchId(branch.id); setBranchPickerVisible(false); }} style={styles.branchOption}><Text style={styles.branchOptionText}>{branch.name} ({branch.code})</Text>{branch.id === branchId ? <Check size={17} color="#07885b" /> : null}</Pressable>)}</View></View></Modal>
   </View>;

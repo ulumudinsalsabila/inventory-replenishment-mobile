@@ -7,6 +7,7 @@ import { router } from 'expo-router';
 import { useAuth } from '../../auth/auth-provider';
 import { ApiError } from '../../lib/api';
 import { formatDate } from '../../lib/display';
+import { KeyboardAwareScrollView } from 'react-native-keyboard-controller';
 
 type Branch = { id: string; name: string; code: string };
 type Page<T> = { data: T[]; meta?: { totalPages: number } };
@@ -114,13 +115,12 @@ export default function CashScreen() {
   const currentReason = reasonOptions[type].find((option) => option.label === reasonChoice);
   const visibleTransactions = transactions.filter((row) => (typeFilter === 'ALL' || row.type === typeFilter) && `${row.reason ?? ''} ${row.category ?? ''} ${row.branch?.name ?? ''}`.toLowerCase().includes(search.trim().toLowerCase()));
 
-  const selectedReason = reasonOptions[type].find((option) => option.label === reasonChoice);
   return <View style={styles.screen}>
-    <ScrollView contentContainerStyle={[styles.page, { paddingBottom: 18 }]} keyboardShouldPersistTaps="handled" refreshControl={!formVisible ? <RefreshControl refreshing={loading} onRefresh={() => setReload((n) => n + 1)} tintColor="#087f5b" /> : undefined}>
+    <KeyboardAwareScrollView bottomOffset={24} contentContainerStyle={[styles.page, { paddingBottom: 18 }]} keyboardShouldPersistTaps="handled" refreshControl={!formVisible ? <RefreshControl refreshing={loading} onRefresh={() => setReload((n) => n + 1)} tintColor="#087f5b" /> : undefined}>
       {!formVisible ? <>
         <Text style={styles.subtitle}>Pencatatan kas masuk dan keluar.</Text>
         {branches.length ? <View style={styles.card}><Text style={styles.label}>Cabang</Text><View style={styles.chips}>{branches.map((branch) => <Pressable key={branch.id} onPress={() => setBranchId(branch.id)} style={[styles.chip, branchId === branch.id && styles.chipActive]}><Text style={[styles.chipText, branchId === branch.id && styles.chipTextActive]}>{branch.name} ({branch.code})</Text></Pressable>)}</View></View> : null}
-        <View style={{ flexDirection: 'row', gap: 8, marginTop: 12 }}><View style={[styles.input, { flex: 1, flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 0 }]}><Search size={16} color="#71839a" /><TextInput accessibilityLabel="Cari kas masuk atau keluar" value={search} onChangeText={setSearch} placeholder="Cari kategori atau alasan..." placeholderTextColor="#8290a2" style={{ flex: 1, color: '#26372e', fontSize: 10 }} /></View><Pressable accessibilityRole="button" accessibilityLabel="Filter kas masuk" onPress={() => setTypeFilter((current) => current === 'CASH_IN' ? 'ALL' : 'CASH_IN')} style={[styles.chip, typeFilter === 'CASH_IN' && styles.chipActive]}><Text style={[styles.chipText, typeFilter === 'CASH_IN' && styles.chipTextActive]}>Masuk</Text></Pressable><Pressable accessibilityRole="button" accessibilityLabel="Filter kas keluar" onPress={() => setTypeFilter((current) => current === 'CASH_OUT' ? 'ALL' : 'CASH_OUT')} style={[styles.chip, typeFilter === 'CASH_OUT' && styles.chipActive]}><Text style={[styles.chipText, typeFilter === 'CASH_OUT' && styles.chipTextActive]}>Keluar</Text></Pressable></View>
+        <View style={{ flexDirection: 'row', gap: 8, marginTop: 12 }}><View style={[styles.input, { flex: 1, flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 0 }]}><Search size={16} color="#71839a" /><TextInput accessibilityLabel="Cari kas masuk atau keluar" value={search} onChangeText={setSearch} placeholder="Cari kategori atau alasan..." placeholderTextColor="#8290a2" style={{ flex: 1, color: '#26372e', fontSize: 12 }} /></View><Pressable accessibilityRole="button" accessibilityLabel="Filter kas masuk" onPress={() => setTypeFilter((current) => current === 'CASH_IN' ? 'ALL' : 'CASH_IN')} style={[styles.chip, typeFilter === 'CASH_IN' && styles.chipActive]}><Text style={[styles.chipText, typeFilter === 'CASH_IN' && styles.chipTextActive]}>Masuk</Text></Pressable><Pressable accessibilityRole="button" accessibilityLabel="Filter kas keluar" onPress={() => setTypeFilter((current) => current === 'CASH_OUT' ? 'ALL' : 'CASH_OUT')} style={[styles.chip, typeFilter === 'CASH_OUT' && styles.chipActive]}><Text style={[styles.chipText, typeFilter === 'CASH_OUT' && styles.chipTextActive]}>Keluar</Text></Pressable></View>
         <View style={styles.chips}><Pressable onPress={() => setTypeFilter('ALL')} style={[styles.chip, typeFilter === 'ALL' && styles.chipActive]}><Text style={[styles.chipText, typeFilter === 'ALL' && styles.chipTextActive]}>Semua</Text></Pressable><Pressable onPress={() => setTypeFilter('CASH_IN')} style={[styles.chip, typeFilter === 'CASH_IN' && styles.chipActive]}><Text style={[styles.chipText, typeFilter === 'CASH_IN' && styles.chipTextActive]}>Kas masuk</Text></Pressable><Pressable onPress={() => setTypeFilter('CASH_OUT')} style={[styles.chip, typeFilter === 'CASH_OUT' && styles.chipActive]}><Text style={[styles.chipText, typeFilter === 'CASH_OUT' && styles.chipTextActive]}>Kas keluar</Text></Pressable></View>
         {error ? <View style={styles.error}><Text style={styles.errorText}>{error}</Text></View> : null}
         {loading ? <ActivityIndicator style={styles.loader} color="#087f5b" size="large" /> : null}
@@ -140,7 +140,7 @@ export default function CashScreen() {
         {formStep === 1 ? <View style={styles.card}><View style={styles.attachmentHeading}><View><Text style={styles.section}>Foto bukti (opsional)</Text><Text style={styles.detail}>Maksimal 5 foto, 5 MB per file.</Text></View><Paperclip size={18} color="#667c92" /></View><View style={styles.evidenceGrid}>{evidence.map((asset, index) => <View key={`${asset.assetId ?? asset.uri}-${index}`} style={styles.evidenceWrap}><Image source={{ uri: asset.uri }} style={styles.evidenceImage} /><Pressable accessibilityRole="button" accessibilityLabel={`Hapus foto ${index + 1}`} onPress={() => setEvidence((current) => current.filter((_, itemIndex) => itemIndex !== index))} style={styles.removeEvidence}><X size={12} color="#fff" /></Pressable></View>)}</View>{evidence.length < 5 ? <View style={styles.evidenceActions}><Pressable accessibilityRole="button" onPress={() => void selectEvidence(true)} style={styles.evidenceButton}><Camera size={16} color="#087f5b" /><Text style={styles.evidenceButtonText}>Ambil foto</Text></Pressable><Pressable accessibilityRole="button" onPress={() => void selectEvidence(false)} style={styles.evidenceButton}><ImagePlus size={16} color="#087f5b" /><Text style={styles.evidenceButtonText}>Pilih galeri</Text></Pressable></View> : null}</View> : null}
         {formStep === 2 ? <View style={styles.card}><Text style={styles.section}>Konfirmasi transaksi</Text><Text style={styles.detail}>Jenis transaksi</Text><Text style={styles.rowTitle}>{type === 'CASH_IN' ? 'Kas masuk' : 'Kas keluar'}</Text><View style={styles.detailRow}><Text style={styles.detailLabel}>Jumlah</Text><Text style={styles.detailValue}>{money(amount)}</Text></View><View style={styles.detailRow}><Text style={styles.detailLabel}>Alasan</Text><Text style={styles.detailValue}>{currentReason?.label ?? '—'}</Text></View>{reason.trim() ? <View style={styles.detailRow}><Text style={styles.detailLabel}>Catatan</Text><Text style={styles.detailValue}>{reason}</Text></View> : null}<View style={styles.detailRow}><Text style={styles.detailLabel}>Foto bukti</Text><Text style={styles.detailValue}>{evidence.length} foto</Text></View></View> : null}
       </>}
-    </ScrollView>
+    </KeyboardAwareScrollView>
     {formVisible ? <View style={styles.formFooter}><Pressable accessibilityRole="button" disabled={saving} onPress={() => { if (formStep) setFormStep((value) => value - 1); else { setFormVisible(false); setError(''); } }} style={styles.secondaryButton}><Text style={styles.secondaryText}>{formStep ? 'Kembali' : 'Batal'}</Text></Pressable><Pressable accessibilityRole="button" disabled={saving || (formStep === 0 && (!branchId || !reasonChoice || !(Number(amount) > 0)))} onPress={() => { if (formStep < 2) { setError(''); setFormStep((value) => value + 1); } else void submitTransaction(); }} style={[styles.primary, styles.formPrimary, saving && styles.dim]}>{saving ? <ActivityIndicator color="#fff" /> : <Text style={styles.primaryText}>{formStep < 2 ? 'Lanjut' : 'Simpan transaksi'}</Text>}{formStep < 2 ? <ChevronRight size={16} color="#fff" /> : null}</Pressable></View> : <View style={styles.listFooter}>{canRead && user?.permissions.includes('cash_closing.create') ? <Pressable accessibilityRole="button" onPress={() => router.push('/(app)/cash-closing')} style={styles.closingLink}><Text style={styles.closingLinkText}>Cash closing</Text><ChevronRight size={16} color="#07885b" /></Pressable> : null}{canTransact ? <Pressable accessibilityRole="button" onPress={() => { setFormVisible(true); setFormStep(0); setError(''); }} style={styles.primary}><Plus size={17} color="#fff" /><Text style={styles.primaryText}>Catat kas masuk / keluar</Text></Pressable> : null}</View>}
     <Modal visible={detailLoading || Boolean(selected)} transparent animationType="slide" onRequestClose={() => setSelected(null)}><View style={styles.modalBackdrop}><View style={styles.detailSheet}><View style={styles.detailHeader}><View><Text style={styles.section}>Detail transaksi</Text><Text style={styles.detail}>{selected?.createdAt ? formatDate(selected.createdAt) : ''}</Text></View><Pressable accessibilityRole="button" accessibilityLabel="Tutup detail" onPress={() => setSelected(null)} style={styles.closeButton}><X size={19} color="#526276" /></Pressable></View>{detailLoading ? <ActivityIndicator style={styles.loader} color="#087f5b" /> : selected ? <ScrollView style={styles.detailContent}><View style={[styles.detailBanner, { backgroundColor: selected.type === 'CASH_IN' ? '#e6f7ef' : '#fff0ed' }]}>{selected.type === 'CASH_IN' ? <ArrowDownLeft size={20} color="#07885b" /> : <ArrowUpRight size={20} color="#c23a36" />}<View style={styles.rowText}><Text style={styles.rowTitle}>{selected.type === 'CASH_IN' ? 'Kas masuk' : 'Kas keluar'}</Text><Text style={styles.detail}>{formatDate(selected.createdAt ?? '')}</Text></View><Text style={[styles.rowAmount, { color: selected.type === 'CASH_IN' ? '#07885b' : '#c23a36' }]}>{money(selected.amount)}</Text></View><View style={styles.detailRow}><Text style={styles.detailLabel}>Kategori</Text><Text style={styles.detailValue}>{selected.category ?? '—'}</Text></View><View style={styles.detailRow}><Text style={styles.detailLabel}>Alasan</Text><Text style={styles.detailValue}>{selected.reason ?? '—'}</Text></View><View style={styles.detailRow}><Text style={styles.detailLabel}>Cabang</Text><Text style={styles.detailValue}>{selected.branch?.name ?? '—'}</Text></View>{selected.note ? <><Text style={styles.sectionTitle}>Catatan</Text><Text style={styles.detail}>{selected.note}</Text></> : null}<Text style={styles.sectionTitle}>Foto bukti</Text><View style={styles.evidenceGrid}>{selected.attachments?.map((attachment) => <Image key={attachment.id} source={{ uri: attachment.url }} accessibilityLabel={attachment.fileName} style={styles.evidenceImage} />)}</View></ScrollView> : null}</View></View></Modal>
   </View>;
@@ -160,7 +160,7 @@ const styles = StyleSheet.create({
   chips: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
   chip: { paddingHorizontal: 12, paddingVertical: 9, borderRadius: 11, backgroundColor: '#f1f4f2' },
   chipActive: { backgroundColor: '#e7f5ee' },
-  chipText: { color: '#68766e', fontSize: 11, fontWeight: '800' },
+  chipText: { color: '#68766e', fontSize: 12, fontWeight: '800' },
   chipTextActive: { color: '#087f5b' },
   input: { minHeight: 45, marginTop: 9, paddingHorizontal: 12, borderWidth: 1, borderColor: '#dce4df', borderRadius: 11, backgroundColor: '#fff', color: '#26372e', fontSize: 12 },
   multiline: { minHeight: 72, paddingTop: 12, textAlignVertical: 'top' },
@@ -168,15 +168,15 @@ const styles = StyleSheet.create({
   primaryText: { color: '#fff', fontSize: 12, fontWeight: '900' },
   dim: { opacity: 0.55 },
   expected: { color: '#087f5b', fontSize: 15, fontWeight: '900' },
-  detail: { marginTop: 5, color: '#79867f', fontSize: 10, lineHeight: 15 },
+  detail: { marginTop: 5, color: '#79867f', fontSize: 12, lineHeight: 17 },
   sectionTitle: { marginTop: 23, marginBottom: 8, color: '#26372e', fontSize: 15, fontWeight: '900' },
   row: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginTop: 7, padding: 13, borderRadius: 13, backgroundColor: '#fff' },
   rowText: { flex: 1, paddingRight: 8 },
   rowTitle: { color: '#26372e', fontSize: 12, fontWeight: '800' },
   rowAmount: { color: '#26372e', fontSize: 12, fontWeight: '900' },
-  empty: { padding: 16, borderRadius: 13, backgroundColor: '#fff', color: '#84918b', fontSize: 11 },
+  empty: { padding: 16, borderRadius: 13, backgroundColor: '#fff', color: '#84918b', fontSize: 12 },
   error: { marginTop: 13, padding: 12, borderRadius: 12, backgroundColor: '#fff1ef' },
-  errorText: { color: '#a3332a', fontSize: 11 },
+  errorText: { color: '#a3332a', fontSize: 12 },
   loader: { padding: 14 },
   formHeader: { minHeight: 48, flexDirection: 'row', alignItems: 'center', gap: 12, marginBottom: 12 },
   formTitle: { color: '#26372e', fontSize: 15, fontWeight: '900' },
@@ -184,9 +184,9 @@ const styles = StyleSheet.create({
   stepItem: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 5 },
   stepCircle: { width: 23, height: 23, alignItems: 'center', justifyContent: 'center', borderRadius: 12, backgroundColor: '#edf2f5' },
   stepCircleActive: { backgroundColor: '#087f5b' },
-  stepNumber: { color: '#718078', fontSize: 9, fontWeight: '900' },
+  stepNumber: { color: '#718078', fontSize: 11, fontWeight: '900' },
   stepNumberActive: { color: '#fff' },
-  stepLabel: { color: '#8191a3', fontSize: 9 },
+  stepLabel: { color: '#8191a3', fontSize: 11 },
   stepLabelActive: { color: '#087f5b', fontWeight: '900' },
   typeChoice: { flex: 1, minHeight: 42, alignItems: 'center', justifyContent: 'center', borderRadius: 10, backgroundColor: '#f1f4f2' },
   inChoiceActive: { backgroundColor: '#087f5b' },
@@ -200,7 +200,7 @@ const styles = StyleSheet.create({
   reasonChoiceActive: { borderColor: '#087f5b', backgroundColor: '#e7f5ee' },
   checkbox: { width: 18, height: 18, alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: '#cbd7d0', borderRadius: 5 },
   checkboxActive: { borderColor: '#087f5b', backgroundColor: '#087f5b' },
-  reasonText: { color: '#26372e', fontSize: 11, fontWeight: '700' },
+  reasonText: { color: '#26372e', fontSize: 12, fontWeight: '700' },
   attachmentHeading: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
   evidenceGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 8 },
   evidenceWrap: { position: 'relative' },
@@ -208,17 +208,17 @@ const styles = StyleSheet.create({
   removeEvidence: { position: 'absolute', top: -4, right: -4, width: 19, height: 19, alignItems: 'center', justifyContent: 'center', borderRadius: 10, backgroundColor: '#b8322d' },
   evidenceActions: { flexDirection: 'row', gap: 7, marginTop: 8 },
   evidenceButton: { flex: 1, minHeight: 48, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 7, borderWidth: 1, borderColor: '#dce5eb', borderStyle: 'dashed', borderRadius: 9, backgroundColor: '#fff' },
-  evidenceButtonText: { color: '#53677e', fontSize: 10, fontWeight: '800' },
+  evidenceButtonText: { color: '#53677e', fontSize: 12, fontWeight: '800' },
   formFooter: { flexDirection: 'row', gap: 8, paddingHorizontal: 14, paddingTop: 10, borderTopWidth: 1, borderTopColor: '#e8edf0', backgroundColor: '#fff' },
   formPrimary: { flex: 1, flexDirection: 'row', gap: 7, marginTop: 0, paddingHorizontal: 10 },
   secondaryButton: { minHeight: 46, minWidth: 82, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 10, borderWidth: 1, borderColor: '#dce5eb', borderRadius: 10, backgroundColor: '#fff' },
-  secondaryText: { color: '#53677e', fontSize: 10, fontWeight: '800' },
+  secondaryText: { color: '#53677e', fontSize: 12, fontWeight: '800' },
   listFooter: { paddingHorizontal: 14, paddingTop: 9, paddingBottom: 12, borderTopWidth: 1, borderTopColor: '#e8edf0', backgroundColor: '#fff' },
   closingLink: { minHeight: 38, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 3 },
-  closingLinkText: { color: '#087f5b', fontSize: 11, fontWeight: '800' },
+  closingLinkText: { color: '#087f5b', fontSize: 12, fontWeight: '800' },
   transactionCard: { minHeight: 74, flexDirection: 'row', alignItems: 'center', gap: 9, marginTop: 8, padding: 11, borderWidth: 1, borderColor: '#e6ece8', borderRadius: 12, backgroundColor: '#fff' },
   transactionIcon: { width: 36, height: 36, alignItems: 'center', justifyContent: 'center', borderRadius: 11 },
-  transactionDate: { marginTop: 4, color: '#87938c', fontSize: 9 },
+  transactionDate: { marginTop: 4, color: '#87938c', fontSize: 11 },
   modalBackdrop: { flex: 1, justifyContent: 'flex-end', backgroundColor: '#0a172966' },
   detailSheet: { maxHeight: '86%', paddingHorizontal: 14, paddingTop: 14, paddingBottom: 24, borderTopLeftRadius: 16, borderTopRightRadius: 16, backgroundColor: '#f7f9fa' },
   detailHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 },
@@ -226,6 +226,6 @@ const styles = StyleSheet.create({
   detailContent: { flexGrow: 0 },
   detailBanner: { minHeight: 62, flexDirection: 'row', alignItems: 'center', gap: 9, marginBottom: 8, padding: 10, borderRadius: 10 },
   detailRow: { minHeight: 38, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 10, borderBottomWidth: 1, borderBottomColor: '#e8edf1' },
-  detailLabel: { color: '#71839a', fontSize: 10 },
-  detailValue: { maxWidth: '68%', color: '#25364a', fontSize: 10, fontWeight: '800', textAlign: 'right' },
+  detailLabel: { color: '#71839a', fontSize: 12 },
+  detailValue: { maxWidth: '68%', color: '#25364a', fontSize: 12, fontWeight: '800', textAlign: 'right' },
 });

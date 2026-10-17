@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { ActivityIndicator, Alert, Image, Modal, Platform, Pressable, RefreshControl, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { Tabs } from 'expo-router';
-import { Check, ChevronDown, ChevronRight, Package, Plus, Search, X, Camera, ImagePlus } from 'lucide-react-native';
+import { Check, ChevronDown, ChevronRight, Gift, Minus, Package, Plus, Search, X, Camera, ImagePlus } from 'lucide-react-native';
 import { File } from 'expo-file-system';
 import * as ImagePicker from 'expo-image-picker';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -9,8 +9,10 @@ import { useAuth } from '../../auth/auth-provider';
 import { ApiError } from '../../lib/api';
 import { getRange, rangeOptions, type RangePreset } from '../../lib/date-range';
 import { formatDate, formatStatus } from '../../lib/display';
+import { fetchAllPages } from '../../lib/paging';
 import { DistributorPurchaseWizard } from '../../components/distributor-purchase-wizard';
 import { OptionSheet } from '../../components/option-sheet';
+import { KeyboardAvoidingView, KeyboardAwareScrollView } from 'react-native-keyboard-controller';
 
 type Purchase = {
   id: string;
@@ -34,6 +36,9 @@ type PurchaseDetail = Purchase & {
   attachments?: { id: string; url: string; fileName: string; createdAt: string }[];
 };
 type Page<T> = { data: T[]; meta: { page: number; totalPages: number; total: number } };
+type BonusUnit = { unitId: string; canPurchase: boolean; unit: { code: string } };
+type BonusProduct = { id: string; sku: string; name: string; active?: boolean; unitId: string; unit: { code: string }; unitConversions?: BonusUnit[] };
+type BonusLine = { productId: string; unitId: string; receivedQty: string };
 type DateFilter = RangePreset | 'all';
 
 const money = (value: string | number) => `Rp ${Number(value).toLocaleString('id-ID', { maximumFractionDigits: 0 })}`;
@@ -78,6 +83,11 @@ export default function DistributorPurchasesScreen() {
   const [receiveError, setReceiveError] = useState('');
   const [uploadingAttachments, setUploadingAttachments] = useState(false);
   const [receivedQuantities, setReceivedQuantities] = useState<Record<string, string>>({});
+  const [bonusLines, setBonusLines] = useState<BonusLine[]>([]);
+  const [bonusProducts, setBonusProducts] = useState<BonusProduct[]>([]);
+  const [bonusPickerVisible, setBonusPickerVisible] = useState(false);
+  const [bonusSearch, setBonusSearch] = useState('');
+  const [bonusLoading, setBonusLoading] = useState(false);
 
   const listQuery = (targetPage: number) => {
     const params = new URLSearchParams({ page: String(targetPage), perPage: String(PAGE_SIZE), sortBy: 'createdAt', sortOrder: 'desc' });
@@ -89,7 +99,7 @@ export default function DistributorPurchasesScreen() {
   };
 
   useEffect(() => {
-    if (!canRead) { setLoading(false); return; }
+    if (!canRead) return;
     let active = true;
     void authorizedRequest<Page<Purchase>>(listQuery(1))
       .then((result) => { if (active) { setRows(result.data); setPage(1); setTotalPages(result.meta.totalPages || 1); setError(''); } })
@@ -121,10 +131,42 @@ export default function DistributorPurchasesScreen() {
   }
 
 
+  function resetBonus() {
+    setBonusLines([]); setBonusPickerVisible(false); setBonusSearch('');
+  }
+
+  async function openBonusPicker() {
+    setBonusPickerVisible(true);
+    if (bonusProducts.length) return;
+    setBonusLoading(true);
+    try {
+      const result = await fetchAllPages<BonusProduct>(authorizedRequest, 'products?sortBy=name&sortOrder=asc');
+      setBonusProducts(result.data.filter((product) => product.active !== false));
+    } catch (cause) { setReceiveError(cause instanceof ApiError ? cause.message : 'Katalog produk belum dapat dimuat.'); }
+    finally { setBonusLoading(false); }
+  }
+
+  // Same unit options as the purchase wizard: base unit first, then purchasable conversions.
+  function bonusUnitOptions(product: BonusProduct): BonusUnit[] {
+    return [{ unitId: product.unitId, canPurchase: true, unit: product.unit }, ...(product.unitConversions ?? []).filter((unit) => unit.canPurchase)];
+  }
+
+  function changeBonusQuantity(product: BonusProduct, delta: number) {
+    setBonusLines((current) => {
+      if (!current.some((line) => line.productId === product.id)) return delta > 0 ? [...current, { productId: product.id, unitId: product.unitId, receivedQty: '1' }] : current;
+      return current.flatMap((line) => {
+        if (line.productId !== product.id) return [line];
+        const next = Math.round(((Number(line.receivedQty) || 0) + delta) * 10000) / 10000;
+        return next > 0 ? [{ ...line, receivedQty: String(next) }] : [];
+      });
+    });
+  }
+
   async function openDetail(purchase: Purchase) {
     setSelected(null);
     setDetailLoading(true);
     setReceiveError('');
+    resetBonus();
     try {
       const detail = await authorizedRequest<PurchaseDetail>(`distributor-purchases/${purchase.id}`);
       setSelected(detail);
@@ -139,6 +181,7 @@ export default function DistributorPurchasesScreen() {
     setEditingDraft(null);
     setReload((value) => value + 1);
     setDetailLoading(true);
+    resetBonus();
     try {
       const detail = await authorizedRequest<PurchaseDetail>(`distributor-purchases/${purchaseId}`);
       setSelected(detail);
@@ -230,7 +273,8 @@ export default function DistributorPurchasesScreen() {
   async function completePurchase() {
     if (!selected) return;
     if (selected.items.some((item) => !(Number(receivedQuantities[item.id]) > 0))) { setReceiveError('Jumlah diterima untuk setiap produk harus lebih dari nol.'); return; }
-    Alert.alert('Selesaikan penerimaan?', 'Jumlah diterima akan disimpan dan stok Gudang Pusat akan bertambah.', [
+    if (bonusLines.some((line) => !(Number(line.receivedQty) > 0))) { setReceiveError('Jumlah produk bonus harus lebih dari nol.'); return; }
+    Alert.alert('Selesaikan penerimaan?', `Jumlah diterima${bonusLines.length ? ` dan ${bonusLines.length} produk bonus` : ''} akan disimpan dan stok Gudang Pusat akan bertambah.`, [
       { text: 'Kembali', style: 'cancel' },
       { text: 'Selesaikan', onPress: () => void confirmCompletePurchase() },
     ]);
@@ -240,9 +284,12 @@ export default function DistributorPurchasesScreen() {
     if (!selected) return;
     setReceiving(true); setReceiveError('');
     try {
-      await authorizedRequest(`distributor-purchases/${selected.id}/complete`, { method: 'POST', body: JSON.stringify({ items: selected.items.map((item) => ({ itemId: item.id, receivedQty: receivedQuantities[item.id] })) }) });
+      await authorizedRequest(`distributor-purchases/${selected.id}/complete`, { method: 'POST', body: JSON.stringify({
+        items: selected.items.map((item) => ({ itemId: item.id, receivedQty: receivedQuantities[item.id] })),
+        ...(bonusLines.length ? { bonusItems: bonusLines } : {}),
+      }) });
       const detail = await authorizedRequest<PurchaseDetail>(`distributor-purchases/${selected.id}`);
-      setSelected(detail); setReload((value) => value + 1);
+      setSelected(detail); setReload((value) => value + 1); resetBonus();
     } catch (cause) { setReceiveError(cause instanceof ApiError ? cause.message : 'Penerimaan belum dapat diselesaikan.'); }
     finally { setReceiving(false); }
   }
@@ -251,7 +298,7 @@ export default function DistributorPurchasesScreen() {
 
   // The tab header is a custom component that ignores `headerRight`, so the create action lives in the screen body.
   return <><Tabs.Screen options={{ title: 'Pembelian Distributor', headerShown: true }} /><View style={styles.screen}>
-    <ScrollView contentContainerStyle={styles.page} refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => { setRefreshing(true); setReload((value) => value + 1); }} tintColor="#07885b" />}>
+    <KeyboardAwareScrollView bottomOffset={24} contentContainerStyle={styles.page} refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => { setRefreshing(true); setReload((value) => value + 1); }} tintColor="#07885b" />}>
       {canManage ? <Pressable accessibilityRole="button" onPress={() => { setEditingDraft(null); setCreateVisible(true); }} style={({ pressed }) => [styles.createButton, pressed && styles.rowPressed]}><Plus size={18} color="#fff" /><Text style={styles.createButtonText}>Buat pembelian</Text></Pressable> : null}
       {canRead ? <>
         <View style={styles.searchRow}><View style={styles.searchBox}><Search size={17} color="#71839a" /><TextInput accessibilityLabel="Cari pembelian" value={searchInput} onChangeText={setSearchInput} onSubmitEditing={() => setSearch(searchInput.trim())} placeholder="Nomor invoice atau distributor" placeholderTextColor="#8b99a8" style={styles.searchInput} returnKeyType="search" /></View><Pressable accessibilityRole="button" onPress={() => setSearch(searchInput.trim())} style={styles.searchButton}><Search size={18} color="#fff" /></Pressable></View>
@@ -270,16 +317,47 @@ export default function DistributorPurchasesScreen() {
         </Pressable>)}
         {!loading && page < totalPages ? <Pressable accessibilityRole="button" disabled={loadingMore} onPress={() => void loadMore()} style={styles.loadMore}>{loadingMore ? <ActivityIndicator color="#07885b" /> : <Text style={styles.loadMoreText}>Muat lebih banyak</Text>}</Pressable> : null}
       </> : <View style={styles.empty}><Text style={styles.emptyTitle}>Akses tidak tersedia</Text><Text style={styles.emptyText}>Akun ini belum memiliki izin melihat pembelian distributor.</Text></View>}
-    </ScrollView>
+    </KeyboardAwareScrollView>
     <Modal visible={detailLoading || Boolean(selected)} transparent animationType="slide" onRequestClose={() => setSelected(null)}>
-      <View style={styles.backdrop}><View style={[styles.detailSheet, { paddingBottom: Math.max(insets.bottom + 8, 24) }]}>
+      <KeyboardAvoidingView behavior="padding" style={styles.backdrop}><View style={[styles.detailSheet, { paddingBottom: Math.max(insets.bottom + 8, 24) }]}>
         <View style={styles.detailHeader}><View><Text style={styles.detailTitle}>Detail pembelian</Text>{selected ? <Text style={styles.meta}>{selected.invoiceNumber ?? selected.distributorInvoiceNumber ?? 'Draft pembelian'}</Text> : null}</View><Pressable accessibilityRole="button" accessibilityLabel="Tutup detail" onPress={() => setSelected(null)} style={styles.closeButton}><X size={19} color="#4c5e70" /></Pressable></View>
-        {detailLoading ? <ActivityIndicator style={styles.loader} color="#07885b" /> : selected ? <ScrollView style={styles.detailContent} keyboardShouldPersistTaps="handled">
+        {detailLoading ? <ActivityIndicator style={styles.loader} color="#07885b" /> : selected ? <KeyboardAwareScrollView bottomOffset={24} style={styles.detailContent} keyboardShouldPersistTaps="handled">
           <Text style={styles.detailMeta}>{selected.distributor.name} · {selected.warehouse.name}</Text>
           <View style={purchaseDetailStyles.detailStats}><View style={purchaseDetailStyles.detailStat}><Text style={styles.detailMeta}>Status</Text><Text style={[styles.status, styles.detailStatus, statusColor(selected.status)]}>{statusLabel(selected.status)}</Text></View><View style={purchaseDetailStyles.detailStat}><Text style={styles.detailMeta}>Tanggal</Text><Text style={styles.detailProduct}>{formatDate(selected.purchaseDate)}</Text></View></View>
           <View style={purchaseDetailStyles.detailStats}><View style={purchaseDetailStyles.detailStat}><Text style={styles.detailMeta}>Invoice distributor</Text><Text style={styles.detailProduct}>{selected.distributorInvoiceNumber || '—'}</Text></View><View style={purchaseDetailStyles.detailStat}><Text style={styles.detailMeta}>Total</Text><Text style={styles.detailTotalValue}>{money(selected.grandTotal)}</Text></View></View>
           <Text style={purchaseDetailStyles.detailSectionTitle}>Daftar produk ({selected.items.length})</Text>
           {selected.items.map((item) => <View key={item.id} style={styles.detailItem}><View style={styles.detailItemText}><View style={styles.lineTitle}><Text style={[styles.lineType, item.lineType === 'BONUS' && styles.lineTypeBonus]}>{item.lineType === 'BONUS' ? 'Bonus' : 'Beli'}</Text><Text numberOfLines={2} style={[styles.detailProduct, styles.flexText]}>{item.product.name}</Text></View><Text style={styles.meta}>{item.product.sku} · {item.orderedQty} {item.unit?.code ?? item.product.unit?.code ?? ''} × {money(item.unitPrice)}{Number(item.discountAmount) > 0 ? ` · diskon ${money(item.discountAmount)}` : ''}</Text>{selected.status === 'SUBMITTED' && canReceive ? <TextInput accessibilityLabel={`Jumlah diterima ${item.product.name}`} value={receivedQuantities[item.id] ?? item.orderedQty} onChangeText={(value) => setReceivedQuantities((current) => ({ ...current, [item.id]: value.replace(',', '.') }))} keyboardType="decimal-pad" style={purchaseDetailStyles.receivedInput} placeholder="Jumlah diterima" /> : item.receivedQty ? <Text style={styles.meta}>Diterima {item.receivedQty} {item.unit?.code ?? ''}</Text> : null}{item.beforeStock != null ? <Text style={styles.meta}>Stok dasar {item.beforeStock} → {item.afterStock}</Text> : null}</View><Text style={styles.detailAmount}>{money(item.subtotal)}</Text></View>)}
+          {selected.status === 'SUBMITTED' && canReceive ? <>
+            <View style={styles.attachmentHeading}><View><Text style={purchaseDetailStyles.detailSectionTitle}>Produk bonus ({bonusLines.length})</Text><Text style={styles.meta}>Tambahkan bonus dari distributor yang ikut diterima</Text></View></View>
+            {bonusLines.map((line) => {
+              const product = bonusProducts.find((entry) => entry.id === line.productId);
+              if (!product) return null;
+              const units = bonusUnitOptions(product);
+              return <View key={line.productId} style={styles.detailItem}>
+                <View style={styles.detailItemText}><View style={styles.lineTitle}><Text style={[styles.lineType, styles.lineTypeBonus]}>Bonus</Text><Text numberOfLines={2} style={[styles.detailProduct, styles.flexText]}>{product.name}</Text></View><Text style={styles.meta}>{product.sku}</Text>
+                  <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.bonusUnits}>{units.map((unit) => <Pressable key={unit.unitId} accessibilityRole="button" accessibilityState={{ selected: line.unitId === unit.unitId }} onPress={() => setBonusLines((current) => current.map((entry) => entry.productId === line.productId ? { ...entry, unitId: unit.unitId } : entry))} style={[styles.bonusUnitChip, line.unitId === unit.unitId && styles.bonusUnitChipActive]}><Text style={[styles.bonusUnitText, line.unitId === unit.unitId && styles.bonusUnitTextActive]}>{unit.unit.code}</Text></Pressable>)}</ScrollView>
+                </View>
+                <View style={styles.bonusStepper}>
+                  <Pressable accessibilityRole="button" accessibilityLabel={`Kurangi bonus ${product.name}`} hitSlop={6} onPress={() => changeBonusQuantity(product, -1)} style={styles.bonusStepButton}><Minus size={14} color="#07885b" /></Pressable>
+                  <TextInput accessibilityLabel={`Jumlah bonus ${product.name}`} keyboardType="decimal-pad" value={line.receivedQty} onChangeText={(value) => setBonusLines((current) => current.map((entry) => entry.productId === line.productId ? { ...entry, receivedQty: value.replace(',', '.') } : entry))} style={styles.bonusQtyInput} />
+                  <Pressable accessibilityRole="button" accessibilityLabel={`Tambah bonus ${product.name}`} hitSlop={6} onPress={() => changeBonusQuantity(product, 1)} style={styles.bonusStepButton}><Plus size={14} color="#07885b" /></Pressable>
+                </View>
+              </View>;
+            })}
+            {bonusPickerVisible ? <View style={styles.bonusPicker}>
+              <View style={styles.bonusPickerHeader}><View style={styles.bonusSearchBox}><Search size={15} color="#71839a" /><TextInput accessibilityLabel="Cari produk bonus" value={bonusSearch} onChangeText={setBonusSearch} placeholder="Cari produk atau SKU" placeholderTextColor="#8b99a8" style={styles.searchInput} /></View><Pressable accessibilityRole="button" accessibilityLabel="Tutup pilihan bonus" onPress={() => { setBonusPickerVisible(false); setBonusSearch(''); }} style={styles.closeButton}><X size={16} color="#4c5e70" /></Pressable></View>
+              {bonusLoading ? <ActivityIndicator style={styles.loader} color="#07885b" /> : bonusProducts
+                .filter((product) => `${product.name} ${product.sku}`.toLowerCase().includes(bonusSearch.trim().toLowerCase()))
+                .slice(0, 30)
+                .map((product) => {
+                  const qty = Number(bonusLines.find((line) => line.productId === product.id)?.receivedQty ?? 0);
+                  return <Pressable key={product.id} accessibilityRole="button" accessibilityLabel={`Tambah bonus ${product.name}`} onPress={() => changeBonusQuantity(product, 1)} style={({ pressed }) => [styles.bonusRow, pressed && styles.rowPressed]}>
+                    <View style={styles.detailItemText}><Text numberOfLines={1} style={styles.detailProduct}>{product.name}</Text><Text style={styles.meta}>{product.sku} · {product.unit.code}</Text></View>
+                    {qty > 0 ? <Text style={styles.bonusBadge}>{qty}</Text> : <Plus size={16} color="#07885b" />}
+                  </Pressable>;
+                })}
+            </View> : <Pressable accessibilityRole="button" disabled={receiving} onPress={() => void openBonusPicker()} style={styles.bonusAddButton}><Gift size={15} color="#087f5b" /><Text style={styles.attachmentButtonText}>Tambah produk bonus</Text></Pressable>}
+          </> : null}
           {(selected.status === 'DRAFT' || selected.attachments?.length) ? <><View style={styles.attachmentHeading}><View><Text style={purchaseDetailStyles.detailSectionTitle}>Foto invoice</Text><Text style={styles.meta}>{selected.attachments?.length ?? 0}/12 foto · minimal 1 sebelum submit</Text></View>{uploadingAttachments ? <ActivityIndicator color="#07885b" /> : null}</View><ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={purchaseDetailStyles.attachmentList}>{selected.attachments?.map((attachment) => <View key={attachment.id} style={styles.attachmentWrap}><Image source={{ uri: attachment.url }} accessibilityLabel={attachment.fileName} style={purchaseDetailStyles.attachmentImage} />{selected.status === 'DRAFT' && canManage ? <Pressable accessibilityRole="button" accessibilityLabel={`Hapus foto ${attachment.fileName}`} disabled={uploadingAttachments} onPress={() => void removeAttachment(attachment.id)} style={styles.removeAttachment}><X size={12} color="#fff" /></Pressable> : null}</View>)}</ScrollView>{selected.status === 'DRAFT' && canManage && (selected.attachments?.length ?? 0) < 12 ? <View style={styles.attachmentActions}><Pressable accessibilityRole="button" disabled={uploadingAttachments} onPress={() => void addAttachments(true)} style={styles.attachmentButton}><Camera size={15} color="#087f5b" /><Text style={styles.attachmentButtonText}>Ambil foto</Text></Pressable><Pressable accessibilityRole="button" disabled={uploadingAttachments} onPress={() => void addAttachments(false)} style={styles.attachmentButton}><ImagePlus size={15} color="#087f5b" /><Text style={styles.attachmentButtonText}>Pilih galeri</Text></Pressable></View> : null}{!selected.attachments?.length ? <Text style={styles.emptyText}>Belum ada bukti dipilih.</Text> : null}</> : null}
           {selected.note ? <Text style={styles.detailMeta}>Catatan: {selected.note}</Text> : null}
           <View style={styles.summaryCard}>
@@ -292,8 +370,8 @@ export default function DistributorPurchasesScreen() {
           {selected.status === 'DRAFT' && canManage ? <View style={styles.draftActions}><Pressable accessibilityRole="button" disabled={receiving || uploadingAttachments} onPress={openDraftForEditing} style={styles.draftSecondary}><Text style={styles.draftSecondaryText}>Edit draft</Text></Pressable><Pressable accessibilityRole="button" disabled={receiving || uploadingAttachments || !(selected.attachments?.length)} onPress={() => confirmPurchaseTransition('submit')} style={[purchaseDetailStyles.receiveButton, (receiving || uploadingAttachments || !selected.attachments?.length) && purchaseDetailStyles.disabled]}><Text style={purchaseDetailStyles.receiveButtonText}>Submit & buat invoice</Text></Pressable><Pressable accessibilityRole="button" disabled={receiving || uploadingAttachments} onPress={() => confirmPurchaseTransition('cancel')} style={styles.draftCancel}><Text style={styles.draftCancelText}>Batalkan</Text></Pressable></View> : null}
           {selected.status === 'SUBMITTED' && canManage ? <Pressable accessibilityRole="button" disabled={receiving} onPress={() => confirmPurchaseTransition('cancel')} style={styles.draftCancel}><Text style={styles.draftCancelText}>Batalkan pembelian</Text></Pressable> : null}
           {selected.status === 'SUBMITTED' && canReceive ? <Pressable accessibilityRole="button" disabled={receiving} onPress={() => void completePurchase()} style={[purchaseDetailStyles.receiveButton, receiving && purchaseDetailStyles.disabled]}>{receiving ? <ActivityIndicator color="#fff" /> : <><Check size={16} color="#fff" /><Text style={purchaseDetailStyles.receiveButtonText}>Selesaikan penerimaan</Text></>}</Pressable> : null}
-        </ScrollView> : null}
-      </View></View>
+        </KeyboardAwareScrollView> : null}
+      </View></KeyboardAvoidingView>
     </Modal>
     <OptionSheet visible={distributorSheet} title="Filter distributor" selectedId={distributorFilter} onSelect={setDistributorFilter} onClose={() => setDistributorSheet(false)}
       options={[{ id: '', label: 'Semua distributor' }, ...distributors.map((item) => ({ id: item.id, label: item.name }))]} />
@@ -312,6 +390,9 @@ const styles = StyleSheet.create({
   attachmentHeading: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 8, marginTop: 10 }, attachmentWrap: { position: 'relative' }, removeAttachment: { position: 'absolute', top: 3, right: 3, width: 22, height: 22, alignItems: 'center', justifyContent: 'center', borderRadius: 11, backgroundColor: '#a3332a' }, attachmentActions: { flexDirection: 'row', gap: 7, marginTop: 7 }, attachmentButton: { minHeight: 38, flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, borderRadius: 9, backgroundColor: '#e5f7ee' }, attachmentButtonText: { color: '#087c53', fontSize: 9, fontWeight: '900' }, draftActions: { gap: 8, marginTop: 12 }, draftSecondary: { minHeight: 40, alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: '#dce4df', borderRadius: 9, backgroundColor: '#fff' }, draftSecondaryText: { color: '#53677e', fontSize: 9, fontWeight: '800' }, draftCancel: { minHeight: 40, alignItems: 'center', justifyContent: 'center', marginTop: 8, borderWidth: 1, borderColor: '#f1c8c5', borderRadius: 9, backgroundColor: '#fff6f5' }, draftCancelText: { color: '#a3332a', fontSize: 9, fontWeight: '900' },
   filterSelect: { maxWidth: 190, flexDirection: 'row', alignItems: 'center', gap: 4 }, loadMore: { minHeight: 42, alignItems: 'center', justifyContent: 'center', marginTop: 4, borderWidth: 1, borderColor: '#d8e6df', borderRadius: 11, backgroundColor: '#fff' }, loadMoreText: { color: '#07885b', fontSize: 10, fontWeight: '900' },
   detailStatus: { alignSelf: 'flex-start', marginTop: 4 }, lineTitle: { flexDirection: 'row', alignItems: 'center', gap: 6 }, flexText: { flex: 1 }, lineType: { overflow: 'hidden', paddingHorizontal: 6, paddingVertical: 2, borderRadius: 6, color: '#53677e', backgroundColor: '#eef2f5', fontSize: 9, fontWeight: '900' }, lineTypeBonus: { color: '#7a3fc0', backgroundColor: '#f1e7fc' },
+  bonusStepper: { flexDirection: 'row', alignItems: 'center', gap: 4 }, bonusStepButton: { width: 28, height: 30, alignItems: 'center', justifyContent: 'center', borderRadius: 8, backgroundColor: '#e5f7ee' }, bonusQtyInput: { width: 46, height: 30, padding: 0, borderWidth: 1, borderColor: '#dfe7eb', borderRadius: 8, color: '#26384a', fontSize: 10, textAlign: 'center' },
+  bonusUnits: { gap: 5, paddingTop: 6 }, bonusUnitChip: { paddingHorizontal: 9, paddingVertical: 5, borderRadius: 7, backgroundColor: '#edf2f5' }, bonusUnitChipActive: { backgroundColor: '#d9f3e8' }, bonusUnitText: { color: '#61748a', fontSize: 9, fontWeight: '800' }, bonusUnitTextActive: { color: '#087c53' },
+  bonusAddButton: { minHeight: 38, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, marginTop: 8, borderWidth: 1, borderStyle: 'dashed', borderColor: '#9fd8bf', borderRadius: 9, backgroundColor: '#f3fbf7' }, bonusPicker: { gap: 6, marginTop: 8, padding: 9, borderRadius: 10, backgroundColor: '#fff' }, bonusPickerHeader: { flexDirection: 'row', alignItems: 'center', gap: 7 }, bonusSearchBox: { height: 36, flex: 1, flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 9, borderWidth: 1, borderColor: '#e2e9ed', borderRadius: 9 }, bonusRow: { minHeight: 44, flexDirection: 'row', alignItems: 'center', gap: 8, paddingVertical: 6, borderBottomWidth: 1, borderBottomColor: '#f0f2f4' }, bonusBadge: { minWidth: 24, overflow: 'hidden', paddingHorizontal: 6, paddingVertical: 3, borderRadius: 12, color: '#fff', backgroundColor: '#07885b', fontSize: 10, fontWeight: '900', textAlign: 'center' },
   summaryCard: { gap: 6, marginTop: 10, padding: 11, borderRadius: 10, backgroundColor: '#fff' }, summaryRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
   createButton: { minHeight: 46, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, marginBottom: 12, borderRadius: 12, backgroundColor: '#07885b' }, createButtonText: { color: '#fff', fontSize: 12, fontWeight: '900' },
   pdfButton: { minHeight: 38, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, marginTop: 9, borderWidth: 1, borderColor: '#e0e8ed', borderRadius: 9, backgroundColor: '#fff' }, pdfButtonText: { color: '#53677e', fontSize: 9, fontWeight: '900' },

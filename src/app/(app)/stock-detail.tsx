@@ -10,7 +10,7 @@ type Detail = {
   product: { id: string; name: string; sku: string; imageUrl: string | null; category: { name: string }; unit: { code: string; name: string }; costPrice: number; sellPrice: number };
   quantity: number;
   stockValue: number;
-  warehouses: Array<{ warehouseId: string; warehouseName: string; branchId: string | null; branchName: string | null; quantity: number; stockValue: number }>;
+  warehouses: { warehouseId: string; warehouseName: string; branchId: string | null; branchName: string | null; quantity: number; stockValue: number }[];
 };
 type Movement = { id: string; type: string; quantity: string | number; beforeStock: string | number; afterStock: string | number; createdAt: string; referenceNumber?: string | null; warehouse: { name: string } };
 type Tab = 'branch' | 'history';
@@ -52,7 +52,6 @@ export default function StockDetailScreen() {
     let active = true;
     const params = new URLSearchParams({ productId, page: '1', perPage: '50' });
     if (warehouseId) params.set('warehouseId', warehouseId);
-    setHistoryLoading(true);
     void authorizedRequest<{ data: Movement[] }>(`stock-movements?${params.toString()}`)
       .then((response) => { if (active) { setMovements(response.data); setHistoryError(''); } })
       .catch((cause: unknown) => { if (active) setHistoryError(cause instanceof ApiError ? cause.message : 'Riwayat pergerakan belum dapat dimuat.'); })
@@ -84,7 +83,7 @@ export default function StockDetailScreen() {
     <View style={styles.tabs}>
       {([['branch', 'Per cabang'], ['history', 'Riwayat pergerakan']] as const).map(([id, label]) => {
         const active = tab === id;
-        return <Pressable key={id} accessibilityRole="tab" accessibilityState={{ selected: active }} onPress={() => setTab(id)} style={[styles.tab, active && styles.tabActive]}><Text style={[styles.tabText, active && styles.tabTextActive]}>{label}</Text></Pressable>;
+        return <Pressable key={id} accessibilityRole="tab" accessibilityState={{ selected: active }} onPress={() => { if (id === 'history') setHistoryLoading(true); setTab(id); }} style={[styles.tab, active && styles.tabActive]}><Text style={[styles.tabText, active && styles.tabTextActive]}>{label}</Text></Pressable>;
       })}
     </View>
 
@@ -92,7 +91,7 @@ export default function StockDetailScreen() {
       {!detail.warehouses.length ? <Text style={styles.empty}>Produk ini belum memiliki stok di gudang mana pun.</Text> : null}
       {detail.warehouses.map((row, index) => {
         const tone = houseTones[index % houseTones.length];
-        return <Pressable key={row.warehouseId} accessibilityRole="button" accessibilityHint="Lihat riwayat pergerakan di lokasi ini" onPress={() => { setWarehouseId(row.warehouseId); setTab('history'); }} style={({ pressed }) => [styles.locationCard, pressed && styles.pressed]}>
+        return <Pressable key={row.warehouseId} accessibilityRole="button" accessibilityHint="Lihat riwayat pergerakan di lokasi ini" onPress={() => { setHistoryLoading(true); setWarehouseId(row.warehouseId); setTab('history'); }} style={({ pressed }) => [styles.locationCard, pressed && styles.pressed]}>
           <View style={[styles.locationIcon, { backgroundColor: tone.bg }]}><House size={20} color={tone.fg} /></View>
           <View style={styles.locationInfo}><Text numberOfLines={1} style={styles.locationName}>{locationName(row)}</Text><Text style={styles.locationQty}>{quantity(row.quantity)} {product.unit.code}</Text></View>
           <Text style={styles.locationValue}>{money(row.stockValue)}</Text>
@@ -100,7 +99,7 @@ export default function StockDetailScreen() {
         </Pressable>;
       })}
     </> : <>
-      {selectedWarehouse ? <Pressable accessibilityRole="button" accessibilityLabel="Hapus filter lokasi" onPress={() => setWarehouseId('')} style={styles.chip}><Text style={styles.chipText}>{locationName(selectedWarehouse)}</Text><X size={14} color="#07795a" /></Pressable> : null}
+      {selectedWarehouse ? <Pressable accessibilityRole="button" accessibilityLabel="Hapus filter lokasi" onPress={() => { setHistoryLoading(true); setWarehouseId(''); }} style={styles.chip}><Text style={styles.chipText}>{locationName(selectedWarehouse)}</Text><X size={14} color="#07795a" /></Pressable> : null}
       {!canReadMovements ? <Text style={styles.empty}>Akun ini belum memiliki izin melihat pergerakan stok.</Text> : null}
       {historyError ? <Text style={styles.errorText}>{historyError}</Text> : null}
       {historyLoading ? <ActivityIndicator style={styles.loader} color="#07956f" /> : null}
