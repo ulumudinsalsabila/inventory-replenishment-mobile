@@ -27,6 +27,7 @@ export default function AppLayout() {
     <Stack.Screen name="purchases" options={{ title: 'Pembelian Distributor' }} />
     <Stack.Screen name="cash" options={{ title: 'Kas Masuk / Keluar' }} />
     <Stack.Screen name="cash-in-out" options={{ title: 'Kas Masuk / Keluar' }} />
+    <Stack.Screen name="cash-closing" options={{ title: 'Cash Closing' }} />
     <Stack.Screen name="cash-in-out-form" options={{ headerShown: false }} />
     <Stack.Screen name="cash-in-out-detail" options={{ headerShown: false }} />
     <Stack.Screen name="stock-requests" options={{ title: 'Permintaan Stok' }} />
@@ -36,6 +37,7 @@ export default function AppLayout() {
     <Stack.Screen name="branch-profit" options={{ title: 'Keuntungan per cabang' }} />
     <Stack.Screen name="unsold-stock" options={{ title: 'Stok belum terjual' }} />
     <Stack.Screen name="stock-detail" options={{ title: 'Detail stok produk' }} />
+    <Stack.Screen name="notifications" options={{ title: 'Notifikasi' }} />
   </Stack></BranchFilterProvider>;
 }
 

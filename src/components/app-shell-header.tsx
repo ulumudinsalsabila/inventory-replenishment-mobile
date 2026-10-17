@@ -5,6 +5,7 @@ import { Bell, ChevronDown, CircleUserRound, Store } from 'lucide-react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useBranchFilter } from '../auth/branch-filter';
 import { OptionSheet } from './option-sheet';
+import { useNotifications } from '../notifications/notifications-provider';
 
 const dateFormatter = new Intl.DateTimeFormat('id-ID', {
   day: '2-digit',
@@ -27,6 +28,7 @@ export function AppShellHeader({ compact = false, title, leading, trailing }: He
   const insets = useSafeAreaInsets();
   const { branches, selectedBranchId, setSelectedBranchId, locked } = useBranchFilter();
   const [pickerVisible, setPickerVisible] = useState(false);
+  const { unreadCount } = useNotifications();
   const selectedBranch = branches.find((branch) => branch.id === selectedBranchId);
   const branchName = selectedBranch?.name ?? (locked ? 'Toko Cabang' : 'Semua Cabang');
 
@@ -49,9 +51,9 @@ export function AppShellHeader({ compact = false, title, leading, trailing }: He
             <Text style={styles.date}>{dateFormatter.format(new Date())}</Text>
           </View>
         </Pressable>}
-        <Pressable accessibilityRole="button" accessibilityLabel="Notifikasi" onPress={() => router.push('/(app)/(tabs)/operations')} style={({ pressed }) => [styles.action, pressed && styles.pressed]}>
+        <Pressable accessibilityRole="button" accessibilityLabel={`Notifikasi${unreadCount ? `, ${unreadCount} belum dibaca` : ''}`} onPress={() => router.push('/(app)/notifications')} style={({ pressed }) => [styles.action, pressed && styles.pressed]}>
           <Bell size={20} color="#52657d" />
-          <View style={styles.notificationDot} />
+          {unreadCount ? <View style={styles.notificationBadge}><Text style={styles.notificationBadgeText}>{unreadCount > 99 ? '99+' : unreadCount}</Text></View> : null}
         </Pressable>
         <Pressable accessibilityRole="button" accessibilityLabel="Buka profil" onPress={() => router.push('/(app)/(tabs)/account')} style={({ pressed }) => [styles.action, pressed && styles.pressed]}>
           <CircleUserRound size={22} color="#52657d" />
@@ -83,6 +85,7 @@ const styles = StyleSheet.create({
   branchName: { maxWidth: '88%', color: '#172338', fontSize: 14, fontWeight: '900' },
   date: { marginTop: 3, color: '#708096', fontSize: 10 },
   action: { width: 38, height: 38, alignItems: 'center', justifyContent: 'center', marginLeft: 5, borderRadius: 12, backgroundColor: '#f1f4f6' },
-  notificationDot: { position: 'absolute', top: 8, right: 8, width: 6, height: 6, borderWidth: 1, borderColor: '#fff', borderRadius: 3, backgroundColor: '#e64040' },
+  notificationBadge: { position: 'absolute', top: 2, right: 1, minWidth: 17, height: 17, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 4, borderWidth: 1, borderColor: '#fff', borderRadius: 9, backgroundColor: '#e64040' },
+  notificationBadgeText: { color: '#fff', fontSize: 8, fontWeight: '900' },
   pressed: { opacity: 0.68 },
 });

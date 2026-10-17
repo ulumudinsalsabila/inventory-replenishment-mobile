@@ -15,6 +15,7 @@ type TabOptions = {
   tabBarIcon?: (props: { focused: boolean; color: ColorValue; size: number }) => ReactNode;
   tabBarItemStyle?: unknown;
   tabBarAccessibilityLabel?: string;
+  tabBarBadge?: string | number;
 };
 export type SideNavProps = {
   state: { index: number; routes: TabRoute[] };
@@ -63,6 +64,7 @@ export function SideNav({ state, descriptors, navigation }: SideNavProps) {
         >
           {options.tabBarIcon?.({ focused, color, size: 19 })}
           <Text numberOfLines={1} style={[styles.itemLabel, focused && styles.itemLabelActive]}>{label}</Text>
+          {options.tabBarBadge ? <View style={styles.badge}><Text style={styles.badgeText}>{Number(options.tabBarBadge) > 99 ? '99+' : options.tabBarBadge}</Text></View> : null}
         </Pressable>;
       })}
     </ScrollView>
@@ -94,6 +96,8 @@ const styles = StyleSheet.create({
   itemActive: { backgroundColor: '#e3f6ee' },
   itemLabel: { flex: 1, color: '#41546b', fontSize: 12, fontWeight: '700' },
   itemLabelActive: { color: '#07885b', fontWeight: '900' },
+  badge: { minWidth: 19, height: 19, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 5, borderRadius: 10, backgroundColor: '#d92d2d' },
+  badgeText: { color: '#fff', fontSize: 9, fontWeight: '900' },
   user: { flexDirection: 'row', alignItems: 'center', gap: 10, marginTop: 12, padding: 8, borderRadius: 12, backgroundColor: '#f4f7f6' },
   avatar: { width: 36, height: 36, alignItems: 'center', justifyContent: 'center', borderRadius: 18, backgroundColor: '#e7edf2' },
   userName: { color: '#26384a', fontSize: 12, fontWeight: '900' },

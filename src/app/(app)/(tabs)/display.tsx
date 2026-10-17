@@ -4,9 +4,11 @@ import { File } from 'expo-file-system';
 import * as ImagePicker from 'expo-image-picker';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Camera, Check, ChevronDown, ChevronLeft, ChevronRight, ClipboardList, Image as ImageIcon, Minus, Package, Plus, Search, Store, Undo2, X } from 'lucide-react-native';
+import { LoadMoreFooter } from '../../../components/load-more-footer';
 import { useAuth } from '../../../auth/auth-provider';
 import { ApiError } from '../../../lib/api';
 import { formatDate } from '../../../lib/display';
+import { useDebouncedValue, useInfiniteList, useLoadMoreOnScroll } from '../../../lib/infinite-list';
 import { KeyboardAvoidingView, KeyboardAwareScrollView } from 'react-native-keyboard-controller';
 
 type Warehouse = { id: string; code: string; name: string; branchId: string | null };
@@ -30,18 +32,12 @@ export default function DisplayScreen() {
   const canVoid = user?.permissions.includes('display.void') ?? false;
   const [warehouses, setWarehouses] = useState<Warehouse[]>([]);
   const [selectedWarehouseId, setSelectedWarehouseId] = useState('');
-  const [stocks, setStocks] = useState<DisplayStock[]>([]);
-  const [movements, setMovements] = useState<Movement[]>([]);
   const [catalog, setCatalog] = useState<CatalogProduct[]>([]);
-  const [totalStocks, setTotalStocks] = useState(0);
-  const [totalMovements, setTotalMovements] = useState(0);
   const [activeTab, setActiveTab] = useState<'stock' | 'history'>('stock');
-  const [search, setSearch] = useState('');
+  const [searchInput, setSearchInput] = useState('');
+  const search = useDebouncedValue(searchInput.trim());
   const [warehouseLoading, setWarehouseLoading] = useState(canRead);
-  const [loading, setLoading] = useState(canRead);
-  const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState('');
-  const [reload, setReload] = useState(0);
   const [wizardVisible, setWizardVisible] = useState(false);
   const [wizardStep, setWizardStep] = useState(1);
   const [movementType, setMovementType] = useState<'DISPLAY_IN' | 'DISPLAY_RETURN'>('DISPLAY_IN');
@@ -73,31 +69,17 @@ export default function DisplayScreen() {
     return () => { active = false; };
   }, [authorizedRequest, canRead, user?.branchId]);
 
-  useEffect(() => {
-    if (!canRead || !warehouseId) return;
-    let active = true;
-    const loadData = async () => {
-      try {
-      const query = new URLSearchParams({ warehouseId, page: '1', perPage: '50', search: search.trim() });
-      const [stockPage, movementPage] = await Promise.all([
-        authorizedRequest<Page<DisplayStock>>(`display/stocks?${query.toString()}`),
-        authorizedRequest<Page<Movement>>(`display/movements?${query.toString()}`),
-      ]);
-      if (!active) return;
-      setStocks(stockPage.data);
-      setMovements(movementPage.data);
-      setTotalStocks(stockPage.meta.total);
-      setTotalMovements(movementPage.meta.total);
-      setError('');
-      } catch (cause) {
-        if (active) setError(cause instanceof ApiError ? cause.message : 'Data display belum dapat dimuat.');
-      } finally {
-        if (active) { setLoading(false); setRefreshing(false); }
-      }
-    };
-    void loadData();
-    return () => { active = false; };
-  }, [authorizedRequest, canRead, reload, search, warehouseId]);
+  // Both lists are filtered on the server (warehouse + search); both stay loaded so the metric totals stay current.
+  const query = new URLSearchParams({ warehouseId });
+  if (search) query.set('search', search);
+  const stockList = useInfiniteList<DisplayStock>(authorizedRequest, canRead && warehouseId ? `display/stocks?${query.toString()}` : null);
+  const movementList = useInfiniteList<Movement>(authorizedRequest, canRead && warehouseId ? `display/movements?${query.toString()}` : null);
+  const activeList = activeTab === 'stock' ? stockList : movementList;
+  const scrollProps = useLoadMoreOnScroll(activeList.loadMore);
+  const stocks = stockList.items;
+  const movements = movementList.items;
+  const listError = activeList.items.length ? '' : activeList.error;
+  const reloadLists = () => { void stockList.reload(); void movementList.reload(); };
 
   useEffect(() => {
     if (!wizardVisible || !warehouseId || !canRead) return;
@@ -162,7 +144,7 @@ export default function DisplayScreen() {
         if (index > 7) throw new Error('Maksimal 8 foto bukti.');
       });
       await authorizedRequest('display/movements', { method: 'POST', body: form });
-      setWizardVisible(false); setReload((current) => current + 1);
+      setWizardVisible(false); reloadLists();
     } catch (cause) { setError(cause instanceof ApiError ? cause.message : cause instanceof Error ? cause.message : 'Aktivitas display gagal disimpan.'); }
     finally { setSaving(false); }
   }
@@ -179,7 +161,7 @@ export default function DisplayScreen() {
     setSaving(true);
     try {
       await authorizedRequest(`display/movements/${voidTarget.id}/void`, { method: 'POST', body: JSON.stringify({ reason: voidReason.trim() }) });
-      setVoidTarget(null); setVoidReason(''); setDetail(null); setReload((current) => current + 1);
+      setVoidTarget(null); setVoidReason(''); setDetail(null); reloadLists();
     } catch (cause) { setError(cause instanceof ApiError ? cause.message : 'Aktivitas belum dapat di-void.'); }
     finally { setSaving(false); }
   }
@@ -189,20 +171,21 @@ export default function DisplayScreen() {
   if (!canRead) return <View style={styles.center}><Text style={styles.emptyTitle}>Akses Display Toko tidak tersedia</Text><Text style={styles.muted}>Minta admin memeriksa permission display.read.</Text></View>;
 
   return <View style={styles.screen}>
-    <KeyboardAwareScrollView bottomOffset={24} contentContainerStyle={styles.page} keyboardShouldPersistTaps="handled" refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => { setRefreshing(true); setReload((current) => current + 1); }} tintColor="#07885b" />}>
+    <KeyboardAwareScrollView {...scrollProps} bottomOffset={24} contentContainerStyle={styles.page} keyboardShouldPersistTaps="handled" refreshControl={<RefreshControl refreshing={stockList.refreshing || movementList.refreshing} onRefresh={() => { void stockList.refresh(); void movementList.refresh(); }} tintColor="#07885b" />}>
       <Text style={styles.subtitle}>Pantau barang yang siap dijual dari display toko.</Text>
       <View style={styles.warehouseCard}><View style={styles.warehouseIcon}><Store size={20} color="#087f5b" /></View><View style={styles.warehouseInfo}><Text style={styles.smallLabel}>GUDANG TOKO</Text>{warehouseLoading ? <ActivityIndicator color="#087f5b" /> : <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.warehouseChoices}>{allowedWarehouses.map((warehouse) => <Pressable key={warehouse.id} onPress={() => setSelectedWarehouseId(warehouse.id)} style={[styles.warehouseChoice, warehouseId === warehouse.id && styles.warehouseChoiceActive]}><Text numberOfLines={1} style={[styles.warehouseText, warehouseId === warehouse.id && styles.warehouseTextActive]}>{warehouse.name}</Text><ChevronDown size={14} color={warehouseId === warehouse.id ? '#087f5b' : '#83918a'} /></Pressable>)}</ScrollView>}</View></View>
-      <View style={styles.metrics}><View style={styles.metric}><Package size={18} color="#347ff0" /><Text style={styles.metricLabel}>Produk di display</Text><Text style={styles.metricValue}>{totalStocks}</Text></View><View style={styles.metric}><ClipboardList size={18} color="#9a4be3" /><Text style={styles.metricLabel}>Aktivitas tercatat</Text><Text style={styles.metricValue}>{totalMovements}</Text></View></View>
+      <View style={styles.metrics}><View style={styles.metric}><Package size={18} color="#347ff0" /><Text style={styles.metricLabel}>Produk di display</Text><Text style={styles.metricValue}>{stockList.total}</Text></View><View style={styles.metric}><ClipboardList size={18} color="#9a4be3" /><Text style={styles.metricLabel}>Aktivitas tercatat</Text><Text style={styles.metricValue}>{movementList.total}</Text></View></View>
       <View style={styles.noteBanner}><Text style={styles.noteBannerTitle}>Catatan display</Text><Text style={styles.noteBannerText}>Barang display tetap bagian dari stok gudang. Stok resmi berkurang saat transaksi POS selesai.</Text></View>
       {canCreate ? <View style={styles.actions}><Pressable accessibilityRole="button" onPress={() => openWizard('DISPLAY_IN')} style={styles.primaryAction}><Plus size={17} color="#fff" /><Text style={styles.primaryActionText}>Tambah ke display</Text></Pressable><Pressable accessibilityRole="button" onPress={() => openWizard('DISPLAY_RETURN')} style={styles.secondaryAction}><Undo2 size={17} color="#087f5b" /><Text style={styles.secondaryActionText}>Kembalikan</Text></Pressable></View> : null}
       <View style={styles.tabs}><Pressable onPress={() => setActiveTab('stock')} style={[styles.tab, activeTab === 'stock' && styles.tabActive]}><Text style={[styles.tabText, activeTab === 'stock' && styles.tabTextActive]}>Saldo display</Text></Pressable><Pressable onPress={() => setActiveTab('history')} style={[styles.tab, activeTab === 'history' && styles.tabActive]}><Text style={[styles.tabText, activeTab === 'history' && styles.tabTextActive]}>Riwayat aktivitas</Text></Pressable></View>
-      <View style={styles.searchRow}><Search size={17} color="#78889c" /><TextInput accessibilityLabel="Cari produk atau aktivitas display" value={search} onChangeText={setSearch} placeholder={activeTab === 'stock' ? 'Cari produk...' : 'Cari aktivitas...'} placeholderTextColor="#87948c" style={styles.searchInput} /></View>
-      {error ? <View style={styles.errorCard}><Text style={styles.errorText}>{error}</Text><Pressable onPress={() => { setError(''); setReload((current) => current + 1); }}><Text style={styles.retry}>Coba lagi</Text></Pressable></View> : null}
-      {loading || warehouseLoading ? <ActivityIndicator style={styles.loader} color="#087f5b" size="large" /> : null}
+      <View style={styles.searchRow}><Search size={17} color="#78889c" /><TextInput accessibilityLabel="Cari produk atau aktivitas display" value={searchInput} onChangeText={setSearchInput} placeholder={activeTab === 'stock' ? 'Cari produk...' : 'Cari aktivitas...'} placeholderTextColor="#87948c" style={styles.searchInput} /></View>
+      {error || listError ? <View style={styles.errorCard}><Text style={styles.errorText}>{error || listError}</Text><Pressable onPress={() => { setError(''); reloadLists(); }}><Text style={styles.retry}>Coba lagi</Text></Pressable></View> : null}
+      {activeList.loading || warehouseLoading ? <ActivityIndicator style={styles.loader} color="#087f5b" size="large" /> : null}
       {!warehouseLoading && !allowedWarehouses.length ? <View style={styles.empty}><Text style={styles.emptyTitle}>Gudang toko tidak ditemukan</Text><Text style={styles.muted}>Pastikan akun memiliki gudang cabang aktif.</Text></View> : null}
       {activeTab === 'stock' ? stocks.map((item) => <View key={item.id} style={styles.rowCard}><View style={styles.productIcon}><Package size={21} color="#087f5b" /></View><View style={styles.rowInfo}><Text numberOfLines={2} style={styles.productName}>{item.product.name}</Text><Text style={styles.sku}>{item.product.sku} · {item.warehouse.name}</Text><Text style={styles.updated}>Terakhir diperbarui {formatDate(item.updatedAt)}</Text></View><View style={styles.rowRight}><Text style={styles.stockQty}>{quantity(item.quantity)} {item.product.unit.code}</Text><Text style={styles.available}>Gudang {quantity(item.warehouseAvailable)}</Text></View></View>) : movements.map((item) => <Pressable key={item.id} accessibilityRole="button" onPress={() => void openDetail(item)} style={({ pressed }) => [styles.movementCard, pressed && styles.pressed]}><View style={styles.movementTop}><View style={styles.rowInfo}><Text style={styles.productName}>{item.movementNumber}</Text><Text style={styles.sku}>{item.order?.orderNumber ?? item.createdBy?.name ?? '-'}</Text></View><Text style={[styles.typeBadge, item.type === 'DISPLAY_RETURN' ? styles.returnBadge : item.type === 'DISPLAY_SALE' ? styles.saleBadge : styles.inBadge]}>{movementLabels[item.type]}</Text></View><Text style={styles.updated}>{formatDate(item.createdAt)} · {item._count?.items ?? 0} produk · {item.status === 'VOIDED' ? 'Dibatalkan' : 'Selesai'}</Text></Pressable>)}
-      {!loading && activeTab === 'stock' && !stocks.length ? <View style={styles.empty}><Text style={styles.emptyTitle}>Display masih kosong</Text><Text style={styles.muted}>Tambahkan barang beserta foto bukti pengambilan.</Text></View> : null}
-      {!loading && activeTab === 'history' && !movements.length ? <View style={styles.empty}><Text style={styles.emptyTitle}>Belum ada aktivitas</Text><Text style={styles.muted}>Aktivitas display akan tampil di sini.</Text></View> : null}
+      <LoadMoreFooter loadingMore={activeList.loadingMore} hasMore={activeList.hasMore} count={activeList.items.length} error={activeList.error} onRetry={activeList.loadMore} />
+      {!activeList.loading && !listError && warehouseId && activeTab === 'stock' && !stocks.length ? <View style={styles.empty}><Text style={styles.emptyTitle}>Display masih kosong</Text><Text style={styles.muted}>Tambahkan barang beserta foto bukti pengambilan.</Text></View> : null}
+      {!activeList.loading && !listError && warehouseId && activeTab === 'history' && !movements.length ? <View style={styles.empty}><Text style={styles.emptyTitle}>Belum ada aktivitas</Text><Text style={styles.muted}>Aktivitas display akan tampil di sini.</Text></View> : null}
     </KeyboardAwareScrollView>
 
     <Modal visible={wizardVisible} animationType="slide" onRequestClose={() => { if (!saving) setWizardVisible(false); }}>

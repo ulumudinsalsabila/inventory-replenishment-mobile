@@ -1,8 +1,10 @@
 import { useEffect, useState } from 'react';
 import { ActivityIndicator, Pressable, RefreshControl, StyleSheet, Text, TextInput, View } from 'react-native';
+import { LoadMoreFooter } from '../../components/load-more-footer';
 import { useAuth } from '../../auth/auth-provider';
 import { ApiError } from '../../lib/api';
 import { formatDate, formatStatus } from '../../lib/display';
+import { useInfiniteList, useLoadMoreOnScroll } from '../../lib/infinite-list';
 import { KeyboardAwareScrollView } from 'react-native-keyboard-controller';
 
 type Warehouse = { id: string; name: string; code: string };
@@ -17,7 +19,9 @@ const qty = (value: string) => Number(value).toLocaleString('id-ID', { maximumFr
 export default function AdjustmentsScreen() {
   const { user, authorizedRequest } = useAuth();
   const allowed = user?.permissions.includes('inventory.adjust') ?? false;
-  const [rows, setRows] = useState<Adjustment[]>([]);
+  const list = useInfiniteList<Adjustment>(authorizedRequest, allowed ? 'inventory/adjustments?sortBy=createdAt&sortOrder=desc' : null);
+  const scrollProps = useLoadMoreOnScroll(list.loadMore);
+  const rows = list.items;
   const [warehouses, setWarehouses] = useState<Warehouse[]>([]);
   const [stock, setStock] = useState<Stock[]>([]);
   const [warehouseId, setWarehouseId] = useState('');
@@ -32,12 +36,9 @@ export default function AdjustmentsScreen() {
   useEffect(() => {
     if (!allowed) return;
     let active = true;
-    void Promise.all([
-      authorizedRequest<Page<Adjustment>>('inventory/adjustments?page=1&perPage=20&sortBy=createdAt&sortOrder=desc'),
-      authorizedRequest<Page<Warehouse>>('catalog/warehouses?page=1&perPage=100&sortBy=name&sortOrder=asc'),
-    ]).then(([adjustmentPage, warehousePage]) => {
+    void authorizedRequest<Page<Warehouse>>('catalog/warehouses?page=1&perPage=100&sortBy=name&sortOrder=asc').then((warehousePage) => {
       if (!active) return;
-      setRows(adjustmentPage.data); setWarehouses(warehousePage.data);
+      setWarehouses(warehousePage.data);
       setWarehouseId((current) => current || (user?.branchId ? warehousePage.data.find((item) => item.code)?.id : warehousePage.data[0]?.id) || '');
       setError('');
     }).catch((cause: unknown) => { if (active) setError(cause instanceof ApiError ? cause.message : 'Data adjustment belum dapat dimuat.'); })
@@ -62,12 +63,12 @@ export default function AdjustmentsScreen() {
     setSaving(true); setError('');
     try {
       await authorizedRequest<Adjustment>('inventory/adjustments', { method: 'POST', body: JSON.stringify({ warehouseId, reason, note: note.trim(), items }) });
-      setDeltas({}); setNote(''); setReload((value) => value + 1);
+      setDeltas({}); setNote(''); setReload((value) => value + 1); void list.reload();
     } catch (cause) { setError(cause instanceof ApiError ? cause.message : 'Adjustment stok gagal disimpan.'); }
     finally { setSaving(false); }
   }
 
-  return <View style={styles.screen}><KeyboardAwareScrollView bottomOffset={24} keyboardShouldPersistTaps="handled" contentContainerStyle={styles.page} refreshControl={<RefreshControl refreshing={loading} onRefresh={() => { setLoading(true); setReload((value) => value + 1); }} tintColor="#087f5b" />}>
+  return <View style={styles.screen}><KeyboardAwareScrollView {...scrollProps} bottomOffset={24} keyboardShouldPersistTaps="handled" contentContainerStyle={styles.page} refreshControl={<RefreshControl refreshing={list.refreshing} onRefresh={() => { setReload((value) => value + 1); void list.refresh(); }} tintColor="#087f5b" />}>
     <Text style={styles.subtitle}>Catat koreksi stok dengan jejak perubahan dan alasan.</Text>
     {!allowed ? <View style={styles.card}><Text style={styles.section}>Akses tidak tersedia</Text><Text style={styles.muted}>Fitur ini memerlukan permission inventory.adjust.</Text></View> : null}
     {error ? <View style={styles.error}><Text style={styles.errorText}>{error}</Text></View> : null}
@@ -81,9 +82,12 @@ export default function AdjustmentsScreen() {
       <Pressable disabled={saving} onPress={() => void submit()} style={[styles.primary, saving && styles.dim]}>{saving ? <ActivityIndicator color="#fff" /> : <Text style={styles.primaryText}>Simpan adjustment</Text>}</Pressable></View>
       <Text style={styles.sectionTitle}>Riwayat adjustment</Text>
       {rows.map((row) => <View key={row.id} style={styles.card}><Text style={styles.adjustmentNo}>{row.adjustmentNumber}</Text><Text style={styles.muted}>{labels[row.reason] ?? formatStatus(row.reason)} · {row.warehouse.name} · {formatDate(row.createdAt)}</Text><Text style={styles.muted}>{row.items.map((item) => `${item.product.name}: ${Number(item.quantityDelta) > 0 ? '+' : ''}${qty(item.quantityDelta)}`).join('  ·  ')}</Text><Text style={styles.muted}>{row.note}</Text></View>)}
-      {!rows.length && !loading ? <Text style={styles.empty}>Belum ada adjustment.</Text> : null}
+      {list.error && !rows.length ? <View style={styles.error}><Text style={styles.errorText}>{list.error}</Text><Pressable accessibilityRole="button" onPress={() => void list.reload()}><Text style={styles.retry}>Coba lagi</Text></Pressable></View> : null}
+      {list.loading && !rows.length ? <ActivityIndicator style={styles.loader} color="#087f5b" /> : null}
+      {!rows.length && !list.loading && !list.error ? <Text style={styles.empty}>Belum ada adjustment.</Text> : null}
+      <LoadMoreFooter loadingMore={list.loadingMore} hasMore={list.hasMore} count={rows.length} error={list.error} onRetry={list.loadMore} />
     </> : null}
   </KeyboardAwareScrollView></View>;
 }
 
-const styles = StyleSheet.create({ screen: { flex: 1, backgroundColor: '#f5f7f6' }, page: { padding: 20, paddingTop: 18, paddingBottom: 36 }, back: { alignSelf: 'flex-start', marginBottom: 20 }, backText: { color: '#087f5b', fontSize: 12, fontWeight: '800' }, eyebrow: { color: '#087f5b', fontSize: 10, fontWeight: '800', letterSpacing: 1.2 }, title: { marginTop: 6, color: '#172820', fontSize: 25, fontWeight: '800' }, subtitle: { marginTop: 5, color: '#718078', fontSize: 12 }, card: { marginTop: 14, padding: 15, borderWidth: 1, borderColor: '#e6ece8', borderRadius: 16, backgroundColor: '#fff', gap: 8 }, section: { color: '#26372e', fontSize: 15, fontWeight: '900' }, sectionTitle: { marginTop: 23, color: '#26372e', fontSize: 15, fontWeight: '900' }, label: { marginTop: 8, color: '#718078', fontSize: 11, fontWeight: '800' }, chips: { flexDirection: 'row', flexWrap: 'wrap', gap: 7 }, chip: { paddingHorizontal: 10, paddingVertical: 8, borderRadius: 10, backgroundColor: '#f1f4f2' }, chipActive: { backgroundColor: '#e7f5ee' }, chipText: { color: '#68766e', fontSize: 10, fontWeight: '800' }, chipTextActive: { color: '#087f5b' }, input: { minHeight: 48, padding: 11, borderWidth: 1, borderColor: '#dce4df', borderRadius: 11, color: '#26372e', textAlignVertical: 'top' }, productRow: { minHeight: 56, flexDirection: 'row', alignItems: 'center', gap: 8, borderTopWidth: 1, borderTopColor: '#edf1ee' }, productInfo: { flex: 1 }, productName: { color: '#26372e', fontSize: 12, fontWeight: '800' }, muted: { marginTop: 4, color: '#84918b', fontSize: 10, lineHeight: 15 }, qtyInput: { width: 90, height: 42, paddingHorizontal: 7, borderWidth: 1, borderColor: '#dce4df', borderRadius: 9, textAlign: 'center', color: '#26372e' }, primary: { minHeight: 46, alignItems: 'center', justifyContent: 'center', marginTop: 10, borderRadius: 12, backgroundColor: '#087f5b' }, primaryText: { color: '#fff', fontSize: 12, fontWeight: '900' }, dim: { opacity: 0.5 }, adjustmentNo: { color: '#087f5b', fontSize: 12, fontWeight: '900' }, error: { marginTop: 12, padding: 12, borderRadius: 12, backgroundColor: '#fff1ef' }, errorText: { color: '#a3332a', fontSize: 11 }, loader: { padding: 16 }, empty: { marginTop: 8, padding: 15, borderRadius: 12, backgroundColor: '#fff', color: '#84918b', fontSize: 11 } });
+const styles = StyleSheet.create({ screen: { flex: 1, backgroundColor: '#f5f7f6' }, page: { padding: 20, paddingTop: 18, paddingBottom: 36 }, back: { alignSelf: 'flex-start', marginBottom: 20 }, backText: { color: '#087f5b', fontSize: 12, fontWeight: '800' }, eyebrow: { color: '#087f5b', fontSize: 10, fontWeight: '800', letterSpacing: 1.2 }, title: { marginTop: 6, color: '#172820', fontSize: 25, fontWeight: '800' }, subtitle: { marginTop: 5, color: '#718078', fontSize: 12 }, card: { marginTop: 14, padding: 15, borderWidth: 1, borderColor: '#e6ece8', borderRadius: 16, backgroundColor: '#fff', gap: 8 }, section: { color: '#26372e', fontSize: 15, fontWeight: '900' }, sectionTitle: { marginTop: 23, color: '#26372e', fontSize: 15, fontWeight: '900' }, label: { marginTop: 8, color: '#718078', fontSize: 11, fontWeight: '800' }, chips: { flexDirection: 'row', flexWrap: 'wrap', gap: 7 }, chip: { paddingHorizontal: 10, paddingVertical: 8, borderRadius: 10, backgroundColor: '#f1f4f2' }, chipActive: { backgroundColor: '#e7f5ee' }, chipText: { color: '#68766e', fontSize: 10, fontWeight: '800' }, chipTextActive: { color: '#087f5b' }, input: { minHeight: 48, padding: 11, borderWidth: 1, borderColor: '#dce4df', borderRadius: 11, color: '#26372e', textAlignVertical: 'top' }, productRow: { minHeight: 56, flexDirection: 'row', alignItems: 'center', gap: 8, borderTopWidth: 1, borderTopColor: '#edf1ee' }, productInfo: { flex: 1 }, productName: { color: '#26372e', fontSize: 12, fontWeight: '800' }, muted: { marginTop: 4, color: '#84918b', fontSize: 10, lineHeight: 15 }, qtyInput: { width: 90, height: 42, paddingHorizontal: 7, borderWidth: 1, borderColor: '#dce4df', borderRadius: 9, textAlign: 'center', color: '#26372e' }, primary: { minHeight: 46, alignItems: 'center', justifyContent: 'center', marginTop: 10, borderRadius: 12, backgroundColor: '#087f5b' }, primaryText: { color: '#fff', fontSize: 12, fontWeight: '900' }, dim: { opacity: 0.5 }, adjustmentNo: { color: '#087f5b', fontSize: 12, fontWeight: '900' }, error: { marginTop: 12, padding: 12, borderRadius: 12, backgroundColor: '#fff1ef' }, errorText: { color: '#a3332a', fontSize: 11 }, retry: { marginTop: 7, color: '#087f5b', fontSize: 11, fontWeight: '900' }, loader: { padding: 16 }, empty: { marginTop: 8, padding: 15, borderRadius: 12, backgroundColor: '#fff', color: '#84918b', fontSize: 11 } });

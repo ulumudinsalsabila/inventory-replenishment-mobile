@@ -4,6 +4,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { ActivityIndicator, Image, Modal, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import * as Print from 'expo-print';
 import { useAuth } from '../../auth/auth-provider';
+import { useNotifications } from '../../notifications/notifications-provider';
 import { BarcodeScanner } from '../../components/barcode-scanner';
 import { PosCatalogScreen, PosCheckoutFlow, PosReceiptScreen, type PosLine, type PosMethod, type PosProduct } from '../../components/pos-flow';
 import { formatOrderReceipt, getPairedPrinters, getSavedPrinter, openAndroidBluetoothSettings, printThermalReceipt, savePrinter, type PairedPrinter, type ReceiptOrder } from '../../lib/receipt-printer';
@@ -21,6 +22,7 @@ const money = (amount: number) => `Rp ${Math.max(0, amount).toLocaleString('id-I
 
 export default function PosScreen() {
   const { user, authorizedRequest, signOut } = useAuth();
+  const { refresh: refreshNotifications } = useNotifications();
   const insets = useSafeAreaInsets();
   const [branches, setBranches] = useState<Branch[]>([]);
   const [warehouses, setWarehouses] = useState<Warehouse[]>([]);
@@ -172,6 +174,7 @@ export default function PosScreen() {
       setReceipt(completed); setPendingOrder(null); setCart([]); setCartVisible(false); setPaymentStep(false); setTakeaway(true); setCustomer(''); setDiscount('0');
       // Stock changed on the server; reload the catalog so the next order sees current availability.
       setReloadKey((value) => value + 1);
+      void refreshNotifications();
     } catch (e) { setError(e instanceof Error ? e.message : 'Transaksi gagal.'); }
     finally { setSubmitting(false); }
   }

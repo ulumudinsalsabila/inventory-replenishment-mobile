@@ -43,3 +43,6 @@ yarn-error.*
 
 credentials.json
 credentials/
+
+# Firebase service account keys (private, upload to EAS only)
+*-firebase-adminsdk-*.json

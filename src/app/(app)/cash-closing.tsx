@@ -4,13 +4,18 @@ import { File } from 'expo-file-system';
 import * as Print from 'expo-print';
 import * as ImagePicker from 'expo-image-picker';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { Banknote, Bluetooth, CalendarDays, Camera, Check, ChevronLeft, ChevronRight, ImagePlus, Paperclip, Printer, ShieldCheck, X } from 'lucide-react-native';
+import { Banknote, Bluetooth, CalendarDays, Camera, Check, ChevronLeft, ChevronRight, ImagePlus, Paperclip, Printer, Search, ShieldCheck, X } from 'lucide-react-native';
 import { useAuth } from '../../auth/auth-provider';
 import { ApiError } from '../../lib/api';
+import { getRange, rangeLabel, rangeOptions, type RangePreset } from '../../lib/date-range';
 import { formatDate, formatStatus } from '../../lib/display';
+import { useDebouncedValue, useInfiniteList, useLoadMoreOnScroll } from '../../lib/infinite-list';
+import { useBottomGap } from '../../lib/responsive';
+import { LoadMoreFooter } from '../../components/load-more-footer';
 import { ThermalPreview } from '../../components/thermal-preview';
 import { formatCashClosingReceipt, getPairedPrinters, getSavedPrinter, openAndroidBluetoothSettings, printThermalCashClosingReceipt, savePrinter, type CashClosingReceipt, type PairedPrinter } from '../../lib/receipt-printer';
 import { KeyboardAwareScrollView } from 'react-native-keyboard-controller';
+
 
 type Branch = { id: string; name: string; code: string };
 type Page<T> = { data: T[]; meta?: { totalPages: number; total: number } };
@@ -61,19 +66,21 @@ const refundRows: [string, keyof Preview][] = [['Cash', 'cashRefund'], ['QRIS', 
 export default function CashClosingScreen() {
   const { user, authorizedRequest } = useAuth();
   const insets = useSafeAreaInsets();
+  const bottomGap = useBottomGap();
   const canRead = user?.permissions.includes('cash_closing.read') ?? false;
   const canCreate = user?.permissions.includes('cash_closing.create') ?? false;
   const assignedBranchId = user?.branchId ?? null;
   const [branches, setBranches] = useState<Branch[]>([]);
   const [branchId, setBranchId] = useState(assignedBranchId ?? '');
-  const [rows, setRows] = useState<CashClosing[]>([]);
   const [preview, setPreview] = useState<Preview | null>(null);
   const [previewLoading, setPreviewLoading] = useState(canCreate && Boolean(assignedBranchId));
-  const [loading, setLoading] = useState(canRead || canCreate);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
   const [reload, setReload] = useState(0);
   const [filter, setFilter] = useState<'ALL' | 'MATCH' | 'DIFFERENCE'>('ALL');
+  const [rangePreset, setRangePreset] = useState<RangePreset>('today');
+  const [searchInput, setSearchInput] = useState('');
+  const search = useDebouncedValue(searchInput.trim());
   const [formVisible, setFormVisible] = useState(false);
   const [step, setStep] = useState(0);
   const [actualCash, setActualCash] = useState('');
@@ -91,26 +98,21 @@ export default function CashClosingScreen() {
 
   useEffect(() => { void getSavedPrinter().then(setPrinter).catch(() => setPrinter(null)); }, []);
 
+  const { from, to } = getRange(rangePreset);
+  const params = new URLSearchParams({ sortBy: 'closedAt', sortOrder: 'desc', from, to });
+  if (search) params.set('search', search);
+  if (filter !== 'ALL') params.set('status', filter);
+  const list = useInfiniteList<CashClosing>(authorizedRequest, canRead ? `cash-closings?${params.toString()}` : null);
+  const scrollProps = useLoadMoreOnScroll(list.loadMore);
+
   useEffect(() => {
+    if (assignedBranchId) return;
     let active = true;
-    const branchJob = assignedBranchId
-      ? Promise.resolve({ data: [] as Branch[] })
-      : authorizedRequest<Page<Branch>>('catalog/branches?page=1&perPage=100&sortBy=name&sortOrder=asc');
-    const closingJob = canRead
-      ? authorizedRequest<Page<CashClosing>>('cash-closings?page=1&perPage=50&sortBy=closedAt&sortOrder=desc')
-      : Promise.resolve({ data: [] as CashClosing[] });
-    void Promise.all([branchJob, closingJob])
-      .then(([branchResult, closingResult]) => {
-        if (!active) return;
-        setBranches(branchResult.data);
-        setBranchId((current) => current || assignedBranchId || branchResult.data[0]?.id || '');
-        setRows(closingResult.data);
-        setError('');
-      })
-      .catch((cause: unknown) => { if (active) setError(cause instanceof ApiError ? cause.message : 'Data cash closing belum dapat dimuat.'); })
-      .finally(() => { if (active) setLoading(false); });
+    void authorizedRequest<Page<Branch>>('catalog/branches?page=1&perPage=100&sortBy=name&sortOrder=asc')
+      .then((result) => { if (!active) return; setBranches(result.data); setBranchId((current) => current || result.data[0]?.id || ''); })
+      .catch((cause: unknown) => { if (active) setError(cause instanceof ApiError ? cause.message : 'Data cash closing belum dapat dimuat.'); });
     return () => { active = false; };
-  }, [assignedBranchId, authorizedRequest, canRead, reload]);
+  }, [assignedBranchId, authorizedRequest]);
 
   useEffect(() => {
     if (!canCreate || !branchId) return;
@@ -122,7 +124,8 @@ export default function CashClosingScreen() {
     return () => { active = false; };
   }, [authorizedRequest, branchId, canCreate, reload]);
 
-  const filteredRows = rows.filter((row) => filter === 'ALL' || (filter === 'MATCH' ? row.status === 'MATCH' : row.status !== 'MATCH'));
+  const filteredRows = list.items;
+  const listError = list.items.length ? '' : list.error;
   const difference = Number(actualCash || 0) - Number(preview?.expectedCash ?? 0);
 
   function resetForm() {
@@ -171,6 +174,7 @@ export default function CashClosingScreen() {
       await authorizedRequest('cash-closing', { method: 'POST', body: form });
       resetForm();
       setReload((value) => value + 1);
+      void list.reload();
     } catch (cause) { setError(cause instanceof Error ? cause.message : 'Cash closing gagal disimpan.'); }
     finally { setSaving(false); }
   }
@@ -257,19 +261,23 @@ export default function CashClosingScreen() {
       <View style={styles.card}><View style={styles.cardHeading}><ShieldCheck size={18} color="#087f5b" /><Text style={styles.cardTitle}>Ringkasan closing</Text></View><DetailRow label="Nomor closing" value="Dibuat setelah disimpan" /><DetailRow label="Cabang" value={branches.find((branch) => branch.id === branchId)?.name ?? 'Cabang saya'} /><DetailRow label="Periode mulai" value={preview?.periodStart ? formatDate(preview.periodStart) : '—'} /><DetailRow label="Dibuat pada" value={formatDate(new Date())} /><DetailRow label="Kas seharusnya" value={money(preview?.expectedCash)} /><DetailRow label="Kas fisik aktual" value={money(actualCash)} /><View style={[styles.differenceRow, difference === 0 ? styles.differenceMatch : styles.differenceWarn]}><Text style={styles.differenceLabel}>Selisih kas</Text><Text style={styles.differenceValue}>{money(difference)}</Text></View></View>
       <View style={styles.card}><View style={styles.cardHeading}><Paperclip size={18} color="#6e5db5" /><Text style={styles.cardTitle}>Foto bukti (opsional)</Text></View><Text style={styles.muted}>Maksimal 5 foto, 5 MB per file.</Text><View style={styles.evidenceGrid}>{evidence.map((asset, index) => <View key={`${asset.assetId ?? asset.uri}-${index}`} style={styles.evidenceWrap}><Image source={{ uri: asset.uri }} style={styles.evidenceImage} /><Pressable accessibilityRole="button" accessibilityLabel={`Hapus foto ${index + 1}`} onPress={() => setEvidence((current) => current.filter((_, itemIndex) => itemIndex !== index))} style={styles.removeEvidence}><X size={13} color="#fff" /></Pressable></View>)}{evidence.length < 5 ? <View style={styles.evidenceActions}><Pressable accessibilityRole="button" onPress={() => void selectEvidence(true)} style={styles.evidenceButton}><Camera size={17} color="#087f5b" /><Text style={styles.evidenceButtonText}>Kamera</Text></Pressable><Pressable accessibilityRole="button" onPress={() => void selectEvidence(false)} style={styles.evidenceButton}><ImagePlus size={17} color="#087f5b" /><Text style={styles.evidenceButtonText}>Galeri</Text></Pressable></View> : null}</View></View>
     </ScrollView> : null}
-    <View style={[styles.footer, { paddingBottom: Math.max(insets.bottom + 8, 14) }]}>{step > 0 ? <Pressable accessibilityRole="button" onPress={() => setStep((value) => value - 1)} style={styles.secondaryButton}><Text style={styles.secondaryText}>Kembali</Text></Pressable> : <Pressable accessibilityRole="button" onPress={resetForm} style={styles.secondaryButton}><Text style={styles.secondaryText}>Batal</Text></Pressable>}{step < 2 ? <Pressable accessibilityRole="button" disabled={step === 0 && (!preview?.transactionCount || !actualCash.trim() || previewLoading)} onPress={() => { setError(''); setStep((value) => value + 1); }} style={[styles.primaryButton, step === 0 && (!preview?.transactionCount || !actualCash.trim() || previewLoading) && styles.disabled]}><Text style={styles.primaryText}>{step === 0 ? 'Lanjut ke rekonsiliasi' : 'Lanjut ke konfirmasi'}</Text><ChevronRight size={17} color="#fff" /></Pressable> : <Pressable accessibilityRole="button" disabled={saving} onPress={() => void submitClosing()} style={[styles.primaryButton, saving && styles.disabled]}>{saving ? <ActivityIndicator color="#fff" /> : <Text style={styles.primaryText}>Simpan closing</Text>}</Pressable>}</View>
+    <View style={[styles.footer, { paddingBottom: bottomGap }]}>{step > 0 ? <Pressable accessibilityRole="button" onPress={() => setStep((value) => value - 1)} style={styles.secondaryButton}><Text style={styles.secondaryText}>Kembali</Text></Pressable> : <Pressable accessibilityRole="button" onPress={resetForm} style={styles.secondaryButton}><Text style={styles.secondaryText}>Batal</Text></Pressable>}{step < 2 ? <Pressable accessibilityRole="button" disabled={step === 0 && (!preview?.transactionCount || !actualCash.trim() || previewLoading)} onPress={() => { setError(''); setStep((value) => value + 1); }} style={[styles.primaryButton, step === 0 && (!preview?.transactionCount || !actualCash.trim() || previewLoading) && styles.disabled]}><Text style={styles.primaryText}>{step === 0 ? 'Lanjut ke rekonsiliasi' : 'Lanjut ke konfirmasi'}</Text><ChevronRight size={17} color="#fff" /></Pressable> : <Pressable accessibilityRole="button" disabled={saving} onPress={() => void submitClosing()} style={[styles.primaryButton, saving && styles.disabled]}>{saving ? <ActivityIndicator color="#fff" /> : <Text style={styles.primaryText}>Simpan closing</Text>}</Pressable>}</View>
   </View>;
 
-  return <View style={styles.screen}><ScrollView style={styles.listContent} contentContainerStyle={styles.listBody} refreshControl={<RefreshControl refreshing={loading} onRefresh={() => setReload((value) => value + 1)} tintColor="#07885b" />}>
+  return <View style={styles.screen}><ScrollView {...scrollProps} style={styles.listContent} contentContainerStyle={styles.listBody} keyboardShouldPersistTaps="handled" refreshControl={<RefreshControl refreshing={list.refreshing} onRefresh={() => { setReload((value) => value + 1); void list.refresh(); }} tintColor="#07885b" />}>
+    <Text style={styles.heading}>Cash closing</Text>
     <Text style={styles.subtitle}>Daftar closing kas dan hasil rekonsiliasi.</Text>
+    <View style={styles.rangeControl}>{rangeOptions.map((item) => <Pressable key={item.id} accessibilityRole="button" accessibilityState={{ selected: rangePreset === item.id }} onPress={() => setRangePreset(item.id)} style={[styles.rangeButton, rangePreset === item.id && styles.rangeButtonActive]}><Text style={[styles.rangeText, rangePreset === item.id && styles.rangeTextActive]}>{item.label}</Text></Pressable>)}</View>
+    <View style={styles.searchField}><Search size={17} color="#71839a" /><TextInput accessibilityLabel="Cari cash closing" value={searchInput} onChangeText={setSearchInput} placeholder="Cari nomor closing atau cabang..." placeholderTextColor="#90a0ad" style={styles.searchInput} returnKeyType="search" /></View>
     {branches.length ? <View style={styles.branchPicker}><Text style={styles.label}>Cabang</Text><ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.chips}>{branches.map((branch) => <Pressable key={branch.id} onPress={() => { setPreviewLoading(true); setBranchId(branch.id); }} style={[styles.chip, branchId === branch.id && styles.chipActive]}><Text style={[styles.chipText, branchId === branch.id && styles.chipTextActive]}>{branch.name} ({branch.code})</Text></Pressable>)}</ScrollView></View> : null}
     <View style={styles.filters}>{[{ id: 'ALL', label: 'Semua' }, { id: 'MATCH', label: 'Sesuai' }, { id: 'DIFFERENCE', label: 'Selisih' }].map((item) => <Pressable key={item.id} onPress={() => setFilter(item.id as typeof filter)} style={[styles.filter, filter === item.id && styles.filterActive]}><Text style={[styles.filterText, filter === item.id && styles.filterTextActive]}>{item.label}</Text></Pressable>)}</View>
-    {error ? <Text style={styles.error}>{error}</Text> : null}
-    {loading ? <ActivityIndicator style={styles.loader} color="#07885b" /> : null}
+    {error || listError ? <Text style={styles.error}>{error || listError}</Text> : null}
+    {list.loading ? <ActivityIndicator style={styles.loader} color="#07885b" /> : null}
     {canRead ? filteredRows.map((row) => <Pressable key={row.id} accessibilityRole="button" onPress={() => void openDetail(row)} style={styles.closingCard}><View style={styles.closingTop}><View style={styles.closingIcon}><CalendarDays size={18} color="#3f79bf" /></View><View style={styles.closingLabels}><Text numberOfLines={1} style={styles.closingNumber}>{row.closingNumber}</Text><Text style={styles.muted}>{formatDate(row.closedAt ?? row.periodEnd ?? row.periodStart ?? '')}</Text></View><View style={[styles.statusBadge, row.status === 'MATCH' ? styles.statusMatch : styles.statusDifference]}><Text style={[styles.statusText, row.status === 'MATCH' ? styles.statusMatchText : styles.statusDifferenceText]}>{row.status === 'MATCH' ? 'SESUAI' : formatStatus(row.status)}</Text></View><ChevronRight size={17} color="#8a9aab" /></View><View style={styles.closingAmounts}><View><Text style={styles.amountLabel}>Penjualan</Text><Text style={styles.amountValue}>{money(row.totalSales)}</Text></View><View style={styles.amountEnd}><Text style={styles.amountLabel}>Selisih</Text><Text style={[styles.amountValue, Number(row.difference) === 0 ? styles.positive : styles.negative]}>{money(row.difference)}</Text></View></View></Pressable>) : <View style={styles.card}><Text style={styles.cardTitle}>Akses tidak tersedia</Text><Text style={styles.muted}>Akun ini belum memiliki izin membaca cash closing.</Text></View>}
-    {!loading && canRead && !filteredRows.length ? <Text style={styles.empty}>Belum ada closing pada filter ini.</Text> : null}
+    {canRead ? <LoadMoreFooter loadingMore={list.loadingMore} hasMore={list.hasMore} count={filteredRows.length} error={list.error} onRetry={list.loadMore} /> : null}
+    {!list.loading && !listError && canRead && !filteredRows.length ? <Text style={styles.empty}>Belum ada closing untuk periode {rangeLabel(rangePreset).toLowerCase()}.</Text> : null}
   </ScrollView>
-  {canCreate ? <Pressable accessibilityRole="button" disabled={!preview?.transactionCount} onPress={() => { setFormVisible(true); setError(''); }} style={[styles.createButton, !preview?.transactionCount && styles.disabled]}><PlusIcon /><Text style={styles.createButtonText}>Tutup kas baru</Text></Pressable> : null}
+  {canCreate ? <Pressable accessibilityRole="button" disabled={!preview?.transactionCount} onPress={() => { setFormVisible(true); setError(''); }} style={[styles.createButton, { marginBottom: bottomGap }, !preview?.transactionCount && styles.disabled]}><PlusIcon /><Text style={styles.createButtonText}>Tutup kas baru</Text></Pressable> : null}
   <Modal visible={detailLoading || Boolean(selected)} transparent animationType="slide" onRequestClose={() => setSelected(null)}>
     <View style={styles.modalBackdrop}>
       <View style={[styles.detailSheet, { paddingBottom: Math.max(insets.bottom + 8, 24) }]}>
@@ -356,15 +364,21 @@ const styles = StyleSheet.create({
   printerEmpty: { paddingVertical: 14, color: '#8191a3', fontSize: 12, textAlign: 'center' },
   printerSettings: { alignItems: 'center', marginTop: 10, padding: 10, borderRadius: 9, backgroundColor: '#edf7f2' },
   printerSettingsText: { color: '#087f5b', fontSize: 12, fontWeight: '800' },
-  listContent: { flex: 1 }, listBody: { padding: 16, paddingTop: 12, paddingBottom: 20 },
+  listContent: { flex: 1 }, listBody: { padding: 16, paddingTop: 14, paddingBottom: 12 },
+  heading: { color: '#172338', fontSize: 25, fontWeight: '900' },
+  rangeControl: { flexDirection: 'row', gap: 4, marginTop: 14, padding: 4, borderRadius: 11, backgroundColor: '#e9eef1' },
+  rangeButton: { flex: 1, minHeight: 34, alignItems: 'center', justifyContent: 'center', borderRadius: 8 }, rangeButtonActive: { backgroundColor: '#07885f' },
+  rangeText: { color: '#63758b', fontSize: 9, fontWeight: '800' }, rangeTextActive: { color: '#fff' },
+  searchField: { minHeight: 44, flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 10, paddingHorizontal: 11, borderWidth: 1, borderColor: '#dce5eb', borderRadius: 10, backgroundColor: '#fff' },
+  searchInput: { flex: 1, minWidth: 0, color: '#25364a', fontSize: 10 },
   formHeader: { minHeight: 52, flexDirection: 'row', alignItems: 'center', gap: 10, paddingHorizontal: 15, backgroundColor: '#fff' },
   backButton: { width: 34, height: 34, alignItems: 'center', justifyContent: 'center' }, formTitle: { color: '#172338', fontSize: 15, fontWeight: '900' },
   steps: { flexDirection: 'row', justifyContent: 'space-between', gap: 5, paddingHorizontal: 14, paddingVertical: 11, backgroundColor: '#fff' },
   step: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 5 }, stepNumber: { width: 24, height: 24, alignItems: 'center', justifyContent: 'center', borderRadius: 12, backgroundColor: '#edf2f5' }, stepNumberActive: { backgroundColor: '#07956f' }, stepNumberText: { color: '#60758a', fontSize: 11, fontWeight: '900' }, stepNumberTextActive: { color: '#fff' }, stepLabel: { color: '#8191a3', fontSize: 11 }, stepLabelActive: { color: '#07885b', fontWeight: '900' },
   formContent: { flex: 1 }, formBody: { padding: 14, paddingBottom: 20, gap: 10 },
-  subtitle: { marginBottom: 12, color: '#71839a', fontSize: 12 }, label: { marginTop: 10, marginBottom: 6, color: '#53677e', fontSize: 11, fontWeight: '800' },
+  subtitle: { marginTop: 4, color: '#71839a', fontSize: 10 }, label: { marginTop: 10, marginBottom: 6, color: '#53677e', fontSize: 11, fontWeight: '800' },
   branchPicker: { marginBottom: 10 }, chips: { flexDirection: 'row', flexWrap: 'wrap', gap: 7 }, chip: { paddingHorizontal: 12, paddingVertical: 9, borderRadius: 9, backgroundColor: '#edf2f5' }, chipActive: { backgroundColor: '#07885b' }, chipText: { color: '#60758a', fontSize: 11, fontWeight: '800' }, chipTextActive: { color: '#fff' },
-  filters: { flexDirection: 'row', gap: 7, marginBottom: 11 }, filter: { minHeight: 38, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 13, borderRadius: 9, backgroundColor: '#edf2f5' }, filterActive: { backgroundColor: '#07885b' }, filterText: { color: '#60758a', fontSize: 11, fontWeight: '800' }, filterTextActive: { color: '#fff' },
+  filters: { flexDirection: 'row', gap: 7, marginTop: 11, marginBottom: 5 }, filter: { minHeight: 34, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 12, borderRadius: 9, backgroundColor: '#edf2f5' }, filterActive: { backgroundColor: '#07885b' }, filterText: { color: '#60758a', fontSize: 9, fontWeight: '800' }, filterTextActive: { color: '#fff' },
   closingCard: { marginBottom: 9, padding: 13, borderWidth: 1, borderColor: '#e4eaee', borderRadius: 12, backgroundColor: '#fff' }, closingTop: { flexDirection: 'row', alignItems: 'center', gap: 8 }, closingIcon: { width: 36, height: 36, alignItems: 'center', justifyContent: 'center', borderRadius: 10, backgroundColor: '#e8f2ff' }, closingLabels: { flex: 1, minWidth: 0 }, closingNumber: { color: '#25364a', fontSize: 12, fontWeight: '900' }, statusBadge: { paddingHorizontal: 8, paddingVertical: 5, borderRadius: 7 }, statusMatch: { backgroundColor: '#e4f7ee' }, statusDifference: { backgroundColor: '#fff2de' }, statusText: { fontSize: 10, fontWeight: '900' }, statusMatchText: { color: '#087c53' }, statusDifferenceText: { color: '#a65d05' }, closingAmounts: { flexDirection: 'row', justifyContent: 'space-between', marginTop: 10, paddingTop: 9, borderTopWidth: 1, borderTopColor: '#edf1f4' }, amountLabel: { color: '#8191a3', fontSize: 11 }, amountValue: { marginTop: 3, color: '#25364a', fontSize: 12, fontWeight: '900' }, amountEnd: { alignItems: 'flex-end' }, positive: { color: '#07885b' }, negative: { color: '#c23a36' },
   card: { padding: 13, borderWidth: 1, borderColor: '#e3eaee', borderRadius: 12, backgroundColor: '#fff' }, cardHeading: { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 10 }, cardTitle: { color: '#25364a', fontSize: 14, fontWeight: '900' }, branchName: { color: '#25364a', fontSize: 12, fontWeight: '800' }, infoRow: { minHeight: 42, flexDirection: 'row', alignItems: 'center', gap: 8, borderTopWidth: 1, borderTopColor: '#edf1f4' }, infoLabel: { flex: 1, color: '#71839a', fontSize: 11 }, infoValue: { color: '#25364a', fontSize: 11, fontWeight: '800' }, summaryHighlight: { marginTop: 9, padding: 11, borderRadius: 9, backgroundColor: '#e6f7ef' }, expected: { color: '#07885b', fontSize: 17, fontWeight: '900' }, amountInput: { minHeight: 46, flexDirection: 'row', alignItems: 'center', gap: 8, paddingHorizontal: 10, borderWidth: 1, borderColor: '#dce5eb', borderRadius: 9, backgroundColor: '#fff' }, currency: { color: '#74869a', fontSize: 12 }, amountTextInput: { flex: 1, height: 44, color: '#25364a', fontSize: 14, fontWeight: '800' }, textInput: { minHeight: 46, paddingHorizontal: 10, borderWidth: 1, borderColor: '#dce5eb', borderRadius: 9, color: '#25364a', fontSize: 12 }, noteInput: { minHeight: 72, paddingTop: 10, textAlignVertical: 'top' },
   summaryTiles: { flexDirection: 'row', gap: 8 }, tile: { flex: 1, padding: 12, borderRadius: 10, backgroundColor: '#eaf3ff' }, tileRefund: { backgroundColor: '#fff0f0' }, tileIn: { backgroundColor: '#e7f7ef' }, tileOut: { backgroundColor: '#fff0ec' }, tileLabel: { color: '#71839a', fontSize: 11 }, tileValue: { marginTop: 4, color: '#25364a', fontSize: 14, fontWeight: '900' }, tileMeta: { marginTop: 2, color: '#8191a3', fontSize: 11 }, methodRow: { minHeight: 34, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', borderTopWidth: 1, borderTopColor: '#eef2f5' }, methodName: { color: '#62768c', fontSize: 11 }, methodValue: { color: '#25364a', fontSize: 11, fontWeight: '800' },

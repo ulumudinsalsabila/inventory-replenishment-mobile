@@ -5,6 +5,7 @@ import Constants from 'expo-constants';
 import { router, type Href } from 'expo-router';
 import * as SecureStore from 'expo-secure-store';
 import { useAuth } from '../auth/auth-provider';
+import { useNotifications } from '../notifications/notifications-provider';
 
 const PUSH_TOKEN_KEY = 'inventory.expo-push-token';
 
@@ -14,6 +15,7 @@ Notifications.setNotificationHandler({
 
 export function PushNotificationsBridge() {
   const { user, accessToken, authorizedRequest } = useAuth();
+  const { refresh } = useNotifications();
 
   useEffect(() => {
     if (!user || !accessToken || Platform.OS === 'web') return;
@@ -48,6 +50,11 @@ export function PushNotificationsBridge() {
     const subscription = Notifications.addNotificationResponseReceivedListener((response) => openNotification(response.notification.request.content.data));
     return () => subscription.remove();
   }, []);
+
+  useEffect(() => {
+    const subscription = Notifications.addNotificationReceivedListener(() => void refresh());
+    return () => subscription.remove();
+  }, [refresh]);
 
   return null;
 }

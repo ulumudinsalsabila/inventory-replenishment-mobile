@@ -1,4 +1,6 @@
 import { useWindowDimensions } from 'react-native';
+import { useSegments } from 'expo-router';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 /** Width (dp) from which the app switches to the tablet layout: sidebar navigation and split views. */
 export const TABLET_BREAKPOINT = 768;
@@ -17,4 +19,14 @@ export function useResponsive() {
     /** Number of grid columns that fit `available` width with cards at least `minCardWidth` wide. */
     columns: (available: number, minCardWidth: number, max = 6) => Math.max(2, Math.min(max, Math.floor(available / minCardWidth))),
   };
+}
+
+/**
+ * Bottom spacing for buttons pinned under a screen's content. Inside the tab navigator the tab bar
+ * already covers the system navigation area, so only a small gap is needed; pushed screens pad for it.
+ */
+export function useBottomGap() {
+  const insets = useSafeAreaInsets();
+  const inTabs = (useSegments() as string[]).includes('(tabs)');
+  return inTabs ? 10 : Math.max(insets.bottom + 8, 14);
 }

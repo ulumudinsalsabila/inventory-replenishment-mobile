@@ -3,7 +3,9 @@ import { ActivityIndicator, Image, Pressable, RefreshControl, ScrollView, StyleS
 import { useLocalSearchParams } from 'expo-router';
 import { ArrowDownLeft, ArrowUpRight, Boxes, ChevronRight, Coins, House, Package, X } from 'lucide-react-native';
 import { useAuth } from '../../auth/auth-provider';
+import { LoadMoreFooter } from '../../components/load-more-footer';
 import { ApiError } from '../../lib/api';
+import { useInfiniteList, useLoadMoreOnScroll } from '../../lib/infinite-list';
 import { money, quantity } from '../../lib/report';
 
 type Detail = {
@@ -28,12 +30,9 @@ export default function StockDetailScreen() {
   const [detail, setDetail] = useState<Detail | null>(null);
   const [tab, setTab] = useState<Tab>('branch');
   const [warehouseId, setWarehouseId] = useState('');
-  const [movements, setMovements] = useState<Movement[]>([]);
   const [loading, setLoading] = useState(true);
-  const [historyLoading, setHistoryLoading] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState('');
-  const [historyError, setHistoryError] = useState('');
   const [reloadKey, setReloadKey] = useState(0);
   const canReadMovements = user?.permissions.includes('inventory.read') ?? false;
 
@@ -47,17 +46,11 @@ export default function StockDetailScreen() {
     return () => { active = false; };
   }, [accessToken, authorizedRequest, productId, reloadKey]);
 
-  useEffect(() => {
-    if (!accessToken || !productId || tab !== 'history' || !canReadMovements) return;
-    let active = true;
-    const params = new URLSearchParams({ productId, page: '1', perPage: '50' });
-    if (warehouseId) params.set('warehouseId', warehouseId);
-    void authorizedRequest<{ data: Movement[] }>(`stock-movements?${params.toString()}`)
-      .then((response) => { if (active) { setMovements(response.data); setHistoryError(''); } })
-      .catch((cause: unknown) => { if (active) setHistoryError(cause instanceof ApiError ? cause.message : 'Riwayat pergerakan belum dapat dimuat.'); })
-      .finally(() => { if (active) setHistoryLoading(false); });
-    return () => { active = false; };
-  }, [accessToken, authorizedRequest, canReadMovements, productId, tab, warehouseId, reloadKey]);
+  const historyParams = new URLSearchParams({ productId: productId ?? '' });
+  if (warehouseId) historyParams.set('warehouseId', warehouseId);
+  const history = useInfiniteList<Movement>(authorizedRequest, accessToken && productId && tab === 'history' && canReadMovements ? `stock-movements?${historyParams.toString()}` : null);
+  const scrollProps = useLoadMoreOnScroll(history.loadMore);
+  const movements = history.items;
 
   if (loading && !detail) return <View style={styles.center}><ActivityIndicator color="#07956f" /></View>;
   if (!detail) return <View style={styles.center}><Text style={styles.errorText}>{error || 'Produk tidak ditemukan.'}</Text><Pressable accessibilityRole="button" onPress={() => { setLoading(true); setReloadKey((value) => value + 1); }}><Text style={styles.retryText}>Coba lagi</Text></Pressable></View>;
@@ -67,7 +60,7 @@ export default function StockDetailScreen() {
   const locationName = (row: Detail['warehouses'][number]) => !row.branchName ? row.warehouseName : branchCounts[row.branchId ?? ''] > 1 ? `${row.branchName} · ${row.warehouseName}` : row.branchName;
   const selectedWarehouse = detail.warehouses.find((row) => row.warehouseId === warehouseId);
 
-  return <ScrollView style={styles.screen} contentContainerStyle={styles.page} refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => { setRefreshing(true); setReloadKey((value) => value + 1); }} tintColor="#07956f" />}>
+  return <ScrollView {...scrollProps} style={styles.screen} contentContainerStyle={styles.page} refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => { setRefreshing(true); setReloadKey((value) => value + 1); if (tab === 'history') void history.refresh(); }} tintColor="#07956f" />}>
     <View style={styles.card}>
       <View style={styles.productRow}>
         {product.imageUrl ? <Image source={{ uri: product.imageUrl }} style={styles.image} /> : <View style={[styles.image, styles.imageFallback]}><Package size={28} color="#8a9aab" /></View>}
@@ -83,7 +76,7 @@ export default function StockDetailScreen() {
     <View style={styles.tabs}>
       {([['branch', 'Per cabang'], ['history', 'Riwayat pergerakan']] as const).map(([id, label]) => {
         const active = tab === id;
-        return <Pressable key={id} accessibilityRole="tab" accessibilityState={{ selected: active }} onPress={() => { if (id === 'history') setHistoryLoading(true); setTab(id); }} style={[styles.tab, active && styles.tabActive]}><Text style={[styles.tabText, active && styles.tabTextActive]}>{label}</Text></Pressable>;
+        return <Pressable key={id} accessibilityRole="tab" accessibilityState={{ selected: active }} onPress={() => setTab(id)} style={[styles.tab, active && styles.tabActive]}><Text style={[styles.tabText, active && styles.tabTextActive]}>{label}</Text></Pressable>;
       })}
     </View>
 
@@ -91,7 +84,7 @@ export default function StockDetailScreen() {
       {!detail.warehouses.length ? <Text style={styles.empty}>Produk ini belum memiliki stok di gudang mana pun.</Text> : null}
       {detail.warehouses.map((row, index) => {
         const tone = houseTones[index % houseTones.length];
-        return <Pressable key={row.warehouseId} accessibilityRole="button" accessibilityHint="Lihat riwayat pergerakan di lokasi ini" onPress={() => { setHistoryLoading(true); setWarehouseId(row.warehouseId); setTab('history'); }} style={({ pressed }) => [styles.locationCard, pressed && styles.pressed]}>
+        return <Pressable key={row.warehouseId} accessibilityRole="button" accessibilityHint="Lihat riwayat pergerakan di lokasi ini" onPress={() => { setWarehouseId(row.warehouseId); setTab('history'); }} style={({ pressed }) => [styles.locationCard, pressed && styles.pressed]}>
           <View style={[styles.locationIcon, { backgroundColor: tone.bg }]}><House size={20} color={tone.fg} /></View>
           <View style={styles.locationInfo}><Text numberOfLines={1} style={styles.locationName}>{locationName(row)}</Text><Text style={styles.locationQty}>{quantity(row.quantity)} {product.unit.code}</Text></View>
           <Text style={styles.locationValue}>{money(row.stockValue)}</Text>
@@ -99,12 +92,12 @@ export default function StockDetailScreen() {
         </Pressable>;
       })}
     </> : <>
-      {selectedWarehouse ? <Pressable accessibilityRole="button" accessibilityLabel="Hapus filter lokasi" onPress={() => { setHistoryLoading(true); setWarehouseId(''); }} style={styles.chip}><Text style={styles.chipText}>{locationName(selectedWarehouse)}</Text><X size={14} color="#07795a" /></Pressable> : null}
+      {selectedWarehouse ? <Pressable accessibilityRole="button" accessibilityLabel="Hapus filter lokasi" onPress={() => setWarehouseId('')} style={styles.chip}><Text style={styles.chipText}>{locationName(selectedWarehouse)}</Text><X size={14} color="#07795a" /></Pressable> : null}
       {!canReadMovements ? <Text style={styles.empty}>Akun ini belum memiliki izin melihat pergerakan stok.</Text> : null}
-      {historyError ? <Text style={styles.errorText}>{historyError}</Text> : null}
-      {historyLoading ? <ActivityIndicator style={styles.loader} color="#07956f" /> : null}
-      {canReadMovements && !historyLoading && !historyError && !movements.length ? <Text style={styles.empty}>Belum ada pergerakan stok.</Text> : null}
-      {!historyLoading ? movements.map((row) => {
+      {history.error && !movements.length ? <Pressable accessibilityRole="button" onPress={() => void history.reload()}><Text style={styles.errorText}>{history.error}</Text><Text style={[styles.retryText, styles.retryCenter]}>Coba lagi</Text></Pressable> : null}
+      {history.loading ? <ActivityIndicator style={styles.loader} color="#07956f" /> : null}
+      {canReadMovements && !history.loading && !history.error && !movements.length ? <Text style={styles.empty}>Belum ada pergerakan stok.</Text> : null}
+      {!history.loading ? movements.map((row) => {
         const delta = Number(row.afterStock) - Number(row.beforeStock);
         const inbound = delta >= 0;
         return <View key={row.id} style={styles.movementCard}>
@@ -120,6 +113,7 @@ export default function StockDetailScreen() {
           </View>
         </View>;
       }) : null}
+      {!history.loading ? <LoadMoreFooter loadingMore={history.loadingMore} hasMore={history.hasMore} count={movements.length} error={history.error} onRetry={history.loadMore} /> : null}
     </>}
 
     <View style={[styles.card, styles.infoCard]}>
@@ -174,5 +168,6 @@ const styles = StyleSheet.create({
   loader: { paddingVertical: 18 },
   errorText: { color: '#a83a32', fontSize: 12, textAlign: 'center' },
   retryText: { color: '#07956f', fontSize: 12, fontWeight: '800' },
+  retryCenter: { marginTop: 6, textAlign: 'center' },
   pressed: { opacity: 0.75 },
 });

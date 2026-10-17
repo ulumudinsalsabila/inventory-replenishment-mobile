@@ -4,9 +4,11 @@ import { File } from 'expo-file-system';
 import * as ImagePicker from 'expo-image-picker';
 import { Camera, Check, ChevronDown, ChevronRight, ImagePlus, Minus, Package, PackagePlus, Plus, Search, X } from 'lucide-react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { LoadMoreFooter } from '../../components/load-more-footer';
 import { useAuth } from '../../auth/auth-provider';
 import { ApiError } from '../../lib/api';
 import { formatDate, formatStatus } from '../../lib/display';
+import { useInfiniteList, useLoadMoreOnScroll } from '../../lib/infinite-list';
 import { KeyboardAvoidingView, KeyboardAwareScrollView } from 'react-native-keyboard-controller';
 
 type NamedOption = { id: string; name: string; code?: string; branchId?: string | null };
@@ -20,7 +22,6 @@ type StockRequest = {
   _count: { items: number; transfers: number }; availableActions: string[];
   requestedBy?: Actor | null; reviewedBy?: Actor | null;
 };
-type RequestPage = { data: StockRequest[]; meta: { total: number } };
 type RequestAction = 'PROCESS' | 'SEND' | 'RECEIVE';
 type RequestDetail = StockRequest & {
   items: { id: string; productId: string; transferItemId?: string; requestedQty: string; sentQty?: string | null; receivedQty?: string | null; product: { id: string; name: string; sku: string }; unit?: { code: string } | null }[];
@@ -40,7 +41,7 @@ const ACTION_COPY: Record<RequestAction, { button: string; done: string }> = {
   RECEIVE: { button: 'Konfirmasi diterima', done: 'Penerimaan barang tersimpan.' },
 };
 const MAX_PHOTOS = 12;
-const requestPath = 'stock-requests?page=1&perPage=20&sortBy=createdAt&sortOrder=desc';
+const requestPath = 'stock-requests?sortBy=createdAt&sortOrder=desc';
 
 function ShoppingBagIcon() { return <Package size={22} color="#c70d17" />; }
 
@@ -51,10 +52,7 @@ export default function StockRequestsScreen() {
   const canProcess = user?.permissions.includes('transfer.send') ?? false;
   const canRead = user?.permissions.includes('inventory.read') ?? false;
   const userBranchId = user?.branchId ?? '';
-  const [requests, setRequests] = useState<StockRequest[]>([]);
   const [options, setOptions] = useState<RequestOptions | null>(null);
-  const [loading, setLoading] = useState(canRead);
-  const [refreshing, setRefreshing] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
@@ -75,17 +73,12 @@ export default function StockRequestsScreen() {
   const [actionSaving, setActionSaving] = useState(false);
   const [actionError, setActionError] = useState('');
   const previousSourceWarehouseId = useRef('');
+  const list = useInfiniteList<StockRequest>(authorizedRequest, canRead ? requestPath : null);
+  const scrollProps = useLoadMoreOnScroll(list.loadMore);
+  const requests = list.items;
+  // Page-level errors (options, detail, validation) plus a list error when no rows could be shown.
+  const pageError = error || (!requests.length ? list.error : '');
 
-
-  useEffect(() => {
-    let active = true;
-    if (!canRead) return;
-    void authorizedRequest<RequestPage>(requestPath)
-      .then((result) => { if (active) { setRequests(result.data); setError(''); } })
-      .catch((cause: unknown) => { if (active) setError(cause instanceof ApiError ? cause.message : 'Permintaan stok belum dapat dimuat.'); })
-      .finally(() => { if (active) { setLoading(false); setRefreshing(false); } });
-    return () => { active = false; };
-  }, [authorizedRequest, canRead, reloadKey]);
 
   useEffect(() => {
     let active = true;
@@ -169,7 +162,7 @@ export default function StockRequestsScreen() {
     setSaving(true); setError('');
     try {
       await authorizedRequest<StockRequest>('stock-requests', { method: 'POST', body: JSON.stringify({ branchId, sourceWarehouseId, destinationWarehouseId, note: note.trim() || undefined, items }) });
-      setFormVisible(false); setNotice('Permintaan terkirim dan menunggu diproses gudang pusat.'); setReloadKey((key) => key + 1);
+      setFormVisible(false); setNotice('Permintaan terkirim dan menunggu diproses gudang pusat.'); setReloadKey((key) => key + 1); void list.reload();
     } catch (cause) {
       setError(cause instanceof ApiError ? cause.message : 'Permintaan belum dapat dibuat.');
     } finally { setSaving(false); }
@@ -250,6 +243,7 @@ export default function StockRequestsScreen() {
     } finally {
       setActionSaving(false);
       setReloadKey((key) => key + 1);
+      void list.reload();
     }
   }
 
@@ -258,14 +252,14 @@ export default function StockRequestsScreen() {
 
   return (
     <View style={styles.screen}>
-      <ScrollView contentContainerStyle={styles.page} refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => { setRefreshing(true); setReloadKey((key) => key + 1); }} tintColor="#c70d17" />}>
+      <ScrollView {...scrollProps} contentContainerStyle={styles.page} refreshControl={<RefreshControl refreshing={list.refreshing} onRefresh={() => { setReloadKey((key) => key + 1); void list.refresh(); }} tintColor="#c70d17" />}>
         <View style={styles.headingRow}><View style={styles.heading}><Text style={styles.subtitle}>{canProcess ? 'Proses, kirim, dan pantau permintaan stok dari cabang.' : 'Ajukan kebutuhan stok ke gudang pusat dan pantau prosesnya.'}</Text></View>{canCreate ? <Pressable accessibilityRole="button" onPress={openCreateForm} style={styles.createButton}><Text style={styles.createButtonText}>＋ Buat</Text></Pressable> : null}</View>
         <View style={styles.flowHint}><Text style={styles.flowHintTitle}>Alur permintaan stok</Text><Text style={styles.flowHintText}>Permintaan masuk → Diproses → Dikirim → Diterima. {canProcess ? 'Buka permintaan untuk memproses atau mengirim, dan lampirkan foto bila perlu.' : 'Konfirmasi penerimaan saat barang tiba di cabang.'}</Text></View>
         {notice ? <View style={styles.notice}><Text style={styles.noticeText}>{notice}</Text></View> : null}
-        {error ? <View style={styles.errorCard}><Text style={styles.errorText}>{error}</Text><Pressable accessibilityRole="button" onPress={() => { setLoading(true); setReloadKey((key) => key + 1); }}><Text style={styles.retry}>Coba lagi</Text></Pressable></View> : null}
+        {pageError ? <View style={styles.errorCard}><Text style={styles.errorText}>{pageError}</Text><Pressable accessibilityRole="button" onPress={() => { setError(''); setReloadKey((key) => key + 1); void list.reload(); }}><Text style={styles.retry}>Coba lagi</Text></Pressable></View> : null}
         {!canRead ? <View style={styles.empty}><Text style={styles.emptyTitle}>Akses daftar tidak tersedia</Text><Text style={styles.emptyText}>Akun ini dapat membuat pengajuan, tetapi perlu permission inventory.read untuk melihat daftar permintaan.</Text></View> : null}
-        {loading ? <ActivityIndicator style={styles.loader} color="#c70d17" size="large" /> : null}
-        {canRead && !loading && !error && requests.length === 0 ? <View style={styles.empty}><Text style={styles.emptyTitle}>Belum ada permintaan</Text><Text style={styles.emptyText}>{canCreate ? 'Buat pengajuan pertama untuk mengisi ulang stok cabang.' : 'Permintaan stok akan tampil di sini.'}</Text></View> : null}
+        {list.loading && requests.length === 0 ? <ActivityIndicator style={styles.loader} color="#c70d17" size="large" /> : null}
+        {canRead && !list.loading && !pageError && requests.length === 0 ? <View style={styles.empty}><Text style={styles.emptyTitle}>Belum ada permintaan</Text><Text style={styles.emptyText}>{canCreate ? 'Buat pengajuan pertama untuk mengisi ulang stok cabang.' : 'Permintaan stok akan tampil di sini.'}</Text></View> : null}
         {requests.map((request) => <View key={request.id} style={styles.requestCard}>
           <View style={styles.requestTop}><View style={styles.requestTitle}><Text style={styles.requestNumber}>{request.requestNumber}</Text><Text style={styles.requestDate}>{formatDate(request.createdAt)} · {request._count.items} produk</Text></View><Text style={[styles.status, request.status === 'RECEIVED' ? styles.statusSuccess : request.status === 'SUBMITTED' ? styles.statusPending : styles.statusActive]}>{STATUS_LABEL[request.status] ?? formatStatus(request.status)}</Text></View>
           <Text style={styles.route}>{request.branch.name} · {request.sourceWarehouse.name} → {request.destinationWarehouse.name}</Text>
@@ -275,6 +269,7 @@ export default function StockRequestsScreen() {
             return <Pressable accessibilityRole="button" onPress={() => void openDetail(request.id)} style={next ? styles.actionPrimary : styles.actionSecondary}><Text style={next ? styles.actionPrimaryText : styles.actionSecondaryText}>{next ? ACTION_COPY[next].button : 'Lihat detail'}</Text></Pressable>;
           })()}</View>
         </View>)}
+        <LoadMoreFooter loadingMore={list.loadingMore} hasMore={list.hasMore} count={requests.length} error={list.error} onRetry={list.loadMore} />
         <Text style={styles.footerHint}>Tarik layar ke bawah untuk memperbarui status.</Text>
       </ScrollView>
 

@@ -1,12 +1,14 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { ActivityIndicator, Image, Modal, Platform, Pressable, RefreshControl, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { File } from 'expo-file-system';
 import * as ImagePicker from 'expo-image-picker';
 import { ArrowDownLeft, ArrowLeft, ArrowUpRight, Camera, Check, ChevronRight, ImagePlus, Paperclip, Plus, Search, X } from 'lucide-react-native';
 import { router } from 'expo-router';
+import { LoadMoreFooter } from '../../components/load-more-footer';
 import { useAuth } from '../../auth/auth-provider';
 import { ApiError } from '../../lib/api';
 import { formatDate } from '../../lib/display';
+import { useDebouncedValue, useInfiniteList, useLoadMoreOnScroll } from '../../lib/infinite-list';
 import { KeyboardAwareScrollView } from 'react-native-keyboard-controller';
 
 type Branch = { id: string; name: string; code: string };
@@ -28,45 +30,37 @@ export default function CashScreen() {
   const assignedBranchId = user?.branchId ?? null;
   const [branches, setBranches] = useState<Branch[]>([]);
   const [branchId, setBranchId] = useState(user?.branchId ?? '');
-  const [transactions, setTransactions] = useState<CashRow[]>([]);
   const [type, setType] = useState<'CASH_IN' | 'CASH_OUT'>('CASH_IN');
   const [reasonChoice, setReasonChoice] = useState('');
   const [amount, setAmount] = useState('');
   const [reason, setReason] = useState('');
-  const [search, setSearch] = useState('');
+  const [searchInput, setSearchInput] = useState('');
+  const search = useDebouncedValue(searchInput.trim());
   const [typeFilter, setTypeFilter] = useState<'ALL' | 'CASH_IN' | 'CASH_OUT'>('ALL');
   const [formVisible, setFormVisible] = useState(false);
   const [formStep, setFormStep] = useState(0);
   const [evidence, setEvidence] = useState<ImagePicker.ImagePickerAsset[]>([]);
   const [selected, setSelected] = useState<CashDetail | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
-  const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
-  const [reload, setReload] = useState(0);
 
-  const load = useCallback(async () => {
-    setLoading(true); setError('');
-    try {
-      const branchResult = assignedBranchId ? { data: [] as Branch[] } : await authorizedRequest<Page<Branch>>('catalog/branches?page=1&perPage=100&sortBy=name&sortOrder=asc');
-      const availableBranches = assignedBranchId ? [] : branchResult.data;
-      setBranches(availableBranches);
-      const selectedBranch = assignedBranchId ?? branchId ?? availableBranches[0]?.id ?? '';
-      setBranchId(selectedBranch);
-      const jobs: Promise<unknown>[] = [];
-      if (canRead) {
-        const params = new URLSearchParams({ page: '1', perPage: '50', sortBy: 'createdAt', sortOrder: 'desc' });
-        if (search.trim()) params.set('search', search.trim());
-        jobs.push(authorizedRequest<Page<CashRow>>(`cash-transactions?${params}`).then((r) => setTransactions(r.data)));
-      }
-      await Promise.all(jobs);
-    } catch (cause) { setError(cause instanceof ApiError ? cause.message : 'Data kas belum dapat dimuat.'); }
-    finally { setLoading(false); }
-  }, [authorizedRequest, assignedBranchId, branchId, canRead, search]);
+  // The API filters by search (category/reason); the type filter has no query parameter, so it
+  // filters the loaded rows and the list keeps paging while the result is short.
+  const params = new URLSearchParams({ sortBy: 'createdAt', sortOrder: 'desc' });
+  if (search) params.set('search', search);
+  if (typeFilter !== 'ALL') params.set('type', typeFilter);
+  const list = useInfiniteList<CashRow>(authorizedRequest, canRead ? `cash-transactions?${params.toString()}` : null);
+  const scrollProps = useLoadMoreOnScroll(list.loadMore);
 
-  // Refresh when the route opens and after each successful cash mutation.
-  // eslint-disable-next-line react-hooks/set-state-in-effect
-  useEffect(() => { void load(); }, [load, reload]);
+  useEffect(() => {
+    if (assignedBranchId) return;
+    let active = true;
+    void authorizedRequest<Page<Branch>>('catalog/branches?page=1&perPage=100&sortBy=name&sortOrder=asc')
+      .then((result) => { if (active) setBranches(result.data); })
+      .catch((cause: unknown) => { if (active) setError(cause instanceof ApiError ? cause.message : 'Data kas belum dapat dimuat.'); });
+    return () => { active = false; };
+  }, [assignedBranchId, authorizedRequest]);
 
   async function selectEvidence(useCamera: boolean) {
     if (evidence.length >= 5) { setError('Maksimal 5 foto bukti.'); return; }
@@ -99,7 +93,7 @@ export default function CashScreen() {
         } else form.append('attachments', new File(asset.uri), fileName);
       });
       await authorizedRequest('cash-transactions', { method: 'POST', body: form });
-      setReasonChoice(''); setAmount(''); setReason(''); setEvidence([]); setFormStep(0); setFormVisible(false); setReload((n) => n + 1);
+      setReasonChoice(''); setAmount(''); setReason(''); setEvidence([]); setFormStep(0); setFormVisible(false); void list.reload();
     } catch (cause) { setError(cause instanceof ApiError ? cause.message : 'Transaksi kas gagal disimpan.'); }
     finally { setSaving(false); }
   };
@@ -113,19 +107,21 @@ export default function CashScreen() {
   }
 
   const currentReason = reasonOptions[type].find((option) => option.label === reasonChoice);
-  const visibleTransactions = transactions.filter((row) => (typeFilter === 'ALL' || row.type === typeFilter) && `${row.reason ?? ''} ${row.category ?? ''} ${row.branch?.name ?? ''}`.toLowerCase().includes(search.trim().toLowerCase()));
+  const visibleTransactions = list.items;
+  const listError = list.items.length ? '' : list.error;
 
   return <View style={styles.screen}>
-    <KeyboardAwareScrollView bottomOffset={24} contentContainerStyle={[styles.page, { paddingBottom: 18 }]} keyboardShouldPersistTaps="handled" refreshControl={!formVisible ? <RefreshControl refreshing={loading} onRefresh={() => setReload((n) => n + 1)} tintColor="#087f5b" /> : undefined}>
+    <KeyboardAwareScrollView {...(formVisible ? {} : scrollProps)} bottomOffset={24} contentContainerStyle={[styles.page, { paddingBottom: 18 }]} keyboardShouldPersistTaps="handled" refreshControl={!formVisible ? <RefreshControl refreshing={list.refreshing} onRefresh={() => void list.refresh()} tintColor="#087f5b" /> : undefined}>
       {!formVisible ? <>
         <Text style={styles.subtitle}>Pencatatan kas masuk dan keluar.</Text>
         {branches.length ? <View style={styles.card}><Text style={styles.label}>Cabang</Text><View style={styles.chips}>{branches.map((branch) => <Pressable key={branch.id} onPress={() => setBranchId(branch.id)} style={[styles.chip, branchId === branch.id && styles.chipActive]}><Text style={[styles.chipText, branchId === branch.id && styles.chipTextActive]}>{branch.name} ({branch.code})</Text></Pressable>)}</View></View> : null}
-        <View style={{ flexDirection: 'row', gap: 8, marginTop: 12 }}><View style={[styles.input, { flex: 1, flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 0 }]}><Search size={16} color="#71839a" /><TextInput accessibilityLabel="Cari kas masuk atau keluar" value={search} onChangeText={setSearch} placeholder="Cari kategori atau alasan..." placeholderTextColor="#8290a2" style={{ flex: 1, color: '#26372e', fontSize: 12 }} /></View><Pressable accessibilityRole="button" accessibilityLabel="Filter kas masuk" onPress={() => setTypeFilter((current) => current === 'CASH_IN' ? 'ALL' : 'CASH_IN')} style={[styles.chip, typeFilter === 'CASH_IN' && styles.chipActive]}><Text style={[styles.chipText, typeFilter === 'CASH_IN' && styles.chipTextActive]}>Masuk</Text></Pressable><Pressable accessibilityRole="button" accessibilityLabel="Filter kas keluar" onPress={() => setTypeFilter((current) => current === 'CASH_OUT' ? 'ALL' : 'CASH_OUT')} style={[styles.chip, typeFilter === 'CASH_OUT' && styles.chipActive]}><Text style={[styles.chipText, typeFilter === 'CASH_OUT' && styles.chipTextActive]}>Keluar</Text></Pressable></View>
+        <View style={{ flexDirection: 'row', gap: 8, marginTop: 12 }}><View style={[styles.input, { flex: 1, flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 0 }]}><Search size={16} color="#71839a" /><TextInput accessibilityLabel="Cari kas masuk atau keluar" value={searchInput} onChangeText={setSearchInput} placeholder="Cari kategori atau alasan..." placeholderTextColor="#8290a2" style={{ flex: 1, color: '#26372e', fontSize: 12 }} /></View><Pressable accessibilityRole="button" accessibilityLabel="Filter kas masuk" onPress={() => setTypeFilter((current) => current === 'CASH_IN' ? 'ALL' : 'CASH_IN')} style={[styles.chip, typeFilter === 'CASH_IN' && styles.chipActive]}><Text style={[styles.chipText, typeFilter === 'CASH_IN' && styles.chipTextActive]}>Masuk</Text></Pressable><Pressable accessibilityRole="button" accessibilityLabel="Filter kas keluar" onPress={() => setTypeFilter((current) => current === 'CASH_OUT' ? 'ALL' : 'CASH_OUT')} style={[styles.chip, typeFilter === 'CASH_OUT' && styles.chipActive]}><Text style={[styles.chipText, typeFilter === 'CASH_OUT' && styles.chipTextActive]}>Keluar</Text></Pressable></View>
         <View style={styles.chips}><Pressable onPress={() => setTypeFilter('ALL')} style={[styles.chip, typeFilter === 'ALL' && styles.chipActive]}><Text style={[styles.chipText, typeFilter === 'ALL' && styles.chipTextActive]}>Semua</Text></Pressable><Pressable onPress={() => setTypeFilter('CASH_IN')} style={[styles.chip, typeFilter === 'CASH_IN' && styles.chipActive]}><Text style={[styles.chipText, typeFilter === 'CASH_IN' && styles.chipTextActive]}>Kas masuk</Text></Pressable><Pressable onPress={() => setTypeFilter('CASH_OUT')} style={[styles.chip, typeFilter === 'CASH_OUT' && styles.chipActive]}><Text style={[styles.chipText, typeFilter === 'CASH_OUT' && styles.chipTextActive]}>Kas keluar</Text></Pressable></View>
-        {error ? <View style={styles.error}><Text style={styles.errorText}>{error}</Text></View> : null}
-        {loading ? <ActivityIndicator style={styles.loader} color="#087f5b" size="large" /> : null}
+        {error || listError ? <View style={styles.error}><Text style={styles.errorText}>{error || listError}</Text></View> : null}
+        {list.loading ? <ActivityIndicator style={styles.loader} color="#087f5b" size="large" /> : null}
         {canRead ? visibleTransactions.map((row) => <Pressable key={row.id} accessibilityRole="button" onPress={() => void openDetail(row)} style={styles.transactionCard}><View style={[styles.transactionIcon, { backgroundColor: row.type === 'CASH_IN' ? '#e4f7ee' : '#fff0ed' }]}>{row.type === 'CASH_IN' ? <ArrowDownLeft size={18} color="#07885b" /> : <ArrowUpRight size={18} color="#c23a36" />}</View><View style={styles.rowText}><Text numberOfLines={1} style={styles.rowTitle}>{row.reason}</Text><Text style={styles.detail}>{row.type === 'CASH_IN' ? 'Kas masuk' : 'Kas keluar'} · {row.category}</Text><Text style={styles.transactionDate}>{formatDate(row.createdAt ?? '')}{row.branch?.name ? ` · ${row.branch.name}` : ''}</Text></View><Text style={[styles.rowAmount, { color: row.type === 'CASH_IN' ? '#087f5b' : '#c23a36' }]}>{row.type === 'CASH_IN' ? '+' : '-'}{money(row.amount)}</Text><ChevronRight size={16} color="#94a2af" /></Pressable>) : null}
-        {!loading && canRead && !visibleTransactions.length ? <Text style={styles.empty}>Belum ada transaksi kas.</Text> : null}
+        {canRead ? <LoadMoreFooter loadingMore={list.loadingMore} hasMore={list.hasMore} count={visibleTransactions.length} error={list.error} onRetry={list.loadMore} /> : null}
+        {!list.loading && !listError && canRead && !visibleTransactions.length ? <Text style={styles.empty}>Belum ada transaksi kas.</Text> : null}
         {!canRead && !canTransact ? <View style={styles.card}><Text style={styles.section}>Akses tidak tersedia</Text><Text style={styles.detail}>Akun ini belum memiliki izin untuk kas.</Text></View> : null}
       </> : <>
         <View style={styles.formHeader}><Pressable accessibilityRole="button" accessibilityLabel="Kembali ke daftar kas" onPress={() => { if (formStep) setFormStep((stepValue) => stepValue - 1); else { setFormVisible(false); setError(''); } }}><ArrowLeft size={21} color="#24364a" /></Pressable><Text style={styles.formTitle}>Catat kas masuk / keluar</Text></View>
@@ -141,7 +137,7 @@ export default function CashScreen() {
         {formStep === 2 ? <View style={styles.card}><Text style={styles.section}>Konfirmasi transaksi</Text><Text style={styles.detail}>Jenis transaksi</Text><Text style={styles.rowTitle}>{type === 'CASH_IN' ? 'Kas masuk' : 'Kas keluar'}</Text><View style={styles.detailRow}><Text style={styles.detailLabel}>Jumlah</Text><Text style={styles.detailValue}>{money(amount)}</Text></View><View style={styles.detailRow}><Text style={styles.detailLabel}>Alasan</Text><Text style={styles.detailValue}>{currentReason?.label ?? '—'}</Text></View>{reason.trim() ? <View style={styles.detailRow}><Text style={styles.detailLabel}>Catatan</Text><Text style={styles.detailValue}>{reason}</Text></View> : null}<View style={styles.detailRow}><Text style={styles.detailLabel}>Foto bukti</Text><Text style={styles.detailValue}>{evidence.length} foto</Text></View></View> : null}
       </>}
     </KeyboardAwareScrollView>
-    {formVisible ? <View style={styles.formFooter}><Pressable accessibilityRole="button" disabled={saving} onPress={() => { if (formStep) setFormStep((value) => value - 1); else { setFormVisible(false); setError(''); } }} style={styles.secondaryButton}><Text style={styles.secondaryText}>{formStep ? 'Kembali' : 'Batal'}</Text></Pressable><Pressable accessibilityRole="button" disabled={saving || (formStep === 0 && (!branchId || !reasonChoice || !(Number(amount) > 0)))} onPress={() => { if (formStep < 2) { setError(''); setFormStep((value) => value + 1); } else void submitTransaction(); }} style={[styles.primary, styles.formPrimary, saving && styles.dim]}>{saving ? <ActivityIndicator color="#fff" /> : <Text style={styles.primaryText}>{formStep < 2 ? 'Lanjut' : 'Simpan transaksi'}</Text>}{formStep < 2 ? <ChevronRight size={16} color="#fff" /> : null}</Pressable></View> : <View style={styles.listFooter}>{canRead && user?.permissions.includes('cash_closing.create') ? <Pressable accessibilityRole="button" onPress={() => router.push('/(app)/cash-closing')} style={styles.closingLink}><Text style={styles.closingLinkText}>Cash closing</Text><ChevronRight size={16} color="#07885b" /></Pressable> : null}{canTransact ? <Pressable accessibilityRole="button" onPress={() => { setFormVisible(true); setFormStep(0); setError(''); }} style={styles.primary}><Plus size={17} color="#fff" /><Text style={styles.primaryText}>Catat kas masuk / keluar</Text></Pressable> : null}</View>}
+    {formVisible ? <View style={styles.formFooter}><Pressable accessibilityRole="button" disabled={saving} onPress={() => { if (formStep) setFormStep((value) => value - 1); else { setFormVisible(false); setError(''); } }} style={styles.secondaryButton}><Text style={styles.secondaryText}>{formStep ? 'Kembali' : 'Batal'}</Text></Pressable><Pressable accessibilityRole="button" disabled={saving || (formStep === 0 && (!branchId || !reasonChoice || !(Number(amount) > 0)))} onPress={() => { if (formStep < 2) { setError(''); setFormStep((value) => value + 1); } else void submitTransaction(); }} style={[styles.primary, styles.formPrimary, saving && styles.dim]}>{saving ? <ActivityIndicator color="#fff" /> : <Text style={styles.primaryText}>{formStep < 2 ? 'Lanjut' : 'Simpan transaksi'}</Text>}{formStep < 2 ? <ChevronRight size={16} color="#fff" /> : null}</Pressable></View> : <View style={styles.listFooter}>{canRead && user?.permissions.includes('cash_closing.create') ? <Pressable accessibilityRole="button" onPress={() => router.push('/(app)/(tabs)/cash')} style={styles.closingLink}><Text style={styles.closingLinkText}>Cash closing</Text><ChevronRight size={16} color="#07885b" /></Pressable> : null}{canTransact ? <Pressable accessibilityRole="button" onPress={() => { setFormVisible(true); setFormStep(0); setError(''); }} style={styles.primary}><Plus size={17} color="#fff" /><Text style={styles.primaryText}>Catat kas masuk / keluar</Text></Pressable> : null}</View>}
     <Modal visible={detailLoading || Boolean(selected)} transparent animationType="slide" onRequestClose={() => setSelected(null)}><View style={styles.modalBackdrop}><View style={styles.detailSheet}><View style={styles.detailHeader}><View><Text style={styles.section}>Detail transaksi</Text><Text style={styles.detail}>{selected?.createdAt ? formatDate(selected.createdAt) : ''}</Text></View><Pressable accessibilityRole="button" accessibilityLabel="Tutup detail" onPress={() => setSelected(null)} style={styles.closeButton}><X size={19} color="#526276" /></Pressable></View>{detailLoading ? <ActivityIndicator style={styles.loader} color="#087f5b" /> : selected ? <ScrollView style={styles.detailContent}><View style={[styles.detailBanner, { backgroundColor: selected.type === 'CASH_IN' ? '#e6f7ef' : '#fff0ed' }]}>{selected.type === 'CASH_IN' ? <ArrowDownLeft size={20} color="#07885b" /> : <ArrowUpRight size={20} color="#c23a36" />}<View style={styles.rowText}><Text style={styles.rowTitle}>{selected.type === 'CASH_IN' ? 'Kas masuk' : 'Kas keluar'}</Text><Text style={styles.detail}>{formatDate(selected.createdAt ?? '')}</Text></View><Text style={[styles.rowAmount, { color: selected.type === 'CASH_IN' ? '#07885b' : '#c23a36' }]}>{money(selected.amount)}</Text></View><View style={styles.detailRow}><Text style={styles.detailLabel}>Kategori</Text><Text style={styles.detailValue}>{selected.category ?? '—'}</Text></View><View style={styles.detailRow}><Text style={styles.detailLabel}>Alasan</Text><Text style={styles.detailValue}>{selected.reason ?? '—'}</Text></View><View style={styles.detailRow}><Text style={styles.detailLabel}>Cabang</Text><Text style={styles.detailValue}>{selected.branch?.name ?? '—'}</Text></View>{selected.note ? <><Text style={styles.sectionTitle}>Catatan</Text><Text style={styles.detail}>{selected.note}</Text></> : null}<Text style={styles.sectionTitle}>Foto bukti</Text><View style={styles.evidenceGrid}>{selected.attachments?.map((attachment) => <Image key={attachment.id} source={{ uri: attachment.url }} accessibilityLabel={attachment.fileName} style={styles.evidenceImage} />)}</View></ScrollView> : null}</View></View></Modal>
   </View>;
 }

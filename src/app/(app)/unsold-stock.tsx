@@ -1,11 +1,14 @@
 import { useCallback, useEffect, useState } from 'react';
-import { ActivityIndicator, Alert, FlatList, Image, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
+import { ActivityIndicator, Alert, FlatList, Image, Pressable, RefreshControl, StyleSheet, Text, TextInput, View } from 'react-native';
 import { router, Stack } from 'expo-router';
 import * as Print from 'expo-print';
 import { ChevronDown, ChevronRight, CircleDollarSign, Download, Layers, Package, Save, Search, SlidersHorizontal, Store } from 'lucide-react-native';
 import { useAuth } from '../../auth/auth-provider';
 import { ApiError } from '../../lib/api';
+import { LoadMoreFooter } from '../../components/load-more-footer';
 import { OptionSheet } from '../../components/option-sheet';
+import { useDebouncedValue, useInfiniteList, useLoadMoreOnScroll } from '../../lib/infinite-list';
+import { fetchAllPages } from '../../lib/paging';
 import { money, quantity } from '../../lib/report';
 
 type StockItem = { productId: string; name: string; sku: string; imageUrl: string | null; category: { id: string; name: string }; unit: { code: string; name: string }; costPrice: number; quantity: number; stockValue: number };
@@ -22,35 +25,36 @@ const escapeHtml = (value: string) => value.replace(/[&<>"]/g, (char) => ({ '&':
 export default function UnsoldStockScreen() {
   const { user, accessToken, authorizedRequest } = useAuth();
   const [searchInput, setSearchInput] = useState('');
-  const [search, setSearch] = useState('');
+  const search = useDebouncedValue(searchInput.trim());
   const [branchId, setBranchId] = useState('');
   const [categoryId, setCategoryId] = useState('');
   const [sort, setSort] = useState<Sort>('name');
   const [tab, setTab] = useState<Tab>('all');
-  const [result, setResult] = useState<StockValue | null>(null);
-  const [items, setItems] = useState<StockItem[]>([]);
-  const [page, setPage] = useState(1);
-  const [loading, setLoading] = useState(true);
-  const [loadingMore, setLoadingMore] = useState(false);
-  const [error, setError] = useState('');
-  const [reloadKey, setReloadKey] = useState(0);
+  // Summary and per-branch/per-category groups come with every page; they are kept from the first page of the current filters.
+  const [firstPage, setFirstPage] = useState<{ path: string; value: StockValue } | null>(null);
   const [branches, setBranches] = useState<Option[]>([]);
   const [categories, setCategories] = useState<Option[]>([]);
   const [sheet, setSheet] = useState<'branch' | 'category' | 'sort' | null>(null);
   const [exporting, setExporting] = useState(false);
 
-  const buildQuery = useCallback((targetPage: number, perPage: number) => {
-    const params = new URLSearchParams({ page: String(targetPage), perPage: String(perPage), sortBy: sort, sortOrder: sort === 'name' ? 'asc' : 'desc' });
-    if (search) params.set('search', search);
-    if (branchId) params.set('branchId', branchId);
-    if (categoryId) params.set('categoryId', categoryId);
-    return params.toString();
-  }, [branchId, categoryId, search, sort]);
+  const params = new URLSearchParams({ sortBy: sort, sortOrder: sort === 'name' ? 'asc' : 'desc' });
+  if (search) params.set('search', search);
+  if (branchId) params.set('branchId', branchId);
+  if (categoryId) params.set('categoryId', categoryId);
+  const listPath = `reports/stock-value?${params.toString()}`;
 
-  useEffect(() => {
-    const timer = setTimeout(() => setSearch(searchInput.trim()), 350);
-    return () => clearTimeout(timer);
-  }, [searchInput]);
+  const stockRequest = useCallback(async <R,>(path: string) => {
+    const response = await authorizedRequest<R>(path);
+    const [base, query = ''] = path.split(/&(?=page=)/);
+    if (query.startsWith('page=1&')) setFirstPage({ path: base, value: response as StockValue });
+    return response;
+  }, [authorizedRequest]);
+  const list = useInfiniteList<StockItem>(stockRequest, accessToken ? listPath : null);
+  const scrollProps = useLoadMoreOnScroll(list.loadMore);
+  const items = list.items;
+  const result = firstPage?.path === listPath ? firstPage.value : null;
+  const loading = list.loading && !result;
+  const error = items.length ? '' : list.error;
 
   useEffect(() => {
     if (!accessToken) return;
@@ -60,34 +64,10 @@ export default function UnsoldStockScreen() {
     return () => { active = false; };
   }, [accessToken, authorizedRequest, user?.branchId]);
 
-  useEffect(() => {
-    if (!accessToken) return;
-    let active = true;
-    void authorizedRequest<StockValue>(`reports/stock-value?${buildQuery(1, 50)}`)
-      .then((response) => { if (active) { setResult(response); setItems(response.data); setPage(1); setError(''); } })
-      .catch((cause: unknown) => { if (active) setError(cause instanceof ApiError ? cause.message : 'Data stok belum dapat dimuat.'); })
-      .finally(() => { if (active) setLoading(false); });
-    return () => { active = false; };
-  }, [accessToken, authorizedRequest, buildQuery, reloadKey]);
-
-  const loadMore = () => {
-    if (loading || loadingMore || tab !== 'all' || !result || page >= result.meta.totalPages) return;
-    setLoadingMore(true);
-    void authorizedRequest<StockValue>(`reports/stock-value?${buildQuery(page + 1, 50)}`)
-      .then((response) => { setItems((current) => [...current, ...response.data]); setPage(page + 1); })
-      .catch(() => undefined)
-      .finally(() => setLoadingMore(false));
-  };
-
   const exportStock = useCallback(async () => {
     setExporting(true);
     try {
-      const rows: StockItem[] = [];
-      for (let target = 1; ; target += 1) {
-        const response = await authorizedRequest<StockValue>(`reports/stock-value?${buildQuery(target, 100)}`);
-        rows.push(...response.data);
-        if (target >= response.meta.totalPages) break;
-      }
+      const { data: rows } = await fetchAllPages<StockItem>(authorizedRequest, listPath, 1000);
       const total = rows.reduce((sum, row) => sum + row.stockValue, 0);
       const filters = [branches.find((item) => item.id === branchId)?.name ?? 'Semua cabang', categories.find((item) => item.id === categoryId)?.name ?? 'Semua kategori'].join(' · ');
       const html = `<html><head><meta charset="utf-8"><style>body{font-family:sans-serif;font-size:11px;color:#13233a}h1{font-size:18px;margin:0}p{color:#5f7188}table{width:100%;border-collapse:collapse;margin-top:12px}th,td{padding:6px;border-bottom:1px solid #e1e7ee;text-align:left}th{background:#f2f5f8}.r{text-align:right}</style></head><body><h1>Stok belum terjual</h1><p>${escapeHtml(filters)} · Dicetak ${escapeHtml(new Date().toLocaleString('id-ID'))}</p><table><tr><th>SKU</th><th>Produk</th><th>Kategori</th><th class="r">Sisa stok</th><th class="r">Harga modal</th><th class="r">Nilai stok</th></tr>${rows.map((row) => `<tr><td>${escapeHtml(row.sku)}</td><td>${escapeHtml(row.name)}</td><td>${escapeHtml(row.category.name)}</td><td class="r">${quantity(row.quantity)} ${escapeHtml(row.unit.code)}</td><td class="r">${money(row.costPrice)}</td><td class="r">${money(row.stockValue)}</td></tr>`).join('')}<tr><th colspan="5">Total</th><th class="r">${money(total)}</th></tr></table></body></html>`;
@@ -97,7 +77,7 @@ export default function UnsoldStockScreen() {
     } finally {
       setExporting(false);
     }
-  }, [authorizedRequest, branchId, branches, buildQuery, categories, categoryId]);
+  }, [authorizedRequest, branchId, branches, categories, categoryId, listPath]);
 
   const selectGroup = (group: StockGroup) => {
     if (!group.id) return;
@@ -123,7 +103,7 @@ export default function UnsoldStockScreen() {
       const active = tab === item.id;
       return <Pressable key={item.id} accessibilityRole="tab" accessibilityState={{ selected: active }} onPress={() => setTab(item.id)} style={[styles.tab, active && styles.tabActive]}><Text style={[styles.tabText, active && styles.tabTextActive]}>{item.label}</Text></Pressable>;
     })}</View>
-    {error ? <Pressable accessibilityRole="button" onPress={() => setReloadKey((value) => value + 1)} style={styles.errorBox}><Text style={styles.errorText}>{error}</Text><Text style={styles.retryText}>Coba lagi</Text></Pressable> : null}
+    {error ? <Pressable accessibilityRole="button" onPress={() => void list.reload()} style={styles.errorBox}><Text style={styles.errorText}>{error}</Text><Text style={styles.retryText}>Coba lagi</Text></Pressable> : null}
     {loading ? <ActivityIndicator style={styles.loader} color="#07956f" /> : null}
   </View>;
 
@@ -132,15 +112,15 @@ export default function UnsoldStockScreen() {
   return <>
     <Stack.Screen options={{ headerRight: () => <Pressable accessibilityRole="button" accessibilityLabel="Unduh daftar stok" disabled={exporting} onPress={() => void exportStock()} style={styles.headerButton}>{exporting ? <ActivityIndicator color="#07956f" /> : <Download size={20} color="#26384d" />}</Pressable> }} />
     {tab === 'all' ? <FlatList
+      {...scrollProps}
       style={styles.screen}
       contentContainerStyle={styles.page}
-      data={loading ? [] : items}
+      data={items}
       keyExtractor={(item) => item.productId}
       ListHeaderComponent={header}
-      ListEmptyComponent={!loading && !error ? <Text style={styles.empty}>Tidak ada stok yang cocok dengan filter.</Text> : null}
-      ListFooterComponent={loadingMore ? <ActivityIndicator style={styles.loader} color="#07956f" /> : null}
-      onEndReached={loadMore}
-      onEndReachedThreshold={0.4}
+      ListEmptyComponent={!list.loading && !error ? <Text style={styles.empty}>Tidak ada stok yang cocok dengan filter.</Text> : null}
+      ListFooterComponent={<LoadMoreFooter loadingMore={list.loadingMore} hasMore={list.hasMore} count={items.length} error={list.error} onRetry={list.loadMore} />}
+      refreshControl={<RefreshControl refreshing={list.refreshing} onRefresh={() => void list.refresh()} tintColor="#07956f" />}
       renderItem={({ item }) => <Pressable accessibilityRole="button" onPress={() => router.push({ pathname: '/(app)/stock-detail', params: { productId: item.productId } })} style={({ pressed }) => [styles.productCard, pressed && styles.pressed]}>
         {item.imageUrl ? <Image source={{ uri: item.imageUrl }} style={styles.productImage} /> : <View style={[styles.productImage, styles.imageFallback]}><Package size={22} color="#8a9aab" /></View>}
         <View style={styles.productInfo}>
@@ -161,6 +141,7 @@ export default function UnsoldStockScreen() {
       data={loading ? [] : groups}
       keyExtractor={(item) => item.id ?? 'none'}
       ListHeaderComponent={header}
+      refreshControl={<RefreshControl refreshing={list.refreshing} onRefresh={() => void list.refresh()} tintColor="#07956f" />}
       ListEmptyComponent={!loading && !error ? <Text style={styles.empty}>Belum ada stok.</Text> : null}
       renderItem={({ item }) => <Pressable accessibilityRole="button" accessibilityHint="Tampilkan produk pada kelompok ini" onPress={() => selectGroup(item)} style={({ pressed }) => [styles.productCard, pressed && styles.pressed]}>
         <View style={[styles.groupIcon, tab === 'branch' ? styles.groupBranch : styles.groupCategory]}>{tab === 'branch' ? <Store size={20} color="#3f6fe0" /> : <Layers size={20} color="#e07d12" />}</View>

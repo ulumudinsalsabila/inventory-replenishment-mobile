@@ -50,6 +50,7 @@
     },
     "android": {
       "package": "com.storemanagement.inventoryreplenishment",
+      "googleServicesFile": "./google-services.json",
       "permissions": [
         "android.permission.BLUETOOTH_CONNECT",
         "android.permission.CAMERA"

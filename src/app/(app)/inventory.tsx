@@ -1,8 +1,9 @@
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import { ActivityIndicator, Pressable, RefreshControl, StyleSheet, Text, TextInput, View } from 'react-native';
-import { BarcodeScanner } from '../../components/barcode-scanner';
+import { Search, X } from 'lucide-react-native';
+import { LoadMoreFooter } from '../../components/load-more-footer';
 import { useAuth } from '../../auth/auth-provider';
-import { ApiError } from '../../lib/api';
+import { useDebouncedValue, useInfiniteList, useLoadMoreOnScroll } from '../../lib/infinite-list';
 import { KeyboardAwareScrollView } from 'react-native-keyboard-controller';
 
 type InventoryRow = {
@@ -15,7 +16,6 @@ type InventoryRow = {
   product: { id: string; sku: string; name: string; unit: { code: string } };
   warehouse: { id: string; code: string; name: string };
 };
-type InventoryResult = { data: InventoryRow[]; meta: { page: number; total: number; totalPages: number } };
 
 function quantity(value: string | number) {
   return Number(value).toLocaleString('id-ID', { maximumFractionDigits: 3 });
@@ -23,58 +23,28 @@ function quantity(value: string | number) {
 
 export default function InventoryScreen() {
   const { authorizedRequest } = useAuth();
-  const [rows, setRows] = useState<InventoryRow[]>([]);
-  const [page, setPage] = useState(1);
-  const [totalPages, setTotalPages] = useState(1);
-  const [total, setTotal] = useState(0);
   const [searchInput, setSearchInput] = useState('');
-  const [search, setSearch] = useState('');
-  const [loading, setLoading] = useState(true);
-  const [refreshing, setRefreshing] = useState(false);
-  const [error, setError] = useState('');
-  const [reloadKey, setReloadKey] = useState(0);
-  const [scannerVisible, setScannerVisible] = useState(false);
-
-  useEffect(() => {
-    let active = true;
-    const params = new URLSearchParams({ page: String(page), perPage: '20' });
-    if (search) params.set('search', search);
-    void authorizedRequest<InventoryResult>(`inventory?${params.toString()}`)
-      .then((result) => {
-        if (!active) return;
-        setRows(result.data);
-        setTotal(result.meta.total);
-        setTotalPages(Math.max(1, result.meta.totalPages));
-        setError('');
-      })
-      .catch((cause: unknown) => {
-        if (active) setError(cause instanceof ApiError ? cause.message : 'Data stok belum dapat dimuat.');
-      })
-      .finally(() => {
-        if (active) {
-          setLoading(false);
-          setRefreshing(false);
-        }
-      });
-    return () => { active = false; };
-  }, [authorizedRequest, page, reloadKey, search]);
-
-  const runSearch = () => { setPage(1); setSearch(searchInput.trim()); };
+  const search = useDebouncedValue(searchInput.trim());
+  const params = new URLSearchParams();
+  if (search) params.set('search', search);
+  const list = useInfiniteList<InventoryRow>(authorizedRequest, `inventory?${params.toString()}`);
+  const scrollProps = useLoadMoreOnScroll(list.loadMore);
+  const rows = list.items;
 
   return (
     <View style={styles.screen}>
-      <KeyboardAwareScrollView bottomOffset={24} contentContainerStyle={styles.page} keyboardShouldPersistTaps="handled" refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => { setRefreshing(true); setReloadKey((key) => key + 1); }} tintColor="#087f5b" />}>
-        <Text style={styles.subtitle}>{total.toLocaleString('id-ID')} item · tarik ke bawah untuk memperbarui</Text>
+      <KeyboardAwareScrollView {...scrollProps} bottomOffset={24} contentContainerStyle={styles.page} keyboardShouldPersistTaps="handled" refreshControl={<RefreshControl refreshing={list.refreshing} onRefresh={() => void list.refresh()} tintColor="#087f5b" />}>
+        <Text style={styles.subtitle}>{list.total.toLocaleString('id-ID')} item · tarik ke bawah untuk memperbarui</Text>
 
-        <View style={styles.searchRow}>
-          <TextInput accessibilityLabel="Cari produk atau SKU" autoCapitalize="none" returnKeyType="search" onSubmitEditing={runSearch} placeholder="Cari produk atau SKU" placeholderTextColor="#8a968f" value={searchInput} onChangeText={setSearchInput} style={styles.searchInput} />
-          <Pressable accessibilityRole="button" accessibilityLabel="Scan barcode" onPress={() => setScannerVisible(true)} style={styles.scanButton}><Text style={styles.searchButtonText}>Scan</Text></Pressable>
-          <Pressable accessibilityRole="button" onPress={runSearch} style={styles.searchButton}><Text style={styles.searchButtonText}>Cari</Text></Pressable>
+        <View style={styles.searchField}>
+          <Search size={17} color="#71839a" />
+          <TextInput accessibilityLabel="Cari produk atau SKU" autoCapitalize="none" autoCorrect={false} returnKeyType="search" placeholder="Cari produk atau SKU" placeholderTextColor="#8a968f" value={searchInput} onChangeText={setSearchInput} style={styles.searchInput} />
+          {searchInput ? <Pressable accessibilityRole="button" accessibilityLabel="Hapus pencarian" hitSlop={8} onPress={() => setSearchInput('')}><X size={16} color="#71839a" /></Pressable> : null}
         </View>
 
-        {error ? <View style={styles.errorCard}><Text style={styles.errorText}>{error}</Text><Pressable accessibilityRole="button" onPress={() => { setLoading(true); setReloadKey((key) => key + 1); }}><Text style={styles.retry}>Coba lagi</Text></Pressable></View> : null}
-        {loading && rows.length === 0 ? <ActivityIndicator style={styles.loader} color="#087f5b" size="large" /> : null}
-        {!loading && !error && rows.length === 0 ? <View style={styles.empty}><Text style={styles.emptyTitle}>Stok tidak ditemukan</Text><Text style={styles.emptyText}>Coba kata pencarian lain.</Text></View> : null}
+        {list.error && !rows.length ? <View style={styles.errorCard}><Text style={styles.errorText}>{list.error}</Text><Pressable accessibilityRole="button" onPress={() => void list.reload()}><Text style={styles.retry}>Coba lagi</Text></Pressable></View> : null}
+        {list.loading && rows.length === 0 ? <ActivityIndicator style={styles.loader} color="#087f5b" size="large" /> : null}
+        {!list.loading && !list.error && rows.length === 0 ? <View style={styles.empty}><Text style={styles.emptyTitle}>Stok tidak ditemukan</Text><Text style={styles.emptyText}>Coba kata pencarian lain.</Text></View> : null}
 
         {rows.map((row) => {
           const available = Number(row.onHand) - Number(row.reserved);
@@ -96,9 +66,8 @@ export default function InventoryScreen() {
           );
         })}
 
-        {rows.length > 0 ? <View style={styles.pagination}><Pressable accessibilityRole="button" disabled={page <= 1} onPress={() => setPage((current) => current - 1)} style={[styles.pageButton, page <= 1 && styles.disabled]}><Text style={styles.pageButtonText}>‹ Sebelumnya</Text></Pressable><Text style={styles.pageLabel}>{page} / {totalPages}</Text><Pressable accessibilityRole="button" disabled={page >= totalPages} onPress={() => setPage((current) => current + 1)} style={[styles.pageButton, page >= totalPages && styles.disabled]}><Text style={styles.pageButtonText}>Berikutnya ›</Text></Pressable></View> : null}
+        <LoadMoreFooter loadingMore={list.loadingMore} hasMore={list.hasMore} count={rows.length} error={list.error} onRetry={list.loadMore} />
       </KeyboardAwareScrollView>
-      <BarcodeScanner visible={scannerVisible} onClose={() => setScannerVisible(false)} onScanned={(value) => { setScannerVisible(false); setSearchInput(value); setPage(1); setSearch(value); }} />
     </View>
   );
 }
@@ -111,11 +80,8 @@ const styles = StyleSheet.create({
   eyebrow: { color: '#087f5b', fontSize: 10, fontWeight: '800', letterSpacing: 1.2 },
   title: { marginTop: 6, color: '#172820', fontSize: 25, fontWeight: '800' },
   subtitle: { marginTop: 5, color: '#718078', fontSize: 12 },
-  searchRow: { flexDirection: 'row', gap: 8, marginTop: 20, marginBottom: 15 },
-  searchInput: { height: 48, flex: 1, paddingHorizontal: 14, borderWidth: 1, borderColor: '#dce4df', borderRadius: 14, backgroundColor: '#fff', color: '#172820', fontSize: 14 },
-  searchButton: { minWidth: 64, alignItems: 'center', justifyContent: 'center', borderRadius: 14, backgroundColor: '#087f5b' },
-  scanButton: { minWidth: 56, alignItems: 'center', justifyContent: 'center', borderRadius: 14, backgroundColor: '#34574a' },
-  searchButtonText: { color: '#fff', fontSize: 12, fontWeight: '800' },
+  searchField: { minHeight: 48, flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 20, marginBottom: 15, paddingHorizontal: 13, borderWidth: 1, borderColor: '#dce4df', borderRadius: 14, backgroundColor: '#fff' },
+  searchInput: { flex: 1, minWidth: 0, height: 46, color: '#172820', fontSize: 14 },
   card: { marginBottom: 10, padding: 15, borderWidth: 1, borderColor: '#e6ece8', borderRadius: 17, backgroundColor: '#fff' },
   cardTop: { flexDirection: 'row', alignItems: 'flex-start' },
   productInfo: { flex: 1, minWidth: 0 },
@@ -136,9 +102,4 @@ const styles = StyleSheet.create({
   empty: { alignItems: 'center', padding: 24, borderRadius: 16, backgroundColor: '#fff' },
   emptyTitle: { color: '#28372f', fontSize: 14, fontWeight: '800' },
   emptyText: { marginTop: 5, color: '#819087', fontSize: 12 },
-  pagination: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginTop: 8 },
-  pageButton: { paddingHorizontal: 11, paddingVertical: 10, borderRadius: 11, backgroundColor: '#e7f5ee' },
-  pageButtonText: { color: '#087f5b', fontSize: 11, fontWeight: '800' },
-  pageLabel: { color: '#68766e', fontSize: 11, fontWeight: '700' },
-  disabled: { opacity: 0.4 },
 });
