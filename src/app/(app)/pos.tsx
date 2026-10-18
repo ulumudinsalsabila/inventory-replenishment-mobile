@@ -61,6 +61,7 @@ const cartSignature = (lines: Line[], discount: string, customerName: string, cu
 const isCustomerUnavailable = (error: unknown) => error instanceof ApiError && error.code === 'CUSTOMER_UNAVAILABLE';
 const isVersionConflict = (error: unknown) => error instanceof ApiError && error.code === 'OPEN_BILL_VERSION_CONFLICT';
 const VERSION_CONFLICT_MESSAGE = 'Bill ini sudah diubah di perangkat lain. Data terbaru sudah dimuat ulang, periksa lalu simpan lagi.';
+const VOID_BLOCKED_MESSAGE = 'Simpan perubahan bill terlebih dahulu sebelum void agar perubahan yang belum disimpan tidak hilang.';
 function openBillErrorMessage(error: unknown, fallback = 'Open bill gagal disimpan.') {
   if (isCustomerUnavailable(error) || (error instanceof ApiError && error.code === 'PERMISSION_DENIED')) return customerErrorMessage(error);
   if (error instanceof ApiError) {
@@ -399,15 +400,17 @@ export default function PosScreen() {
     } finally { setBillBusy(false); }
   }
 
-  /** Voids a sent line fully (no quantity) or partly; needs order.void_item. Pending cart edits are saved first so the reload keeps them. */
+  /**
+   * Voids a sent line fully (no quantity) or partly; needs order.void_item. Blocked while the cart has unsaved edits, so the
+   * cashier saves them knowingly first instead of having them saved as a side effect of a void.
+   */
   async function voidLine(line: Line, quantity: string | undefined, reason: string) {
     const bill = openBill;
     if (!bill || !line.bill) return;
+    if (openBillDirty) { setVoidError(VOID_BLOCKED_MESSAGE); return; }
     setBillBusy(true); setVoidError(''); setError(''); setNotice(''); setWarning('');
     try {
-      const saved = await saveBeforeBillAction(bill);
-      if (!saved) { setVoidTarget(null); return; }
-      const updated = await authorizedRequest<BillOrder>(`orders/${bill.id}/items/${line.bill.orderItemId}/void`, { method: 'POST', body: JSON.stringify({ version: saved.version, ...(quantity ? { quantity } : {}), reason }) });
+      const updated = await authorizedRequest<BillOrder>(`orders/${bill.id}/items/${line.bill.orderItemId}/void`, { method: 'POST', body: JSON.stringify({ version: bill.version, ...(quantity ? { quantity } : {}), reason }) });
       setVoidTarget(null);
       applyOpenBill(updated, '', `${line.product.name} × ${Number(quantity ?? line.quantity)} di-void.`);
       // The void brought the total down to the deposit: the cart shows the repriced bill, which now only needs completing.
@@ -799,7 +802,7 @@ export default function PosScreen() {
     notice={notice}
     warning={warning}
     onSendToKitchen={openBill ? () => void sendToKitchen() : undefined}
-    onVoidLine={can('order.void_item') ? (line) => { setVoidError(''); setVoidTarget(line as Line); } : undefined}
+    onVoidLine={can('order.void_item') ? (line) => { setVoidError(openBillDirty ? VOID_BLOCKED_MESSAGE : ''); setVoidTarget(line as Line); } : undefined}
     onPrintPreBill={openBill ? () => void printPreBill() : undefined}
     onStartDeposit={openBill && can('payment.create') ? startDeposit : undefined}
     depositMode={depositMode}
