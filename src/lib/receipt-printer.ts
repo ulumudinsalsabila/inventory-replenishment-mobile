@@ -201,12 +201,12 @@ function receiptText(order: ReceiptOrder, width: number) {
   const rule = '-'.repeat(width);
   const date = order.completedAt ?? order.createdAt;
   const lines = [
-    ...wrap(order.branch?.name ?? 'INVENTORY REPLENISHMENT', width),
-    ...(order.branch?.code ? [fit(order.branch.code, width)] : []),
+    ...wrap(order.branch?.name ?? 'INVENTORY REPLENISHMENT', width).map((line) => center(line, width)),
+    ...(order.branch?.code ? [center(order.branch.code, width)] : []),
     rule,
-    fit(order.orderNumber, width),
-    ...(date ? [fit(formatDate(date), width)] : []),
-    ...serviceLines(order.serviceType, width),
+    center(order.orderNumber, width),
+    ...(date ? [center(formatDate(date), width)] : []),
+    ...serviceLines(order.serviceType, width).map((line) => center(line, width)),
     ...customerLines(order.customerName, order.customerPhone, width),
     rule,
   ];
@@ -229,7 +229,7 @@ function receiptText(order: ReceiptOrder, width: number) {
     if (payment.receivedAmount) lines.push(columns('Diterima', rupiah(Number(payment.receivedAmount)), width));
     if (Number(payment.changeAmount ?? 0) > 0) lines.push(columns('Kembalian', rupiah(Number(payment.changeAmount)), width));
   }
-  lines.push(rule, 'Terima kasih');
+  lines.push(rule, center('Terima kasih', width));
   return lines.join('\n');
 }
 
@@ -257,7 +257,8 @@ export function formatCashClosingReceipt(closing: CashClosingReceipt, width = 32
     ['Cash Sales', closing.cashSales],
     ['QRIS Sales', closing.qrisSales],
     ['Transfer Sales', closing.transferSales],
-    ['E-Wallet Sales', Number(closing.grabSales ?? 0) + Number(closing.gobizSales ?? 0)],
+    ['Grab Sales', closing.grabSales],
+    ['GoBiz Sales', closing.gobizSales],
     ['Card Sales', closing.cardSales],
     ['Other Sales', closing.otherSales],
   ];
@@ -269,14 +270,16 @@ export function formatCashClosingReceipt(closing: CashClosingReceipt, width = 32
     ['Card Refund', closing.cardRefund],
     ['Other Refund', closing.otherRefund],
   ];
+  // dd-mm-yyyy on the closing report header.
+  const dashed = (value: string) => value.replace(/\//g, '-');
   const lines = [
     center('CASH CLOSING REPORT', width),
     center(closing.closingNumber, width),
     '',
-    ...wrap(`Period Start : ${receiptDate(closing.periodStart)}`, width),
-    ...wrap(`Period End   : ${receiptDate(closing.periodEnd)}`, width),
+    ...wrap(`Period Start : ${dashed(receiptDate(closing.periodStart))}`, width),
+    ...wrap(`Period End   : ${dashed(receiptDate(closing.periodEnd))}`, width),
     ...wrap(`Transaction  : ${closing.transactionCount}`, width),
-    ...wrap(`Created At   : ${receiptDateTime(closing.createdAt ?? closing.closedAt)}`, width),
+    ...wrap(`Created At   : ${dashed(receiptDateTime(closing.createdAt ?? closing.closedAt))}`, width),
     rule,
     'SALES',
     ...sales.map(([label, value]) => columns(label, cashRupiah(value), width)),
@@ -304,9 +307,9 @@ export function formatCashClosingReceipt(closing: CashClosingReceipt, width = 32
     rule,
     '',
     center('Prepared By', width),
-    center('Approved By', width),
     '',
-    columns('(____________)', '(____________)', width),
+    '',
+    center('(________________)', width),
   ];
   return lines.join('\n');
 }

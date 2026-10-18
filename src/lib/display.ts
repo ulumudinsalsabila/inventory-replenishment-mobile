@@ -8,7 +8,8 @@ export function refundMethodsFor(payments: { method: string; status: string }[] 
   return refundPaymentMethods.filter((method) => !platformMethods.includes(method) || paid.has(method));
 }
 
-export function formatStatus(status: string) {
+export function formatStatus(status: string | null | undefined) {
+  if (!status) return '-';
   if (status === 'OPEN') return 'Open Bill';
   if (status === 'GOBIZ') return 'GoBiz';
   if (status === 'EXCHANGE') return 'Kredit tukar';

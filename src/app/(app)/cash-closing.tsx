@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { ActivityIndicator, Modal, Platform, Pressable, RefreshControl, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
+import { MoneyInput } from '../../components/money-input';
 import { File } from 'expo-file-system';
 import * as Print from 'expo-print';
 import * as ImagePicker from 'expo-image-picker';
@@ -252,7 +253,7 @@ export default function CashClosingScreen() {
         <View style={styles.infoRow}><CalendarDays size={17} color="#6380a4" /><Text style={styles.infoLabel}>Periode mulai</Text><Text style={styles.infoValue}>{preview?.periodStart ? formatDate(preview.periodStart) : 'Belum ada data'}</Text></View>
         <View style={styles.summaryHighlight}><Text style={styles.label}>Kas fisik diharapkan</Text><Text style={styles.expected}>{money(preview?.expectedCash)}</Text></View>
         {openBillWarning}
-        <Text style={styles.label}>Kas fisik aktual *</Text><View style={styles.amountInput}><Text style={styles.currency}>Rp</Text><TextInput accessibilityLabel="Kas fisik aktual" value={actualCash} onChangeText={(value) => setActualCash(value.replace(',', '.'))} keyboardType="decimal-pad" placeholder="0" placeholderTextColor="#8290a2" style={styles.amountTextInput} /></View>
+        <Text style={styles.label}>Kas fisik aktual *</Text><View style={styles.amountInput}><Text style={styles.currency}>Rp</Text><MoneyInput accessibilityLabel="Kas fisik aktual" value={actualCash} onChangeText={setActualCash} placeholder="0" placeholderTextColor="#8290a2" style={styles.amountTextInput} /></View>
         <Text style={styles.label}>Catatan (opsional)</Text><TextInput accessibilityLabel="Catatan penutupan" value={note} onChangeText={setNote} placeholder="Tambahkan catatan..." placeholderTextColor="#8290a2" multiline maxLength={200} style={[styles.textInput, styles.noteInput]} />
         {previewLoading ? <ActivityIndicator style={styles.loader} color="#07885b" /> : null}
       </View>

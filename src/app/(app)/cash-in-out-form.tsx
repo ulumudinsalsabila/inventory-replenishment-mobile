@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { ActivityIndicator, Modal, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
+import { MoneyInput } from '../../components/money-input';
 import { File } from 'expo-file-system';
 import * as ImagePicker from 'expo-image-picker';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -119,7 +120,7 @@ export default function CashInOutFormScreen() {
         <Text style={styles.label}>Kategori <Text style={styles.required}>*</Text></Text>
         <Pressable accessibilityRole="button" accessibilityLabel="Pilih kategori kas" onPress={() => setCategoryPickerVisible(true)} style={styles.selectField}><Text style={[styles.selectText, !category && styles.placeholder]}>{category || 'Pilih kategori'}</Text><ChevronDown size={17} color="#7b8b9b" /></Pressable>
         <Text style={styles.label}>Jumlah <Text style={styles.required}>*</Text></Text>
-        <View style={styles.amountField}><Text style={styles.currency}>Rp</Text><TextInput accessibilityLabel="Jumlah kas" value={amount} onChangeText={(value) => setAmount(value.replace(/[^\d.,]/g, '').replace(',', '.'))} keyboardType="decimal-pad" placeholder="0" placeholderTextColor="#90a0ad" style={styles.amountInput} /></View>
+        <View style={styles.amountField}><Text style={styles.currency}>Rp</Text><MoneyInput accessibilityLabel="Jumlah kas" value={amount} onChangeText={setAmount} placeholder="0" placeholderTextColor="#90a0ad" style={styles.amountInput} /></View>
         <Text style={styles.label}>Alasan <Text style={styles.required}>*</Text></Text>
         <View style={styles.reasonGrid}>{reasons[type].map((item) => {
           const checked = selectedReasons.includes(item);

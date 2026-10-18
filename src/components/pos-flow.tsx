@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { ActivityIndicator, FlatList, Image, Modal, Pressable, RefreshControl, ScrollView, Share, StyleSheet, Text, TextInput, View } from 'react-native';
+import { MoneyInput } from './money-input';
 import { Banknote, Barcode, Check, ChefHat, ChevronLeft, ChevronRight, CircleCheck, ClipboardList, CreditCard, Landmark, Merge, Minus, Plus, Printer, QrCode, ReceiptText, Save, Search, Share2, ShoppingCart, Split, Store, Trash2, UserRound, Users, Wallet, X } from 'lucide-react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useResponsive } from '../lib/responsive';
@@ -507,7 +508,7 @@ export function PosCheckoutFlow(props: CheckoutProps) {
         </View>)}</View>
         <View style={styles.summaryCard}>
           <SummaryRow label="Subtotal" value={money(props.subtotal)} />
-          <View style={styles.discountRow}><Text style={styles.summaryLabel}>Diskon</Text><TextInput accessibilityLabel="Diskon rupiah" keyboardType="numeric" value={props.discount} onChangeText={props.onDiscountChange} style={styles.discountInput} /></View>
+          <View style={styles.discountRow}><Text style={styles.summaryLabel}>Diskon</Text><MoneyInput accessibilityLabel="Diskon rupiah" value={props.discount} onChangeText={props.onDiscountChange} style={styles.discountInput} /></View>
           <View style={styles.summaryDivider} /><SummaryRow label="Total" value={money(props.total)} strong />
         </View>
         {props.openBill ? <View style={styles.billCard}>
@@ -563,7 +564,7 @@ export function PosCheckoutFlow(props: CheckoutProps) {
         </>}
         {props.depositMode ? <>
           <Text style={styles.sectionLabel}>JUMLAH DP *</Text>
-          <View style={styles.amountField}><Text style={styles.currencyPrefix}>Rp</Text><TextInput accessibilityLabel="Jumlah DP" autoFocus keyboardType="number-pad" value={props.depositAmount} onChangeText={(value) => props.onDepositAmountChange(value.replace(/\D/g, ''))} maxLength={12} placeholder="0" placeholderTextColor="#8a97a8" style={styles.receivedInput} /></View>
+          <View style={styles.amountField}><Text style={styles.currencyPrefix}>Rp</Text><MoneyInput accessibilityLabel="Jumlah DP" autoFocus value={props.depositAmount} onChangeText={props.onDepositAmountChange} placeholder="0" placeholderTextColor="#8a97a8" style={styles.receivedInput} /></View>
           <Text style={styles.sheetHint}>Lebih dari Rp 0 dan kurang dari sisa tagihan {money(due)}. Untuk melunasi, gunakan Bayar.</Text>
         </> : !splitMethods ? <>
           <Text style={styles.sectionLabel}>JUMLAH DIBAYAR</Text>
@@ -770,8 +771,8 @@ export function OpenBillListSheet(props: OpenBillListSheetProps) {
   return <Modal visible transparent animationType="slide" onRequestClose={props.onClose}>
     <KeyboardAvoidingView behavior="padding" style={catalogStyles.modalBackdrop}>
       <View style={[catalogStyles.optionSheet, styles.billListSheet, { paddingBottom: Math.max(props.bottomInset + 8, 20) }]}>
-        <View style={catalogStyles.optionHeader}><View style={styles.lineDetails}><Text style={catalogStyles.optionTitle}>{props.title ?? 'Open Bill'}</Text><Text style={catalogStyles.catalogProductCategory}>{list.loading ? 'Memuat bill...' : props.subtitle ?? `${list.total - excluded} bill belum dibayar`}</Text></View><Pressable accessibilityRole="button" accessibilityLabel="Tutup" onPress={props.onClose} style={catalogStyles.catalogHeaderIcon}><X size={19} color="#435a72" /></Pressable></View>
-        <View style={catalogStyles.catalogSearchBox}><Search size={17} color="#78889c" /><TextInput accessibilityLabel="Cari open bill" value={searchInput} onChangeText={setSearchInput} placeholder="Cari nama, No. HP, atau nomor..." placeholderTextColor="#8290a2" returnKeyType="search" style={catalogStyles.catalogSearchInput} /></View>
+        <View style={catalogStyles.optionHeader}><View style={styles.lineDetails}><Text style={catalogStyles.optionTitle}>{props.title ?? 'Open Bill'}</Text><Text style={[catalogStyles.catalogProductCategory, styles.billListSubtitle]}>{list.loading ? 'Memuat bill...' : props.subtitle ?? `${list.total - excluded} bill belum dibayar`}</Text></View><Pressable accessibilityRole="button" accessibilityLabel="Tutup" onPress={props.onClose} style={catalogStyles.catalogHeaderIcon}><X size={19} color="#435a72" /></Pressable></View>
+        <View style={[catalogStyles.catalogSearchBox, styles.billSearchBox]}><Search size={17} color="#78889c" /><TextInput accessibilityLabel="Cari open bill" value={searchInput} onChangeText={setSearchInput} placeholder="Cari nama, No. HP, atau nomor..." placeholderTextColor="#8290a2" returnKeyType="search" style={catalogStyles.catalogSearchInput} /></View>
         {list.error && !list.items.length ? <Pressable accessibilityRole="button" onPress={() => void list.reload()}><Text style={[styles.errorText, styles.sheetError]}>{list.error} Ketuk untuk coba lagi.</Text></Pressable> : null}
         <FlatList
           style={styles.billList}
@@ -914,7 +915,7 @@ const styles = StyleSheet.create({
   noticeText: { padding: 10, borderRadius: 9, overflow: 'hidden', color: '#087c53', backgroundColor: '#e5f8f0', fontSize: 10, lineHeight: 15 },
   warningText: { padding: 10, borderRadius: 9, overflow: 'hidden', color: '#8a5a08', backgroundColor: '#fff8e8', fontSize: 10, lineHeight: 15 },
   sheetMultiline: { height: 76, paddingTop: 10, textAlignVertical: 'top' }, voidSubmit: { backgroundColor: '#c0392b' },
-  billListSheet: { height: '80%' }, billList: { flex: 1, marginTop: 8 }, billListContent: { paddingBottom: 8 },
+  billListSheet: { height: '80%' }, billSearchBox: { flex: 0, flexGrow: 0, flexShrink: 0 }, billListSubtitle: { paddingHorizontal: 0 }, billList: { flex: 1, marginTop: 8 }, billListContent: { paddingBottom: 8 },
   billRow: { minHeight: 58, flexDirection: 'row', alignItems: 'center', gap: 9, borderBottomWidth: 1, borderBottomColor: '#edf1f4' }, billRowPressed: { backgroundColor: '#f6f9f8' }, billRowTotal: { color: '#172338', fontSize: 11, fontWeight: '900' }, billRowDeposit: { marginTop: 3, color: '#8a5a08', fontSize: 9, fontWeight: '800' },
   billTotals: { paddingHorizontal: 10, paddingVertical: 4, borderRadius: 10, backgroundColor: '#fff' },
   settingsLink: { minHeight: 40, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, paddingHorizontal: 12, borderRadius: 10, backgroundColor: '#eef7f3' }, settingsLinkText: { color: '#087c53', fontSize: 10, fontWeight: '800' },

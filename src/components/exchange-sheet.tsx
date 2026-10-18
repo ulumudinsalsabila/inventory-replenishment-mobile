@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { ActivityIndicator, Modal, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
+import { MoneyInput } from './money-input';
 import { File } from 'expo-file-system';
 import * as ImagePicker from 'expo-image-picker';
 import { Minus, Plus, Trash2, X } from 'lucide-react-native';
@@ -159,7 +160,7 @@ export function ExchangeSheet({ visible, order, onClose, onDone }: { visible: bo
         {line.product.variants?.length ? <View style={styles.chips}><Chip label="Standar" active={!line.variantId} onPress={() => updateLine(line.key, { variantId: '' })} />{line.product.variants.map((variant) => <Chip key={variant.id} label={variant.name} active={line.variantId === variant.id} onPress={() => updateLine(line.key, { variantId: variant.id })} />)}</View> : null}
         {line.product.addons?.length ? <View style={styles.chips}>{line.product.addons.map((addon) => { const active = line.addonIds.includes(addon.id); return <Chip key={addon.id} label={`+ ${addon.name} ${money(Number(addon.basePrice))}`} active={active} onPress={() => updateLine(line.key, { addonIds: active ? line.addonIds.filter((id) => id !== addon.id) : [...line.addonIds, addon.id] })} />; })}</View> : null}
       </View>)}
-      {lines.length ? <><Text style={styles.fieldLabel}>Diskon barang pengganti</Text><TextInput accessibilityLabel="Diskon barang pengganti" keyboardType="decimal-pad" style={styles.input} value={discount} onChangeText={setDiscount} placeholder="0" placeholderTextColor="#87948c" /></> : null}
+      {lines.length ? <><Text style={styles.fieldLabel}>Diskon barang pengganti</Text><MoneyInput accessibilityLabel="Diskon barang pengganti" style={styles.input} value={discount} onChangeText={setDiscount} placeholder="0" placeholderTextColor="#87948c" /></> : null}
 
       <Text style={styles.section}>3. Selisih</Text>
       <View style={styles.summary}>
@@ -169,7 +170,7 @@ export function ExchangeSheet({ visible, order, onClose, onDone }: { visible: bo
       </View>
       {difference > 0 ? <>
         <Text style={styles.fieldLabel}>Metode bayar selisih</Text><View style={styles.chips}>{refundPaymentMethods.map((method) => <Chip key={method} label={formatStatus(method)} active={payMethod === method} onPress={() => setPayMethod(method)} />)}</View>
-        {payMethod === 'CASH' ? <><Text style={styles.fieldLabel}>Uang diterima *</Text><TextInput accessibilityLabel="Uang diterima" keyboardType="decimal-pad" style={styles.input} value={received} onChangeText={setReceived} placeholder={String(Math.ceil(difference))} placeholderTextColor="#87948c" />{Number(received) > difference ? <Text style={styles.muted}>Kembalian {money(Number(received) - difference)}</Text> : null}</> : null}
+        {payMethod === 'CASH' ? <><Text style={styles.fieldLabel}>Uang diterima *</Text><MoneyInput accessibilityLabel="Uang diterima" style={styles.input} value={received} onChangeText={setReceived} placeholder={String(Math.ceil(difference))} placeholderTextColor="#87948c" />{Number(received) > difference ? <Text style={styles.muted}>Kembalian {money(Number(received) - difference)}</Text> : null}</> : null}
       </> : null}
       {difference < 0 ? <><Text style={styles.fieldLabel}>Selisih dikembalikan lewat</Text><View style={styles.chips}>{refundMethodsFor(order.payments).map((method) => <Chip key={method} label={formatStatus(method)} active={refundMethod === method} onPress={() => setRefundMethod(method)} />)}</View></> : null}
 
