@@ -1,15 +1,17 @@
-import { useState } from 'react';
-import { ActivityIndicator, Image, Modal, Platform, Pressable, RefreshControl, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
+import { useEffect, useState } from 'react';
+import { ActivityIndicator, Modal, Platform, Pressable, RefreshControl, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { File } from 'expo-file-system';
 import * as ImagePicker from 'expo-image-picker';
 import { Minus, Plus, RefreshCw, Search, X } from 'lucide-react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { router, useLocalSearchParams } from 'expo-router';
 import { useAuth } from '../../auth/auth-provider';
 import { ApiError } from '../../lib/api';
 import { LoadMoreFooter } from '../../components/load-more-footer';
 import { useDebouncedValue, useInfiniteList, useLoadMoreOnScroll } from '../../lib/infinite-list';
 import { formatDate, formatStatus } from '../../lib/display';
 import { KeyboardAwareScrollView } from 'react-native-keyboard-controller';
+import { PreviewImage } from '../../components/image-viewer';
 
 type Actor = { id: string; name: string };
 type TransferSummary = {
@@ -60,6 +62,22 @@ export default function TransfersScreen() {
     } catch (cause) { setError(cause instanceof ApiError ? cause.message : 'Detail transfer belum dapat dimuat.'); }
     finally { setDetailLoading(false); }
   }
+
+  // Notifications deep-link here with ?transferId=; open that transfer's detail, then drop the param so back/refresh stay on the list.
+  const { transferId } = useLocalSearchParams<{ transferId?: string }>();
+  useEffect(() => {
+    if (!transferId) return;
+    let active = true;
+    void authorizedRequest<TransferDetail>(`warehouse-transfers/${encodeURIComponent(transferId)}`)
+      .then((detail) => {
+        if (!active) return;
+        setSelected(detail);
+        setReceiveLines(Object.fromEntries(detail.items.map((item) => [item.id, { receivedQty: item.sentQty, discrepancyReason: 'MISSING', discrepancyNote: '' }])));
+      })
+      .catch((cause: unknown) => { if (active) setError(cause instanceof ApiError ? cause.message : 'Transfer dari notifikasi tidak ditemukan.'); })
+      .finally(() => router.setParams({ transferId: undefined }));
+    return () => { active = false; };
+  }, [authorizedRequest, transferId]);
 
   async function refreshSelected() {
     if (selected) await openTransfer(selected.id);
@@ -167,7 +185,7 @@ export default function TransfersScreen() {
               <Pressable disabled={evidenceBusy} onPress={() => void addEvidence(false)} style={styles.evidenceButton}><Text style={styles.evidenceButtonText}>Pilih foto</Text></Pressable>
             </View>
             {evidenceBusy ? <ActivityIndicator color="#087f5b" /> : null}
-            {(selected.evidenceImages ?? []).length ? <ScrollView horizontal contentContainerStyle={styles.evidenceList}>{selected.evidenceImages!.map((photo) => <Image key={photo.id} source={{ uri: photo.url }} resizeMode="cover" style={styles.evidenceImage} />)}</ScrollView> : <Text style={styles.hint}>Belum ada foto bukti.</Text>}
+            {(selected.evidenceImages ?? []).length ? <ScrollView horizontal contentContainerStyle={styles.evidenceList}>{selected.evidenceImages!.map((photo, index, all) => <PreviewImage key={photo.id} uri={photo.url} images={all.map((entry) => entry.url)} index={index} style={styles.evidenceImage} />)}</ScrollView> : <Text style={styles.hint}>Belum ada foto bukti.</Text>}
             <Text style={styles.sectionTitle}>Daftar barang</Text>
             {selected.items.map((item) => { const line = receiveLines[item.id]; const differs = line && Number(line.receivedQty) !== Number(item.sentQty); return <View key={item.id} style={styles.itemCard}>
               <Text style={styles.productName}>{item.product.name}</Text><Text style={styles.sku}>{item.product.sku}</Text>

@@ -1,15 +1,17 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { ActivityIndicator, Image, Modal, Platform, Pressable, RefreshControl, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
+import { ActivityIndicator, Modal, Platform, Pressable, RefreshControl, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { File } from 'expo-file-system';
 import * as ImagePicker from 'expo-image-picker';
 import { Camera, Check, ChevronDown, ChevronRight, ImagePlus, Minus, Package, PackagePlus, Plus, Search, X } from 'lucide-react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { router, useLocalSearchParams } from 'expo-router';
 import { LoadMoreFooter } from '../../components/load-more-footer';
 import { useAuth } from '../../auth/auth-provider';
 import { ApiError } from '../../lib/api';
 import { formatDate, formatStatus } from '../../lib/display';
 import { useInfiniteList, useLoadMoreOnScroll } from '../../lib/infinite-list';
 import { KeyboardAvoidingView, KeyboardAwareScrollView } from 'react-native-keyboard-controller';
+import { PreviewImage } from '../../components/image-viewer';
 
 type NamedOption = { id: string; name: string; code?: string; branchId?: string | null };
 type ProductUnit = { unitId: string; conversionFactor: string; unit: { id: string; code: string; name: string } };
@@ -181,6 +183,18 @@ export default function StockRequestsScreen() {
     setDetailId(null); setDetail(null); setPhotos([]); setActionError('');
   }
 
+  // Notifications deep-link here with ?requestId=; open that request's detail, then drop the param so back/refresh stay on the list.
+  const { requestId } = useLocalSearchParams<{ requestId?: string }>();
+  useEffect(() => {
+    if (!requestId) return;
+    let active = true;
+    void authorizedRequest<RequestDetail>(`stock-requests/${encodeURIComponent(requestId)}`)
+      .then((result) => { if (active) { setDetailId(result.id); setDetail(result); setReceiveValues({}); setPhotos([]); setActionError(''); } })
+      .catch((cause: unknown) => { if (active) setError(cause instanceof ApiError ? cause.message : 'Permintaan dari notifikasi tidak ditemukan.'); })
+      .finally(() => router.setParams({ requestId: undefined }));
+    return () => { active = false; };
+  }, [authorizedRequest, requestId]);
+
   async function pickPhotos(useCamera: boolean) {
     const remaining = MAX_PHOTOS - (detail?.evidenceImages?.length ?? 0) - photos.length;
     if (remaining <= 0) { setActionError(`Maksimal ${MAX_PHOTOS} foto untuk satu permintaan.`); return; }
@@ -348,8 +362,8 @@ export default function StockRequestsScreen() {
 
                 <Text style={styles.fieldLabel}>Foto bukti {nextAction ? '(opsional)' : ''}</Text>
                 {savedPhotos.length || photos.length ? <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.photoRow}>
-                  {savedPhotos.map((image) => <View key={image.id} style={styles.photoTile}><Image source={{ uri: image.url }} style={styles.photo} /><Text numberOfLines={1} style={styles.photoStage}>{image.stage ? STATUS_LABEL[image.stage] ?? image.stage : 'Bukti'}</Text></View>)}
-                  {photos.map((asset, index) => <View key={`${asset.assetId ?? asset.uri}-${index}`} style={[styles.photoTile, styles.photoTileNew]}><Image source={{ uri: asset.uri }} style={styles.photo} /><Text style={[styles.photoStage, styles.photoStageNew]}>BARU</Text><Pressable accessibilityRole="button" accessibilityLabel={`Hapus foto ${index + 1}`} onPress={() => setPhotos((current) => current.filter((_, itemIndex) => itemIndex !== index))} style={styles.photoRemove}><X size={13} color="#fff" /></Pressable></View>)}
+                  {savedPhotos.map((image) => <View key={image.id} style={styles.photoTile}><PreviewImage uri={image.url} images={[...savedPhotos.map((entry) => entry.url), ...photos.map((entry) => entry.uri)]} index={savedPhotos.indexOf(image)} style={styles.photo} /><Text numberOfLines={1} style={styles.photoStage}>{image.stage ? STATUS_LABEL[image.stage] ?? image.stage : 'Bukti'}</Text></View>)}
+                  {photos.map((asset, index) => <View key={`${asset.assetId ?? asset.uri}-${index}`} style={[styles.photoTile, styles.photoTileNew]}><PreviewImage uri={asset.uri} images={[...savedPhotos.map((entry) => entry.url), ...photos.map((entry) => entry.uri)]} index={savedPhotos.length + index} style={styles.photo} /><Text style={[styles.photoStage, styles.photoStageNew]}>BARU</Text><Pressable accessibilityRole="button" accessibilityLabel={`Hapus foto ${index + 1}`} onPress={() => setPhotos((current) => current.filter((_, itemIndex) => itemIndex !== index))} style={styles.photoRemove}><X size={13} color="#fff" /></Pressable></View>)}
                 </ScrollView> : <Text style={styles.noItems}>{nextAction ? 'Belum ada foto. Lampirkan bila perlu.' : 'Belum ada foto bukti.'}</Text>}
                 {canAddPhoto ? <View style={styles.photoButtons}>
                   <Pressable accessibilityRole="button" disabled={actionSaving} onPress={() => void pickPhotos(true)} style={styles.photoButton}><Camera size={17} color="#087f5b" /><Text style={styles.photoButtonText}>Kamera</Text></Pressable>

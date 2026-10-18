@@ -1,31 +1,34 @@
 import { useEffect, useState } from 'react';
-import { ActivityIndicator, Image, Modal, Platform, Pressable, RefreshControl, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
+import { ActivityIndicator, Modal, Platform, Pressable, RefreshControl, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { File } from 'expo-file-system';
 import * as Print from 'expo-print';
 import * as ImagePicker from 'expo-image-picker';
-import { useNavigation } from 'expo-router';
-import { Bluetooth, ChevronLeft, Printer, Undo2, X } from 'lucide-react-native';
+import { router, useLocalSearchParams, useNavigation } from 'expo-router';
+import { ArrowLeftRight, Bluetooth, ChevronLeft, Printer, Undo2, X } from 'lucide-react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useAuth } from '../../auth/auth-provider';
 import { getRange, rangeLabel, rangeOptions, type RangePreset } from '../../lib/date-range';
-import { formatDate, formatStatus } from '../../lib/display';
-import { formatOrderReceipt, getPairedPrinters, getSavedPrinter, openAndroidBluetoothSettings, printThermalReceipt, savePrinter, type PairedPrinter, type ReceiptOrder } from '../../lib/receipt-printer';
+import { formatDate, formatStatus, refundMethodsFor } from '../../lib/display';
+import { formatExchangeReceipt, formatOrderReceipt, getPairedPrinters, getSavedPrinter, openAndroidBluetoothSettings, printThermalExchangeReceipt, printThermalReceipt, savePrinter, type ExchangeReceipt, type PairedPrinter, type ReceiptOrder } from '../../lib/receipt-printer';
 import { ThermalPreview } from '../../components/thermal-preview';
+import { ExchangeSheet, type ExchangeResult } from '../../components/exchange-sheet';
 import { LoadMoreFooter } from '../../components/load-more-footer';
 import { useDebouncedValue, useInfiniteList, useLoadMoreOnScroll } from '../../lib/infinite-list';
 import { KeyboardAwareScrollView } from 'react-native-keyboard-controller';
+import { PreviewImage } from '../../components/image-viewer';
 
 type OrderLine = NonNullable<ReceiptOrder['items']>[number] & { id: string };
 type PaymentLine = NonNullable<ReceiptOrder['payments']>[number] & { status: string };
 type RefundEvidence = { id: string; url: string; fileName: string; createdAt: string };
-type Order = Omit<ReceiptOrder, 'items' | 'payments' | 'createdAt'> & { createdAt: string; items?: OrderLine[]; payments?: PaymentLine[]; refunds?: { refundNumber?: string; status: string; amount: string; reason: string; createdAt: string; items?: { orderItemId: string; quantity: string }[]; evidenceImages?: RefundEvidence[] }[] };
+type ExchangeSummary = { id: string; exchangeNumber: string; creditAmount: string; newOrderTotal: string; differenceAmount: string; status: string; voidReason?: string | null; createdAt: string };
+type Order = Omit<ReceiptOrder, 'items' | 'payments' | 'createdAt'> & { createdAt: string; warehouseId?: string; items?: OrderLine[]; payments?: PaymentLine[]; exchangesOut?: (ExchangeSummary & { newOrder: { id: string; orderNumber: string } })[]; exchangeIn?: (ExchangeSummary & { originalOrder: { id: string; orderNumber: string } }) | null; refunds?: { refundNumber?: string; exchangeId?: string | null; status: string; amount: string; reason: string; createdAt: string; items?: { orderItemId: string; quantity: string }[]; evidenceImages?: RefundEvidence[] }[] };
 const orderRangeOptions = rangeOptions.filter((item) => item.id !== '30days');
 type CountResult = { meta: { total: number } };
 const money = (value: string) => `Rp ${Number(value).toLocaleString('id-ID', { maximumFractionDigits: 0 })}`;
 const printStyles = StyleSheet.create({
   printCard: { marginBottom: 12, padding: 12, borderWidth: 1, borderColor: '#dceee5', borderRadius: 13, backgroundColor: '#fff' },
   printerInfo: { flexDirection: 'row', alignItems: 'center', gap: 9 }, printerLabels: { flex: 1, minWidth: 0 }, printTitle: { color: '#26384a', fontSize: 11, fontWeight: '900' }, printerLabel: { marginTop: 3, color: '#7b8b9b', fontSize: 9 },
-  printButton: { minHeight: 42, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 7, marginTop: 10, borderRadius: 10, backgroundColor: '#07885b' }, printButtonText: { color: '#fff', fontSize: 11, fontWeight: '900' }, actionRow: { flexDirection: 'row', gap: 8 }, actionButton: { flex: 1 }, refundOpenButton: { borderWidth: 1, borderColor: '#f3c5c0', backgroundColor: '#fff4f2' }, refundOpenText: { color: '#b42318', fontSize: 11, fontWeight: '900' }, printError: { marginTop: 8, color: '#a3332a', fontSize: 10, lineHeight: 15 },
+  printButton: { minHeight: 42, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 7, marginTop: 10, borderRadius: 10, backgroundColor: '#07885b' }, printButtonText: { color: '#fff', fontSize: 11, fontWeight: '900' }, actionRow: { flexDirection: 'row', gap: 8 }, actionButton: { flex: 1 }, refundOpenButton: { borderWidth: 1, borderColor: '#f3c5c0', backgroundColor: '#fff4f2' }, refundOpenText: { color: '#b42318', fontSize: 11, fontWeight: '900' }, exchangeOpenButton: { borderWidth: 1, borderColor: '#c6d8f5', backgroundColor: '#f2f7ff' }, exchangeOpenText: { color: '#1d5fbf', fontSize: 11, fontWeight: '900' }, notice: { marginTop: 8, color: '#087f5b', fontSize: 10, fontWeight: '800', lineHeight: 15 }, printError: { marginTop: 8, color: '#a3332a', fontSize: 10, lineHeight: 15 },
   modalBackdrop: { flex: 1, justifyContent: 'flex-end', backgroundColor: '#0a172966' }, printerSheet: { paddingHorizontal: 16, paddingTop: 15, paddingBottom: 25, borderTopLeftRadius: 18, borderTopRightRadius: 18, backgroundColor: '#fff' }, modalHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 9 }, modalTitle: { color: '#172338', fontSize: 14, fontWeight: '900' }, closeButton: { width: 34, height: 34, alignItems: 'center', justifyContent: 'center', borderRadius: 10, backgroundColor: '#eff3f5' },
   printerLoader: { padding: 16 }, printerEmpty: { paddingVertical: 14, color: '#75869a', fontSize: 10, textAlign: 'center' }, printerRow: { minHeight: 52, flexDirection: 'row', alignItems: 'center', gap: 10, borderBottomWidth: 1, borderBottomColor: '#edf1f3' }, settingsButton: { alignItems: 'center', marginTop: 12, padding: 11, borderRadius: 10, backgroundColor: '#edf7f2' }, settingsText: { color: '#087f5b', fontSize: 10, fontWeight: '800' }, changePrinterButton: { paddingHorizontal: 9, paddingVertical: 7, borderRadius: 8, backgroundColor: '#edf7f2' }, changePrinterText: { color: '#087f5b', fontSize: 9, fontWeight: '900' },
 });
@@ -57,6 +60,13 @@ export default function OrdersScreen() {
   const [refundError, setRefundError] = useState('');
   const [refundEvidence, setRefundEvidence] = useState<ImagePicker.ImagePickerAsset[]>([]);
   const [refundVisible, setRefundVisible] = useState(false);
+  const [exchangeVisible, setExchangeVisible] = useState(false);
+  const [notice, setNotice] = useState('');
+  const [exchangeReceipt, setExchangeReceipt] = useState<ExchangeReceipt | null>(null);
+  const [voidTarget, setVoidTarget] = useState<NonNullable<Order['exchangesOut']>[number] | null>(null);
+  const [voidReason, setVoidReason] = useState('');
+  const [voiding, setVoiding] = useState(false);
+  const [voidError, setVoidError] = useState('');
   const [printer, setPrinter] = useState<PairedPrinter | null>(null);
   const [printerPickerVisible, setPrinterPickerVisible] = useState(false);
   const [printerDevices, setPrinterDevices] = useState<PairedPrinter[]>([]);
@@ -74,6 +84,20 @@ export default function OrdersScreen() {
   }, [navigation, selected]);
 
   useEffect(() => { void getSavedPrinter().then(setPrinter).catch(() => setPrinter(null)); }, []);
+
+  // Notifications deep-link here with ?orderId=; open that order's detail, then drop the param so back/refresh stay on the list.
+  const { orderId } = useLocalSearchParams<{ orderId?: string }>();
+  useEffect(() => {
+    if (!orderId) return;
+    let active = true;
+    void authorizedRequest<Order>(`orders/${orderId}`)
+      .then((detail) => { if (active) void openOrder(detail); })
+      .catch((e: unknown) => { if (active) setError(e instanceof Error ? e.message : 'Pesanan dari notifikasi tidak ditemukan.'); })
+      .finally(() => router.setParams({ orderId: undefined }));
+    return () => { active = false; };
+    // openOrder only sets local state; re-running on its identity would reopen the same order.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [authorizedRequest, orderId]);
 
   const { from, to } = getRange(rangePreset);
   const params = new URLSearchParams({ sortBy: 'createdAt', sortOrder: 'desc', from, to });
@@ -96,8 +120,8 @@ export default function OrdersScreen() {
 
   async function openOrder(order: Order) {
     setRefundAmount(''); setRefundReason(''); setReturnToStock(false); setReturnQuantities({}); setRefundEvidence([]); setRefundError('');
-    setSelected(order); setDetailLoading(true); setPrintError(''); setError('');
-    try { const detail = await authorizedRequest<Order>(`orders/${order.id}`); setSelected(detail); setRefundMethod(detail.payments?.find((payment) => payment.status === 'COMPLETED')?.method ?? 'CASH'); }
+    setSelected(order); setDetailLoading(true); setPrintError(''); setError(''); setNotice('');
+    try { const detail = await authorizedRequest<Order>(`orders/${order.id}`); setSelected(detail); setRefundMethod(detail.payments?.find((payment) => payment.status === 'COMPLETED' && payment.method !== 'EXCHANGE')?.method ?? 'CASH'); }
     catch (e) { setError(e instanceof Error ? e.message : 'Gagal memuat detail pesanan.'); }
     finally { setDetailLoading(false); }
   }
@@ -112,7 +136,7 @@ export default function OrdersScreen() {
   async function sendBluetoothReceipt(target: PairedPrinter) {
     if (!selected) return;
     setPrinting(true); setPrintError('');
-    try { await printThermalReceipt(selected, target); setPreviewVisible(false); }
+    try { await (exchangeReceipt ? printThermalExchangeReceipt(exchangeReceipt, target) : printThermalReceipt(selected, target)); setPreviewVisible(false); setExchangeReceipt(null); }
     catch (cause) { setPrintError(cause instanceof Error ? cause.message : 'Nota gagal dicetak.'); }
     finally { setPrinting(false); }
   }
@@ -123,6 +147,33 @@ export default function OrdersScreen() {
     try { await savePrinter(target); setPrinter(target); setPrinterPickerVisible(false); setPreviewVisible(true); }
     catch (cause) { setPrintError(cause instanceof Error ? cause.message : 'Printer gagal disimpan.'); }
     finally { setPrinterLoading(false); }
+  }
+
+  /** Exchange receipts reuse the order receipt preview and printer; `originalOrderId` owns the exchange. */
+  async function printExchange(originalOrderId: string, exchangeId: string) {
+    setPrintError(''); setPrinting(true);
+    try {
+      const receipt = await authorizedRequest<ExchangeReceipt>(`orders/${originalOrderId}/exchanges/${exchangeId}`);
+      if (Platform.OS === 'android') {
+        setExchangeReceipt(receipt);
+        if (!printer) await showPrinterPicker(); else setPreviewVisible(true);
+      } else await Print.printAsync({ html: `<!doctype html><html><body><pre style="font:12px monospace">${escapeHtml(formatExchangeReceipt(receipt))}</pre></body></html>` });
+    } catch (cause) { setPrintError(cause instanceof Error ? cause.message : 'Nota tukar barang gagal dimuat.'); }
+    finally { setPrinting(false); }
+  }
+
+  async function submitVoidExchange() {
+    if (!selected || !voidTarget) return;
+    if (!voidReason.trim()) { setVoidError('Alasan pembatalan wajib diisi.'); return; }
+    setVoiding(true); setVoidError('');
+    try {
+      await authorizedRequest(`orders/${selected.id}/exchanges/${voidTarget.id}/void`, { method: 'POST', body: JSON.stringify({ reason: voidReason.trim() }) });
+      setNotice(`${voidTarget.exchangeNumber} dibatalkan. Pesanan ${voidTarget.newOrder.orderNumber} dibatalkan dan stok dikembalikan.`);
+      setVoidTarget(null); setVoidReason('');
+      setSelected(await authorizedRequest<Order>(`orders/${selected.id}`));
+      await list.reload();
+    } catch (cause) { setVoidError(cause instanceof Error ? cause.message : 'Tukar barang gagal dibatalkan.'); }
+    finally { setVoiding(false); }
   }
 
   async function reprintOrder() {
@@ -141,14 +192,17 @@ export default function OrdersScreen() {
 
   const refundedAmount = (selected?.refunds ?? []).filter((refund) => refund.status === 'COMPLETED').reduce((total, refund) => total + Number(refund.amount), 0);
   const refundableAmount = Math.max(0, Number(selected?.grandTotal ?? 0) - refundedAmount);
-  const canRefund = Boolean(user?.permissions.includes('order.refund') && selected && ['COMPLETED', 'PARTIALLY_REFUNDED'].includes(selected.status) && refundableAmount > 0);
+  const returnable = Boolean(selected && ['COMPLETED', 'PARTIALLY_REFUNDED'].includes(selected.status) && refundableAmount > 0);
+  const canRefund = returnable && Boolean(user?.permissions.includes('order.refund'));
   const alreadyReturned = (lineId: string) => (selected?.refunds ?? []).filter((refund) => refund.status === 'COMPLETED').flatMap((refund) => refund.items ?? []).filter((item) => item.orderItemId === lineId).reduce((total, item) => total + Number(item.quantity), 0);
-  const paymentMethods = [...new Set((selected?.payments ?? []).filter((payment) => payment.status === 'COMPLETED').map((payment) => payment.method))];
   // Order-level discounts, tax and service are spread over the lines, so returning everything refunds the grand total.
   const itemsTotal = (selected?.items ?? []).reduce((total, item) => total + Number(item.totalPrice), 0);
   const priceFactor = itemsTotal > 0 ? Number(selected?.grandTotal ?? 0) / itemsTotal : 0;
   const unitRefund = (item: OrderLine) => Number(item.quantity) > 0 ? (Number(item.totalPrice) / Number(item.quantity)) * priceFactor : 0;
   const returnedAmount = Math.min(refundableAmount, Math.round((selected?.items ?? []).reduce((total, item) => total + unitRefund(item) * Number(returnQuantities[item.id] || 0), 0)));
+  // Cashiers may exchange goods (only the difference moves money); cash refunds stay with admins.
+  const canExchange = returnable && Boolean(user?.permissions.includes('order.exchange') && user.permissions.includes('order.create'));
+  const canVoidExchange = Boolean(user?.permissions.includes('order.refund'));
   const canReprint = Boolean(selected && ['COMPLETED', 'PARTIALLY_REFUNDED', 'REFUNDED'].includes(selected.status) && selected.items?.length);
 
   async function selectRefundEvidence(useCamera: boolean) {
@@ -195,13 +249,26 @@ export default function OrdersScreen() {
     finally { setRefunding(false); }
   }
 
+  async function finishExchange(result: ExchangeResult) {
+    setExchangeVisible(false);
+    const difference = Number(result.exchange.differenceAmount);
+    const settlement = difference > 0 ? ` · pelanggan bayar ${money(String(difference))}` : difference < 0 ? ` · toko kembalikan ${money(String(-difference))}` : '';
+    setNotice(`${result.exchange.exchangeNumber} berhasil. Pesanan baru ${result.newOrder.orderNumber}${settlement}.`);
+    if (selected) setSelected(await authorizedRequest<Order>(`orders/${selected.id}`));
+    await list.reload();
+  }
+
   if (selected) return <View style={styles.screen}><KeyboardAwareScrollView bottomOffset={24} contentContainerStyle={styles.page}>
     <View style={printStyles.printCard}>
           <View style={printStyles.printerInfo}><Printer size={19} color="#087f5b" /><View style={printStyles.printerLabels}><Text style={printStyles.printTitle}>Nota pembayaran</Text><Text style={printStyles.printerLabel}>{Platform.OS === 'android' ? printer?.name ?? 'Printer Bluetooth belum dipilih' : 'Cetak atau simpan melalui dialog sistem'}</Text></View>{Platform.OS === 'android' ? <Pressable accessibilityRole="button" onPress={() => void showPrinterPicker()} style={printStyles.changePrinterButton}><Text style={printStyles.changePrinterText}>{printer ? 'Ganti' : 'Pilih'}</Text></Pressable> : null}</View>
           <View style={printStyles.actionRow}>
             <Pressable accessibilityRole="button" disabled={detailLoading || printing || !canReprint} onPress={() => void reprintOrder()} style={[printStyles.printButton, printStyles.actionButton, (detailLoading || printing || !canReprint) && styles.disabled]}>{printing ? <ActivityIndicator color="#fff" /> : <><Printer size={16} color="#fff" /><Text style={printStyles.printButtonText}>Cetak ulang nota</Text></>}</Pressable>
-            {canRefund ? <Pressable accessibilityRole="button" onPress={() => { setRefundError(''); setRefundVisible(true); }} style={[printStyles.printButton, printStyles.actionButton, printStyles.refundOpenButton]}><Undo2 size={16} color="#b42318" /><Text style={printStyles.refundOpenText}>Pengembalian</Text></Pressable> : null}
           </View>
+          {canRefund || canExchange ? <View style={printStyles.actionRow}>
+            {canRefund ? <Pressable accessibilityRole="button" onPress={() => { setRefundError(''); setRefundVisible(true); }} style={[printStyles.printButton, printStyles.actionButton, printStyles.refundOpenButton]}><Undo2 size={16} color="#b42318" /><Text style={printStyles.refundOpenText}>Pengembalian</Text></Pressable> : null}
+            {canExchange ? <Pressable accessibilityRole="button" onPress={() => setExchangeVisible(true)} style={[printStyles.printButton, printStyles.actionButton, printStyles.exchangeOpenButton]}><ArrowLeftRight size={16} color="#1d5fbf" /><Text style={printStyles.exchangeOpenText}>Tukar barang</Text></Pressable> : null}
+          </View> : null}
+          {notice ? <Text style={printStyles.notice}>{notice}</Text> : null}
       {printError ? <Text style={printStyles.printError}>{printError}</Text> : null}
     </View>
       <View style={styles.card}><View style={styles.row}><Text style={styles.muted}>Status</Text><Text style={styles.status}>{formatStatus(selected.status)}</Text></View><View style={styles.row}><Text style={styles.muted}>Cabang</Text><Text style={styles.value}>{selected.branch?.name ?? '—'}</Text></View><View style={styles.row}><Text style={styles.muted}>Tanggal</Text><Text style={styles.value}>{formatDate(selected.createdAt)}</Text></View><View style={styles.row}><Text style={styles.muted}>Total</Text><Text style={styles.total}>{money(selected.grandTotal)}</Text></View></View>
@@ -209,35 +276,55 @@ export default function OrdersScreen() {
     {(selected.items ?? []).map((item) => <View key={item.id} style={styles.line}><View style={styles.flex}><Text style={styles.value}>{item.productNameSnapshot}{item.variantNameSnapshot ? ` · ${item.variantNameSnapshot}` : ''}</Text><Text style={styles.muted}>{item.quantity} item</Text>{item.addons?.map((addon, i) => <Text key={`${item.id}-${i}`} style={styles.muted}>+ {addon.addonNameSnapshot} × {addon.quantity}</Text>)}</View><Text style={styles.value}>{money(item.totalPrice)}</Text></View>)}
     <Text style={styles.sectionTitle}>Pembayaran</Text>
       {(selected.payments ?? []).map((payment, i) => <View key={`${payment.method}-${i}`} style={styles.line}><Text style={styles.value}>{formatStatus(payment.method)} · {formatStatus(payment.status)}</Text><Text style={styles.value}>{money(payment.amount)}</Text></View>)}
-    {(selected.refunds?.length ?? 0) > 0 ? <><Text style={styles.sectionTitle}>Pengembalian</Text>{selected.refunds?.map((refund, i) => <View key={`${refund.refundNumber ?? i}`} style={styles.refundHistory}><View style={styles.line}><View style={styles.flex}><Text style={styles.value}>{refund.refundNumber ?? 'Refund'}</Text><Text style={styles.muted}>{refund.reason}</Text></View><Text style={styles.value}>{money(refund.amount)}</Text></View>{(refund.evidenceImages?.length ?? 0) > 0 ? <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.evidenceRow}>{refund.evidenceImages?.map((image) => <Image key={image.id} source={{ uri: image.url }} style={styles.evidenceImage} />)}</ScrollView> : null}</View>)}</> : null}
+    {selected.exchangeIn || selected.exchangesOut?.length ? <><Text style={styles.sectionTitle}>Tukar barang</Text>
+      {selected.exchangeIn ? <View style={styles.line}><View style={styles.flex}><Text style={styles.value}>Hasil tukar dari {selected.exchangeIn.originalOrder.orderNumber}</Text><Text style={styles.muted}>{selected.exchangeIn.exchangeNumber} · kredit {money(selected.exchangeIn.creditAmount)}{selected.exchangeIn.status === 'VOIDED' ? ' · Dibatalkan' : ''}</Text></View><Pressable accessibilityRole="button" disabled={printing} onPress={() => void printExchange(selected.exchangeIn!.originalOrder.id, selected.exchangeIn!.id)} style={styles.smallAction}><Text style={styles.smallActionText}>Nota</Text></Pressable></View> : null}
+      {selected.exchangesOut?.map((exchange) => <View key={exchange.id} style={styles.exchangeRow}>
+        <View style={styles.row}><View style={styles.flex}><Text style={styles.value}>Ditukar ke {exchange.newOrder.orderNumber}</Text><Text style={styles.muted}>{exchange.exchangeNumber} · {formatDate(exchange.createdAt)}</Text></View><Text style={styles.value}>{Number(exchange.differenceAmount) > 0 ? '+' : Number(exchange.differenceAmount) < 0 ? '−' : ''}{money(String(Math.abs(Number(exchange.differenceAmount))))}</Text></View>
+        {exchange.status === 'VOIDED' ? <Text style={styles.voidedText}>Dibatalkan{exchange.voidReason ? `: ${exchange.voidReason}` : ''}</Text> : null}
+        <View style={styles.exchangeActions}>
+          <Pressable accessibilityRole="button" disabled={printing} onPress={() => void printExchange(selected.id, exchange.id)} style={styles.smallAction}><Text style={styles.smallActionText}>Nota</Text></Pressable>
+          {canVoidExchange && exchange.status === 'COMPLETED' ? <Pressable accessibilityRole="button" onPress={() => { setVoidTarget(exchange); setVoidReason(''); setVoidError(''); }} style={[styles.smallAction, styles.smallDanger]}><Text style={[styles.smallActionText, styles.smallDangerText]}>Batalkan tukar</Text></Pressable> : null}
+        </View>
+      </View>)}</> : null}
+    {(selected.refunds?.length ?? 0) > 0 ? <><Text style={styles.sectionTitle}>Pengembalian</Text>{selected.refunds?.map((refund, i) => <View key={`${refund.refundNumber ?? i}`} style={styles.refundHistory}><View style={styles.line}><View style={styles.flex}><Text style={styles.value}>{refund.refundNumber ?? 'Refund'}{refund.exchangeId ? ' · Tukar barang' : ''}</Text><Text style={styles.muted}>{refund.reason}</Text></View><Text style={styles.value}>{money(refund.amount)}</Text></View>{(refund.evidenceImages?.length ?? 0) > 0 ? <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.evidenceRow}>{refund.evidenceImages?.map((image, index, all) => <PreviewImage key={image.id} uri={image.url} images={all.map((entry) => entry.url)} index={index} style={styles.evidenceImage} />)}</ScrollView> : null}</View>)}</> : null}
   </KeyboardAwareScrollView>
   <Modal visible={refundVisible} transparent animationType="slide" onRequestClose={() => setRefundVisible(false)}><View style={printStyles.modalBackdrop}><View style={[styles.refundSheet, { paddingBottom: Math.max(insets.bottom + 8, 16) }]}>
     <View style={styles.refundSheetHeader}><View style={styles.flex}><Text style={styles.refundSheetTitle}>Proses pengembalian</Text><Text style={styles.muted}>{selected.orderNumber}</Text></View><Pressable accessibilityRole="button" accessibilityLabel="Tutup form pengembalian" disabled={refunding} onPress={() => setRefundVisible(false)} style={styles.refundClose}><X size={18} color="#53677e" /></Pressable></View>
     <KeyboardAwareScrollView bottomOffset={24} style={styles.refundSheetBody} contentContainerStyle={styles.refundSheetContent} keyboardShouldPersistTaps="handled">
       <Text style={styles.muted}>Sisa yang dapat dikembalikan: {money(String(refundableAmount))}</Text>
-      <Text style={styles.fieldLabel}>Metode pengembalian</Text><View style={styles.methodRow}>{paymentMethods.map((method) => <Pressable key={method} onPress={() => setRefundMethod(method)} style={[styles.method, refundMethod === method && styles.methodSelected]}><Text style={[styles.methodText, refundMethod === method && styles.methodTextSelected]}>{formatStatus(method)}</Text></Pressable>)}</View>
+      <Text style={styles.fieldLabel}>Metode pengembalian</Text><View style={styles.methodRow}>{refundMethodsFor(selected.payments).map((method) => <Pressable key={method} onPress={() => setRefundMethod(method)} style={[styles.method, refundMethod === method && styles.methodSelected]}><Text style={[styles.methodText, refundMethod === method && styles.methodTextSelected]}>{formatStatus(method)}</Text></Pressable>)}</View>
       <Text style={styles.fieldLabel}>Alasan *</Text><TextInput accessibilityLabel="Alasan pengembalian" style={[styles.input, styles.multiline]} value={refundReason} onChangeText={setRefundReason} placeholder="Wajib diisi, contoh: barang rusak" placeholderTextColor="#87948c" multiline />
       <Pressable accessibilityRole="checkbox" accessibilityState={{ checked: returnToStock }} onPress={() => { setReturnToStock((value) => !value); setRefundError(''); }} style={styles.checkRow}><View style={[styles.checkbox, returnToStock && styles.checkboxChecked]}><Text style={styles.checkMark}>{returnToStock ? '✓' : ''}</Text></View><Text style={styles.value}>Kembalikan item ke stok</Text></Pressable>
       {returnToStock ? (selected.items ?? []).map((item) => { const max = Math.max(0, Number(item.quantity) - alreadyReturned(item.id)); return <View key={item.id} style={styles.returnLine}><View style={styles.flex}><Text style={styles.value}>{item.productNameSnapshot} (sisa {max})</Text><Text style={styles.muted}>{money(String(Math.round(unitRefund(item))))} / item</Text></View><TextInput accessibilityLabel={`Jumlah retur ${item.productNameSnapshot}`} keyboardType="decimal-pad" style={styles.quantityInput} value={returnQuantities[item.id] ?? ''} onChangeText={(value) => setReturnQuantities((current) => ({ ...current, [item.id]: value }))} placeholder="0" placeholderTextColor="#87948c" /></View>; }) : null}
       <Text style={styles.fieldLabel}>Nominal *</Text><TextInput accessibilityLabel="Nominal pengembalian" keyboardType="decimal-pad" editable={!returnToStock} style={[styles.input, returnToStock && styles.inputReadonly]} value={returnToStock ? String(returnedAmount) : refundAmount} onChangeText={setRefundAmount} placeholder={String(refundableAmount)} placeholderTextColor="#87948c" />
       {returnToStock ? <Text style={styles.muted}>Dihitung otomatis dari jumlah item yang dikembalikan.</Text> : null}
       <Text style={styles.fieldLabel}>Bukti refund *</Text><Text style={styles.muted}>Minimal 1 dan maksimal 8 foto.</Text><View style={styles.evidenceActions}><Pressable onPress={() => void selectRefundEvidence(true)} style={styles.evidenceButton}><Text style={styles.evidenceButtonText}>Ambil foto</Text></Pressable><Pressable onPress={() => void selectRefundEvidence(false)} style={styles.evidenceButton}><Text style={styles.evidenceButtonText}>Pilih galeri</Text></Pressable></View>
-      {refundEvidence.length ? <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.evidenceRow}>{refundEvidence.map((asset, index) => <View key={`${asset.assetId ?? asset.uri}-${index}`}><Image source={{ uri: asset.uri }} style={styles.evidenceImage} /><Pressable accessibilityLabel={`Hapus foto ${index + 1}`} onPress={() => setRefundEvidence((current) => current.filter((_, itemIndex) => itemIndex !== index))} style={styles.removeEvidence}><Text style={styles.removeEvidenceText}>×</Text></Pressable></View>)}</ScrollView> : null}
+      {refundEvidence.length ? <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.evidenceRow}>{refundEvidence.map((asset, index) => <View key={`${asset.assetId ?? asset.uri}-${index}`}><PreviewImage uri={asset.uri} images={refundEvidence.map((entry) => entry.uri)} index={index} style={styles.evidenceImage} /><Pressable accessibilityLabel={`Hapus foto ${index + 1}`} onPress={() => setRefundEvidence((current) => current.filter((_, itemIndex) => itemIndex !== index))} style={styles.removeEvidence}><Text style={styles.removeEvidenceText}>×</Text></Pressable></View>)}</ScrollView> : null}
     </KeyboardAwareScrollView>
     {refundError ? <Text style={[styles.errorText, styles.refundSheetError]}>{refundError}</Text> : null}
       <Pressable accessibilityRole="button" disabled={refunding || !refundReason.trim()} onPress={() => void submitRefund()} style={[styles.refundButton, styles.refundSheetButton, (refunding || !refundReason.trim()) && styles.disabled]}>{refunding ? <ActivityIndicator color="#fff" /> : <Text style={styles.refundButtonText}>Simpan pengembalian</Text>}</Pressable>
   </View></View></Modal>
+  {canExchange && exchangeVisible ? <ExchangeSheet visible order={selected} onClose={() => setExchangeVisible(false)} onDone={(result) => void finishExchange(result)} /> : null}
   <ThermalPreview
     visible={previewVisible}
-    title={`Nota ${selected.orderNumber}`}
-    text={formatOrderReceipt(selected)}
+    title={exchangeReceipt ? `Nota ${exchangeReceipt.exchangeNumber}` : `Nota ${selected.orderNumber}`}
+    text={exchangeReceipt ? formatExchangeReceipt(exchangeReceipt) : formatOrderReceipt(selected)}
     printer={printer}
     printing={printing}
     error={printError}
     onPrint={() => { if (printer) void sendBluetoothReceipt(printer); }}
     onChangePrinter={() => { setPreviewVisible(false); void showPrinterPicker(); }}
-    onClose={() => { setPreviewVisible(false); setPrintError(''); }}
+    onClose={() => { setPreviewVisible(false); setExchangeReceipt(null); setPrintError(''); }}
   />
+  <Modal visible={Boolean(voidTarget)} transparent animationType="slide" onRequestClose={() => { if (!voiding) setVoidTarget(null); }}><View style={printStyles.modalBackdrop}><View style={[styles.refundSheet, { paddingBottom: Math.max(insets.bottom + 8, 16) }]}>
+    <View style={styles.refundSheetHeader}><View style={styles.flex}><Text style={styles.refundSheetTitle}>Batalkan tukar barang</Text><Text style={styles.muted}>{voidTarget?.exchangeNumber}</Text></View><Pressable accessibilityRole="button" accessibilityLabel="Tutup" disabled={voiding} onPress={() => setVoidTarget(null)} style={styles.refundClose}><X size={18} color="#53677e" /></Pressable></View>
+    <View style={styles.refundSheetContent}>
+      <Text style={styles.warningText}>Pesanan baru {voidTarget?.newOrder.orderNumber} akan dibatalkan, stok dikembalikan, dan pesanan asal dibuka kembali. Uang selisih yang sudah diterima atau dikembalikan perlu diselesaikan manual dengan pelanggan.</Text>
+      <Text style={styles.fieldLabel}>Alasan *</Text><TextInput accessibilityLabel="Alasan pembatalan tukar barang" style={[styles.input, styles.multiline]} value={voidReason} onChangeText={setVoidReason} placeholder="Wajib diisi, contoh: salah input barang" placeholderTextColor="#87948c" multiline />
+    </View>
+    {voidError ? <Text style={[styles.errorText, styles.refundSheetError]}>{voidError}</Text> : null}
+    <Pressable accessibilityRole="button" disabled={voiding || !voidReason.trim()} onPress={() => void submitVoidExchange()} style={[styles.refundButton, styles.refundSheetButton, styles.dangerButton, (voiding || !voidReason.trim()) && styles.disabled]}>{voiding ? <ActivityIndicator color="#fff" /> : <Text style={styles.refundButtonText}>Batalkan tukar barang</Text>}</Pressable>
+  </View></View></Modal>
   <Modal visible={printerPickerVisible} transparent animationType="slide" onRequestClose={() => setPrinterPickerVisible(false)}>
     <View style={printStyles.modalBackdrop}><View style={[printStyles.printerSheet, { paddingBottom: Math.max(insets.bottom + 8, 25) }]}>
       <View style={printStyles.modalHeader}><Text style={printStyles.modalTitle}>Pilih printer Bluetooth</Text><Pressable accessibilityRole="button" accessibilityLabel="Tutup pemilih printer" onPress={() => setPrinterPickerVisible(false)} style={printStyles.closeButton}><X size={19} color="#526276" /></Pressable></View>
@@ -265,4 +352,4 @@ export default function OrdersScreen() {
   </KeyboardAwareScrollView></View>;
 }
 
-const styles = StyleSheet.create({ screen: { flex: 1, backgroundColor: '#f5f7f6' }, rangeControl: { flexDirection: 'row', gap: 4, marginBottom: 10, padding: 4, borderRadius: 11, backgroundColor: '#e9eef1' }, rangeButton: { flex: 1, minHeight: 34, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 5, borderRadius: 8 }, rangeButtonActive: { backgroundColor: '#07885f' }, rangeText: { color: '#63758b', fontSize: 9, fontWeight: '800' }, rangeTextActive: { color: '#fff' }, rangeBadge: { minWidth: 17, height: 17, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 4, borderRadius: 9, backgroundColor: '#d92d2d' }, rangeBadgeActive: { backgroundColor: '#fff' }, rangeBadgeText: { color: '#fff', fontSize: 8, fontWeight: '900' }, rangeBadgeTextActive: { color: '#07885f' },page: { padding: 18, paddingBottom: 35 }, eyebrow: { color: '#087f5b', fontSize: 10, fontWeight: '900', letterSpacing: 1.2 }, title: { marginTop: 6, color: '#172820', fontSize: 25, fontWeight: '900' }, subtitle: { marginTop: 5, marginBottom: 14, color: '#718078', fontSize: 12 }, search: { height: 46, marginBottom: 12, paddingHorizontal: 13, borderWidth: 1, borderColor: '#dce4df', borderRadius: 13, backgroundColor: '#fff', color: '#172820' }, loader: { margin: 18 }, orderCard: { marginBottom: 9, padding: 14, borderWidth: 1, borderColor: '#e6ece8', borderRadius: 15, backgroundColor: '#fff' }, pressed: { borderColor: '#a8d7c2', backgroundColor: '#f7fcf9' }, row: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }, orderNumber: { color: '#172820', fontSize: 14, fontWeight: '900' }, status: { overflow: 'hidden', paddingHorizontal: 8, paddingVertical: 5, borderRadius: 8, backgroundColor: '#e7f5ee', color: '#087f5b', fontSize: 9, fontWeight: '900' }, muted: { marginTop: 5, color: '#84918b', fontSize: 10 }, value: { color: '#34453b', fontSize: 12, fontWeight: '700' }, total: { color: '#087f5b', fontSize: 15, fontWeight: '900' }, orderFooter: { marginTop: 9, paddingTop: 9, borderTopWidth: 1, borderTopColor: '#edf1ee' }, detailLink: { color: '#087f5b', fontSize: 11, fontWeight: '800' }, empty: { alignItems: 'center', marginTop: 14, padding: 22, borderRadius: 15, backgroundColor: '#fff' }, disabled: { opacity: 0.4 }, errorBox: { padding: 13, borderRadius: 13, backgroundColor: '#fff1f0' }, errorText: { color: '#a3332a', fontSize: 11 }, retry: { marginTop: 8, color: '#087f5b', fontSize: 11, fontWeight: '900' }, card: { marginTop: 16, padding: 14, borderRadius: 15, backgroundColor: '#fff' }, sectionTitle: { marginTop: 19, marginBottom: 7, color: '#172820', fontSize: 14, fontWeight: '900' }, line: { minHeight: 48, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 10, paddingVertical: 9, borderBottomWidth: 1, borderBottomColor: '#e8eeea' }, flex: { flex: 1 }, back: { marginBottom: 18 }, backText: { color: '#087f5b', fontSize: 12, fontWeight: '800' }, refundSheet: { maxHeight: '90%', paddingTop: 14, borderTopLeftRadius: 18, borderTopRightRadius: 18, backgroundColor: '#fff' }, refundSheetHeader: { flexDirection: 'row', alignItems: 'center', gap: 10, paddingHorizontal: 16, paddingBottom: 10, borderBottomWidth: 1, borderBottomColor: '#edf1ee' }, refundSheetTitle: { color: '#172820', fontSize: 15, fontWeight: '900' }, refundClose: { width: 34, height: 34, alignItems: 'center', justifyContent: 'center', borderRadius: 10, backgroundColor: '#eff3f5' }, refundSheetBody: { flexGrow: 0 }, refundSheetContent: { paddingHorizontal: 16, paddingTop: 4, paddingBottom: 12 }, refundSheetError: { marginHorizontal: 16, marginTop: 8 }, refundSheetButton: { marginHorizontal: 16 }, inputReadonly: { backgroundColor: '#f1f5f2', color: '#087f5b', fontWeight: '900' }, refundCard: { marginTop: 20, padding: 14, borderRadius: 15, backgroundColor: '#fff', borderWidth: 1, borderColor: '#e6ece8' }, fieldLabel: { marginTop: 13, marginBottom: 6, color: '#34453b', fontSize: 11, fontWeight: '800' }, input: { minHeight: 44, paddingHorizontal: 12, borderWidth: 1, borderColor: '#dce4df', borderRadius: 11, color: '#172820', backgroundColor: '#fff' }, multiline: { minHeight: 76, paddingTop: 11, textAlignVertical: 'top' }, methodRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 7 }, method: { paddingHorizontal: 10, paddingVertical: 8, borderRadius: 10, backgroundColor: '#f1f5f2' }, methodSelected: { backgroundColor: '#e7f5ee' }, methodText: { color: '#718078', fontSize: 9, fontWeight: '800' }, methodTextSelected: { color: '#087f5b' }, checkRow: { flexDirection: 'row', alignItems: 'center', gap: 9, marginTop: 16, minHeight: 44 }, checkbox: { width: 22, height: 22, alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: '#b8c8bf', borderRadius: 6 }, checkboxChecked: { borderColor: '#087f5b', backgroundColor: '#087f5b' }, checkMark: { color: '#fff', fontWeight: '900' }, returnLine: { flexDirection: 'row', alignItems: 'center', gap: 10, paddingVertical: 8 }, quantityInput: { width: 74, height: 40, textAlign: 'center', borderWidth: 1, borderColor: '#dce4df', borderRadius: 10, color: '#172820' }, refundHistory: { borderBottomWidth: 1, borderBottomColor: '#e8eeea', paddingBottom: 8 }, evidenceActions: { flexDirection: 'row', gap: 8, marginTop: 8 }, evidenceButton: { flex: 1, alignItems: 'center', padding: 11, borderRadius: 10, backgroundColor: '#e7f5ee' }, evidenceButtonText: { color: '#087f5b', fontSize: 11, fontWeight: '800' }, evidenceRow: { gap: 8, paddingVertical: 9 }, evidenceImage: { width: 72, height: 72, borderRadius: 10, backgroundColor: '#edf1ee' }, removeEvidence: { position: 'absolute', top: 3, right: 3, width: 22, height: 22, alignItems: 'center', justifyContent: 'center', borderRadius: 11, backgroundColor: '#a3332a' }, removeEvidenceText: { color: '#fff', fontSize: 16, fontWeight: '900', lineHeight: 18 }, refundButton: { minHeight: 46, alignItems: 'center', justifyContent: 'center', marginTop: 13, borderRadius: 12, backgroundColor: '#087f5b' }, refundButtonText: { color: '#fff', fontSize: 12, fontWeight: '900' } });
+const styles = StyleSheet.create({ screen: { flex: 1, backgroundColor: '#f5f7f6' }, rangeControl: { flexDirection: 'row', gap: 4, marginBottom: 10, padding: 4, borderRadius: 11, backgroundColor: '#e9eef1' }, rangeButton: { flex: 1, minHeight: 34, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 5, borderRadius: 8 }, rangeButtonActive: { backgroundColor: '#07885f' }, rangeText: { color: '#63758b', fontSize: 9, fontWeight: '800' }, rangeTextActive: { color: '#fff' }, rangeBadge: { minWidth: 17, height: 17, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 4, borderRadius: 9, backgroundColor: '#d92d2d' }, rangeBadgeActive: { backgroundColor: '#fff' }, rangeBadgeText: { color: '#fff', fontSize: 8, fontWeight: '900' }, rangeBadgeTextActive: { color: '#07885f' },page: { padding: 18, paddingBottom: 35 }, eyebrow: { color: '#087f5b', fontSize: 10, fontWeight: '900', letterSpacing: 1.2 }, title: { marginTop: 6, color: '#172820', fontSize: 25, fontWeight: '900' }, subtitle: { marginTop: 5, marginBottom: 14, color: '#718078', fontSize: 12 }, search: { height: 46, marginBottom: 12, paddingHorizontal: 13, borderWidth: 1, borderColor: '#dce4df', borderRadius: 13, backgroundColor: '#fff', color: '#172820' }, loader: { margin: 18 }, orderCard: { marginBottom: 9, padding: 14, borderWidth: 1, borderColor: '#e6ece8', borderRadius: 15, backgroundColor: '#fff' }, pressed: { borderColor: '#a8d7c2', backgroundColor: '#f7fcf9' }, row: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }, orderNumber: { color: '#172820', fontSize: 14, fontWeight: '900' }, status: { overflow: 'hidden', paddingHorizontal: 8, paddingVertical: 5, borderRadius: 8, backgroundColor: '#e7f5ee', color: '#087f5b', fontSize: 9, fontWeight: '900' }, muted: { marginTop: 5, color: '#84918b', fontSize: 10 }, value: { color: '#34453b', fontSize: 12, fontWeight: '700' }, total: { color: '#087f5b', fontSize: 15, fontWeight: '900' }, orderFooter: { marginTop: 9, paddingTop: 9, borderTopWidth: 1, borderTopColor: '#edf1ee' }, detailLink: { color: '#087f5b', fontSize: 11, fontWeight: '800' }, empty: { alignItems: 'center', marginTop: 14, padding: 22, borderRadius: 15, backgroundColor: '#fff' }, disabled: { opacity: 0.4 }, errorBox: { padding: 13, borderRadius: 13, backgroundColor: '#fff1f0' }, errorText: { color: '#a3332a', fontSize: 11 }, retry: { marginTop: 8, color: '#087f5b', fontSize: 11, fontWeight: '900' }, card: { marginTop: 16, padding: 14, borderRadius: 15, backgroundColor: '#fff' }, sectionTitle: { marginTop: 19, marginBottom: 7, color: '#172820', fontSize: 14, fontWeight: '900' }, line: { minHeight: 48, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 10, paddingVertical: 9, borderBottomWidth: 1, borderBottomColor: '#e8eeea' }, flex: { flex: 1 }, back: { marginBottom: 18 }, backText: { color: '#087f5b', fontSize: 12, fontWeight: '800' }, refundSheet: { maxHeight: '90%', paddingTop: 14, borderTopLeftRadius: 18, borderTopRightRadius: 18, backgroundColor: '#fff' }, refundSheetHeader: { flexDirection: 'row', alignItems: 'center', gap: 10, paddingHorizontal: 16, paddingBottom: 10, borderBottomWidth: 1, borderBottomColor: '#edf1ee' }, refundSheetTitle: { color: '#172820', fontSize: 15, fontWeight: '900' }, refundClose: { width: 34, height: 34, alignItems: 'center', justifyContent: 'center', borderRadius: 10, backgroundColor: '#eff3f5' }, refundSheetBody: { flexGrow: 0 }, refundSheetContent: { paddingHorizontal: 16, paddingTop: 4, paddingBottom: 12 }, refundSheetError: { marginHorizontal: 16, marginTop: 8 }, refundSheetButton: { marginHorizontal: 16 }, inputReadonly: { backgroundColor: '#f1f5f2', color: '#087f5b', fontWeight: '900' }, refundCard: { marginTop: 20, padding: 14, borderRadius: 15, backgroundColor: '#fff', borderWidth: 1, borderColor: '#e6ece8' }, fieldLabel: { marginTop: 13, marginBottom: 6, color: '#34453b', fontSize: 11, fontWeight: '800' }, input: { minHeight: 44, paddingHorizontal: 12, borderWidth: 1, borderColor: '#dce4df', borderRadius: 11, color: '#172820', backgroundColor: '#fff' }, multiline: { minHeight: 76, paddingTop: 11, textAlignVertical: 'top' }, methodRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 7 }, method: { paddingHorizontal: 10, paddingVertical: 8, borderRadius: 10, backgroundColor: '#f1f5f2' }, methodSelected: { backgroundColor: '#e7f5ee' }, methodText: { color: '#718078', fontSize: 9, fontWeight: '800' }, methodTextSelected: { color: '#087f5b' }, checkRow: { flexDirection: 'row', alignItems: 'center', gap: 9, marginTop: 16, minHeight: 44 }, checkbox: { width: 22, height: 22, alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: '#b8c8bf', borderRadius: 6 }, checkboxChecked: { borderColor: '#087f5b', backgroundColor: '#087f5b' }, checkMark: { color: '#fff', fontWeight: '900' }, returnLine: { flexDirection: 'row', alignItems: 'center', gap: 10, paddingVertical: 8 }, quantityInput: { width: 74, height: 40, textAlign: 'center', borderWidth: 1, borderColor: '#dce4df', borderRadius: 10, color: '#172820' }, refundHistory: { borderBottomWidth: 1, borderBottomColor: '#e8eeea', paddingBottom: 8 }, evidenceActions: { flexDirection: 'row', gap: 8, marginTop: 8 }, evidenceButton: { flex: 1, alignItems: 'center', padding: 11, borderRadius: 10, backgroundColor: '#e7f5ee' }, evidenceButtonText: { color: '#087f5b', fontSize: 11, fontWeight: '800' }, evidenceRow: { gap: 8, paddingVertical: 9 }, evidenceImage: { width: 72, height: 72, borderRadius: 10, backgroundColor: '#edf1ee' }, removeEvidence: { position: 'absolute', top: 3, right: 3, width: 22, height: 22, alignItems: 'center', justifyContent: 'center', borderRadius: 11, backgroundColor: '#a3332a' }, removeEvidenceText: { color: '#fff', fontSize: 16, fontWeight: '900', lineHeight: 18 }, refundButton: { minHeight: 46, alignItems: 'center', justifyContent: 'center', marginTop: 13, borderRadius: 12, backgroundColor: '#087f5b' }, refundButtonText: { color: '#fff', fontSize: 12, fontWeight: '900' }, exchangeRow: { paddingVertical: 9, borderBottomWidth: 1, borderBottomColor: '#e8eeea' }, exchangeActions: { flexDirection: 'row', gap: 8, marginTop: 8 }, smallAction: { paddingHorizontal: 11, paddingVertical: 7, borderRadius: 9, backgroundColor: '#e7f5ee' }, smallActionText: { color: '#087f5b', fontSize: 10, fontWeight: '900' }, smallDanger: { backgroundColor: '#fff1f0' }, smallDangerText: { color: '#b42318' }, voidedText: { marginTop: 5, color: '#b42318', fontSize: 10, fontWeight: '800' }, warningText: { marginTop: 10, padding: 10, borderRadius: 10, backgroundColor: '#fff7e6', color: '#8a5a00', fontSize: 11, lineHeight: 16 }, dangerButton: { backgroundColor: '#b42318' } });

@@ -278,6 +278,61 @@ export async function printThermalReceipt(order: ReceiptOrder, printer: PairedPr
   await printThermalText(formatOrderReceipt(order), printer);
 }
 
+/** Shape of GET orders/:id/exchanges/:exchangeId. */
+export type ExchangeReceipt = {
+  exchangeNumber: string;
+  status: string;
+  reason: string;
+  voidReason?: string | null;
+  createdAt: string;
+  creditAmount: string;
+  newOrderTotal: string;
+  differenceAmount: string;
+  branch: { name: string };
+  originalOrder: { orderNumber: string; customerName?: string | null };
+  newOrder: { orderNumber: string };
+  returned: { name: string; quantity: string; unit: string; amount: string }[];
+  replacements: { name: string; quantity: string; unit: string; amount: string; addons: string[] }[];
+  settlements: { method: string; amount: string }[];
+};
+
+export function formatExchangeReceipt(exchange: ExchangeReceipt, width = THERMAL_WIDTH) {
+  const rule = '-'.repeat(width);
+  const difference = Number(exchange.differenceAmount);
+  const goods = (line: { name: string; quantity: string; unit: string; amount: string }) => [...wrap(line.name, width), columns(`${Number(line.quantity)} ${line.unit}`, cashRupiah(line.amount), width)];
+  return [
+    center(exchange.branch.name, width),
+    center(exchange.status === 'VOIDED' ? 'TUKAR BARANG DIBATALKAN' : 'BUKTI TUKAR BARANG', width),
+    center(exchange.exchangeNumber, width),
+    center(receiptDateTime(exchange.createdAt), width),
+    rule,
+    columns('Pesanan asal', exchange.originalOrder.orderNumber, width),
+    columns('Pesanan baru', exchange.newOrder.orderNumber, width),
+    ...(exchange.originalOrder.customerName ? wrap(`Pelanggan: ${exchange.originalOrder.customerName}`, width) : []),
+    rule,
+    'DIKEMBALIKAN',
+    ...exchange.returned.flatMap(goods),
+    rule,
+    'PENGGANTI',
+    ...exchange.replacements.flatMap((line) => [...goods(line), ...line.addons.flatMap((addon) => wrap(`+ ${addon}`, width))]),
+    rule,
+    columns('Nilai kembali', cashRupiah(exchange.creditAmount), width),
+    columns('Total pengganti', cashRupiah(exchange.newOrderTotal), width),
+    rule,
+    columns(difference > 0 ? 'PELANGGAN BAYAR' : difference < 0 ? 'TOKO KEMBALIKAN' : 'SELISIH', difference ? cashRupiah(Math.abs(difference)) : 'Rp 0', width),
+    ...exchange.settlements.map((entry) => columns(formatStatus(entry.method), cashRupiah(entry.amount), width)),
+    rule,
+    ...wrap(`Alasan: ${exchange.reason}`, width),
+    ...(exchange.status === 'VOIDED' && exchange.voidReason ? wrap(`Dibatalkan: ${exchange.voidReason}`, width) : []),
+    '',
+    center('Terima kasih', width),
+  ].join('\n');
+}
+
+export async function printThermalExchangeReceipt(exchange: ExchangeReceipt, printer: PairedPrinter) {
+  await printThermalText(formatExchangeReceipt(exchange), printer);
+}
+
 export async function printThermalCashClosingReceipt(closing: CashClosingReceipt, printer: PairedPrinter) {
   await printThermalText(formatCashClosingReceipt(closing), printer);
 }

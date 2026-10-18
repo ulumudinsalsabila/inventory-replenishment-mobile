@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { ActivityIndicator, Image, Pressable, RefreshControl, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { ActivityIndicator, Pressable, RefreshControl, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { useLocalSearchParams } from 'expo-router';
 import { ArrowDownLeft, ArrowUpRight, Boxes, ChevronRight, Coins, House, Package, X } from 'lucide-react-native';
 import { useAuth } from '../../auth/auth-provider';
@@ -7,6 +7,7 @@ import { LoadMoreFooter } from '../../components/load-more-footer';
 import { ApiError } from '../../lib/api';
 import { useInfiniteList, useLoadMoreOnScroll } from '../../lib/infinite-list';
 import { money, quantity } from '../../lib/report';
+import { PreviewImage } from '../../components/image-viewer';
 
 type Detail = {
   product: { id: string; name: string; sku: string; imageUrl: string | null; category: { name: string }; unit: { code: string; name: string }; costPrice: number; sellPrice: number };
@@ -63,7 +64,7 @@ export default function StockDetailScreen() {
   return <ScrollView {...scrollProps} style={styles.screen} contentContainerStyle={styles.page} refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => { setRefreshing(true); setReloadKey((value) => value + 1); if (tab === 'history') void history.refresh(); }} tintColor="#07956f" />}>
     <View style={styles.card}>
       <View style={styles.productRow}>
-        {product.imageUrl ? <Image source={{ uri: product.imageUrl }} style={styles.image} /> : <View style={[styles.image, styles.imageFallback]}><Package size={28} color="#8a9aab" /></View>}
+        {product.imageUrl ? <PreviewImage uri={product.imageUrl} accessibilityLabel={product.name} style={styles.image} /> : <View style={[styles.image, styles.imageFallback]}><Package size={28} color="#8a9aab" /></View>}
         <View style={styles.productInfo}><Text style={styles.productName}>{product.name}</Text><Text style={styles.productMeta}>{product.sku} · {product.category.name}</Text></View>
       </View>
       <View style={styles.statsRow}>

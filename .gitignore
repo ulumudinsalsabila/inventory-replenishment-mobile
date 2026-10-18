@@ -46,3 +46,5 @@ credentials/
 
 # Firebase service account keys (private, upload to EAS only)
 *-firebase-adminsdk-*.json
+# Firebase client config (keep local; provide to EAS as a file env var)
+google-services.json

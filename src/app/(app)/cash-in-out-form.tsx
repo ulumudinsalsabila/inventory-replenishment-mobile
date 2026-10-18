@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { ActivityIndicator, Image, Modal, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
+import { ActivityIndicator, Modal, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { File } from 'expo-file-system';
 import * as ImagePicker from 'expo-image-picker';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -8,6 +8,7 @@ import { router } from 'expo-router';
 import { useAuth } from '../../auth/auth-provider';
 import { ApiError } from '../../lib/api';
 import { KeyboardAwareScrollView } from 'react-native-keyboard-controller';
+import { PreviewImage } from '../../components/image-viewer';
 
 type Branch = { id: string; name: string; code: string };
 type Page<T> = { data: T[] };
@@ -130,7 +131,7 @@ export default function CashInOutFormScreen() {
     </KeyboardAwareScrollView> : null}
     {step === 1 ? <ScrollView contentContainerStyle={styles.content}>
       <View style={styles.card}><View style={styles.sectionHeading}><View><Text style={styles.sectionTitle}>Foto bukti (opsional)</Text><Text style={styles.muted}>Maksimal 5 foto, 5 MB per file.</Text></View><Paperclip size={18} color="#738497" /></View>
-        <View style={styles.evidenceGrid}>{evidence.map((asset, index) => <View key={`${asset.assetId ?? asset.uri}-${index}`} style={styles.evidenceWrap}><Image source={{ uri: asset.uri }} style={styles.evidenceImage} /><Pressable accessibilityRole="button" accessibilityLabel={`Hapus foto ${index + 1}`} onPress={() => setEvidence((current) => current.filter((_, itemIndex) => itemIndex !== index))} style={styles.removeEvidence}><X size={12} color="#fff" /></Pressable></View>)}</View>
+        <View style={styles.evidenceGrid}>{evidence.map((asset, index) => <View key={`${asset.assetId ?? asset.uri}-${index}`} style={styles.evidenceWrap}><PreviewImage uri={asset.uri} images={evidence.map((entry) => entry.uri)} index={index} style={styles.evidenceImage} /><Pressable accessibilityRole="button" accessibilityLabel={`Hapus foto ${index + 1}`} onPress={() => setEvidence((current) => current.filter((_, itemIndex) => itemIndex !== index))} style={styles.removeEvidence}><X size={12} color="#fff" /></Pressable></View>)}</View>
         {evidence.length < 5 ? <View style={styles.evidenceActions}><Pressable accessibilityRole="button" onPress={() => void selectEvidence(true)} style={styles.evidenceButton}><Camera size={17} color="#087f5b" /><Text style={styles.evidenceButtonText}>Ambil foto</Text></Pressable><Pressable accessibilityRole="button" onPress={() => void selectEvidence(false)} style={styles.evidenceButton}><ImagePlus size={17} color="#087f5b" /><Text style={styles.evidenceButtonText}>Pilih galeri</Text></Pressable></View> : null}
       </View>
     </ScrollView> : null}

@@ -1,11 +1,12 @@
 import { useEffect, useState } from 'react';
-import { ActivityIndicator, Image, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { useLocalSearchParams, router } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { ArrowDownLeft, ArrowLeft, ArrowUpRight, Paperclip } from 'lucide-react-native';
 import { useAuth } from '../../auth/auth-provider';
 import { ApiError } from '../../lib/api';
 import { formatDate } from '../../lib/display';
+import { PreviewImage } from '../../components/image-viewer';
 
 type Branch = { id: string; name: string; code: string };
 type Attachment = { id: string; url: string; fileName: string; mimeType: string };
@@ -48,7 +49,7 @@ export default function CashInOutDetailScreen() {
         <DetailRow label="Cabang" value={detail.branch ? `${detail.branch.name} (${detail.branch.code})` : '-'} />
         {noteText ? <View style={styles.noteSection}><Text style={styles.sectionTitle}>Catatan</Text><Text style={styles.note}>{noteText}</Text></View> : null}
         <View style={styles.attachmentsHeader}><View><Text style={styles.sectionTitle}>Foto bukti</Text><Text style={styles.date}>{detail.attachments?.length ? `${detail.attachments.length} file` : 'Tidak ada lampiran'}</Text></View><Paperclip size={18} color="#71839a" /></View>
-        {detail.attachments?.length ? <View style={styles.attachments}>{detail.attachments.map((attachment) => attachment.mimeType.startsWith('image/') ? <Image key={attachment.id} source={{ uri: attachment.url }} accessibilityLabel={attachment.fileName} style={styles.attachmentImage} /> : <View key={attachment.id} style={styles.fileAttachment}><Paperclip size={16} color="#71839a" /><Text numberOfLines={2} style={styles.fileName}>{attachment.fileName}</Text></View>)}</View> : null}
+        {detail.attachments?.length ? <View style={styles.attachments}>{detail.attachments.map((attachment) => attachment.mimeType.startsWith('image/') ? <PreviewImage key={attachment.id} uri={attachment.url} images={detail.attachments!.filter((entry) => entry.mimeType.startsWith('image/')).map((entry) => entry.url)} index={detail.attachments!.filter((entry) => entry.mimeType.startsWith('image/')).indexOf(attachment)} accessibilityLabel={attachment.fileName} style={styles.attachmentImage} /> : <View key={attachment.id} style={styles.fileAttachment}><Paperclip size={16} color="#71839a" /><Text numberOfLines={2} style={styles.fileName}>{attachment.fileName}</Text></View>)}</View> : null}
       </View>
     </ScrollView> : null}
   </View>;
