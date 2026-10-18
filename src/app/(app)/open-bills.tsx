@@ -2,13 +2,13 @@ import { useCallback, useState } from 'react';
 import { ActivityIndicator, Alert, FlatList, Pressable, RefreshControl, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { router, Stack } from 'expo-router';
 import * as Print from 'expo-print';
-import { Ban, CircleCheck, CircleX, Clock3, Download, PiggyBank, ReceiptText, Search, Timer, TrendingUp, Undo2 } from 'lucide-react-native';
+import { Ban, CircleCheck, CircleX, Clock3, Download, Merge, PiggyBank, ReceiptText, Search, Split, Timer, TrendingUp, Undo2 } from 'lucide-react-native';
 import type { ComponentType } from 'react';
 import { useAuth } from '../../auth/auth-provider';
 import { ApiError } from '../../lib/api';
 import { LoadMoreFooter } from '../../components/load-more-footer';
 import { getRange, rangeLabel, rangeOptions, type RangePreset } from '../../lib/date-range';
-import { customerLabel, formatDate, formatDuration } from '../../lib/display';
+import { customerLabel, formatDate, formatDuration, formatServiceType } from '../../lib/display';
 import { useDebouncedValue, useInfiniteList, useLoadMoreOnScroll } from '../../lib/infinite-list';
 import { fetchAllPages } from '../../lib/paging';
 import { dateLabel, money, percent } from '../../lib/report';
@@ -21,6 +21,7 @@ type OpenBillRow = {
   orderNumber: string;
   customerName: string | null;
   customerPhone: string | null;
+  serviceType: string | null;
   status: string;
   state: State;
   grandTotal: string;
@@ -33,7 +34,7 @@ type OpenBillRow = {
   cashier: { id: string; name: string } | null;
 };
 type OpenBillReport = {
-  summary: { totalCount: number; open: Bucket; closed: Bucket; cancelled: Bucket; averageCloseMinutes: number | null; closeRate: number | null; voids?: { count: number; amount: string | number }; deposits?: { refunded: DepositBucket; forfeited: DepositBucket } };
+  summary: { totalCount: number; open: Bucket; closed: Bucket; cancelled: Bucket; averageCloseMinutes: number | null; closeRate: number | null; voids?: { count: number; amount: string | number }; mergedCount?: number; splitCount?: number; deposits?: { refunded: DepositBucket; forfeited: DepositBucket } };
   data: OpenBillRow[];
   meta: { page: number; totalPages: number; total: number };
 };
@@ -122,6 +123,11 @@ export default function OpenBillReportScreen() {
       <Tile label="Void" value={`${summary?.voids?.count ?? 0} kali`} hint={money(summary?.voids?.amount)} icon={Ban} bg="#fff1f2" fg="#d6455a" />
     </View>
     <View style={styles.grid}>
+      {/* Merged bills are left out of the state counts above; split parts are new bills counted there too. */}
+      <Tile label="Digabung" value={`${summary?.mergedCount ?? 0} bill`} hint="masuk ke bill lain" icon={Merge} bg="#eef4ff" fg="#3f6fe0" />
+      <Tile label="Hasil split" value={`${summary?.splitCount ?? 0} bill`} hint="bill baru dari split" icon={Split} bg="#eefaf4" fg="#07956f" />
+    </View>
+    <View style={styles.grid}>
       {/* Deposits of cancelled bills: handed back, or kept as income. Neither counts as sales. */}
       <Tile label="DP dikembalikan" value={`${summary?.deposits?.refunded.count ?? 0} bill`} hint={money(summary?.deposits?.refunded.amount)} icon={Undo2} bg="#fff6e9" fg="#e07d12" />
       <Tile label="DP hangus" value={`${summary?.deposits?.forfeited.count ?? 0} bill`} hint={money(summary?.deposits?.forfeited.amount)} icon={PiggyBank} bg="#f3eaff" fg="#9746df" />
@@ -152,7 +158,7 @@ export default function OpenBillReportScreen() {
         <View style={styles.cardTop}>
           <View style={styles.cardMain}>
             <Text numberOfLines={1} style={styles.cardName}>{customerLabel(item.customerName, item.customerPhone) || 'Tanpa nama'}</Text>
-            <Text numberOfLines={1} style={styles.cardMeta}>{item.orderNumber} · {item.itemCount} item{item.branch?.name ? ` · ${item.branch.name}` : ''}</Text>
+            <Text numberOfLines={1} style={styles.cardMeta}>{item.orderNumber} · {item.itemCount} item{item.serviceType ? ` · ${formatServiceType(item.serviceType)}` : ''}{item.branch?.name ? ` · ${item.branch.name}` : ''}</Text>
           </View>
           <Text style={[styles.badge, item.state === 'open' ? styles.badgeOpen : item.state === 'closed' ? styles.badgeClosed : styles.badgeCancelled]}>{stateLabel[item.state]}</Text>
         </View>

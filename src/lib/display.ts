@@ -31,6 +31,14 @@ export function customerLabel(name?: string | null, phone?: string | null) {
   return [name, phone].filter(Boolean).join(' · ');
 }
 
+/** How the order is served; null on older orders and sales where it was not recorded. */
+export type ServiceType = 'DINE_IN' | 'TAKEAWAY';
+
+/** "Dine in" / "Takeaway"; empty when the order has no service type. */
+export function formatServiceType(type: ServiceType | string | null | undefined) {
+  return type === 'DINE_IN' ? 'Dine in' : type === 'TAKEAWAY' ? 'Takeaway' : '';
+}
+
 /** A product an open bill needs more of than the warehouse has (stockWarnings / stock-check shortages). */
 export type StockShortage = { productId: string; product: string; required: string; available: string };
 

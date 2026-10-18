@@ -8,6 +8,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useAuth } from '../auth/auth-provider';
 import { useBranchFilter } from '../auth/branch-filter';
 import { ApiError } from '../lib/api';
+import { formatServiceType, type ServiceType } from '../lib/display';
 import { OpenBillCard, type DashboardOpenBills } from './open-bill-card';
 import { OptionSheet } from './option-sheet';
 import { dateLabel, daysBetween, jakartaToday, money, percent, percentChange, quantity, shiftDate } from '../lib/report';
@@ -22,6 +23,8 @@ type Dashboard = {
   openBills?: DashboardOpenBills;
   /** Deposits of bills cancelled in the period: handed back or kept as income. Neither is part of sales. */
   deposits?: { refunded: DepositBucket; forfeited: DepositBucket };
+  /** Settled sales split by dine in / takeaway; null = not recorded (older orders). */
+  salesByServiceType?: { serviceType: ServiceType | null; amount: string | number; count: number }[];
 };
 type DepositBucket = { count: number; amount: string | number };
 type StockSummary = { summary: { totalQuantity: number; productCount: number; stockValue: number } };
@@ -123,6 +126,10 @@ export function AdminDashboard() {
   const branchTotal = branchRows.reduce((sum, row) => sum + Math.max(row.amount, 0), 0);
   const bestSeller = data?.bestSellers[0];
   const depositRows = data?.deposits ? ([['DP dikembalikan', data.deposits.refunded], ['DP hangus', data.deposits.forfeited]] as const).filter(([, bucket]) => bucket.count > 0) : [];
+  // Dine in first, then takeaway, then sales without a recorded service type; hidden while nothing was recorded at all.
+  const serviceOrder = (type: ServiceType | null) => type === 'DINE_IN' ? 0 : type === 'TAKEAWAY' ? 1 : 2;
+  const serviceRows = (data?.salesByServiceType ?? []).some((row) => row.serviceType) ? [...(data?.salesByServiceType ?? [])].sort((a, b) => serviceOrder(a.serviceType) - serviceOrder(b.serviceType)) : [];
+  const serviceTotal = serviceRows.reduce((sum, row) => sum + Math.max(Number(row.amount), 0), 0);
   const openDatePicker = () => { setPickerValue(new Date(`${anchor}T12:00:00`)); setDatePicker(true); };
   const applyDate = (date: Date) => {
     const value = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
@@ -180,6 +187,20 @@ export function AdminDashboard() {
       </View>
 
       <OpenBillCard data={data?.openBills} loading={loading} actionLabel="Laporan" onAction={() => router.push('/(app)/open-bills')} onPressBill={(id) => router.push({ pathname: '/(app)/orders', params: { orderId: id } })} />
+
+      {serviceRows.length ? <View style={styles.panel}>
+        <Text style={styles.panelTitle}>Dine in / Takeaway</Text>
+        {serviceRows.map((row, index) => {
+          const share = serviceTotal ? (Math.max(Number(row.amount), 0) / serviceTotal) * 100 : 0;
+          return <View key={row.serviceType ?? 'none'} style={styles.branchRow}>
+            <View style={styles.branchTop}><Text numberOfLines={1} style={styles.branchName}>{formatServiceType(row.serviceType) || 'Tidak tercatat'} · {row.count} transaksi</Text><Text style={styles.branchAmount}>{money(row.amount)}</Text></View>
+            <View style={styles.branchBarRow}>
+              <View style={styles.track}><View style={[styles.bar, { width: `${Math.max(share, Number(row.amount) > 0 ? 2 : 0)}%`, backgroundColor: barColors[index % barColors.length] }]} /></View>
+              <Text style={styles.share}>{Math.round(share)}%</Text>
+            </View>
+          </View>;
+        })}
+      </View> : null}
 
       {depositRows.length ? <View style={styles.panel}>
         <Text style={styles.panelTitle}>DP bill batal</Text>

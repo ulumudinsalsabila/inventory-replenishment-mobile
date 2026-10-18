@@ -1,15 +1,15 @@
 import { useMemo, useState } from 'react';
 import { ActivityIndicator, FlatList, Image, Modal, Pressable, RefreshControl, ScrollView, Share, StyleSheet, Text, TextInput, View } from 'react-native';
-import { Banknote, Barcode, Check, ChefHat, ChevronLeft, ChevronRight, CircleCheck, ClipboardList, CreditCard, Landmark, Minus, Plus, Printer, QrCode, ReceiptText, Save, Search, Share2, ShoppingCart, Store, Trash2, UserRound, Wallet, X } from 'lucide-react-native';
+import { Banknote, Barcode, Check, ChefHat, ChevronLeft, ChevronRight, CircleCheck, ClipboardList, CreditCard, Landmark, Merge, Minus, Plus, Printer, QrCode, ReceiptText, Save, Search, Share2, ShoppingCart, Split, Store, Trash2, UserRound, Users, Wallet, X } from 'lucide-react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useResponsive } from '../lib/responsive';
 import { AppShellHeader } from './app-shell-header';
 import { BarcodeScanner } from './barcode-scanner';
 import { LoadMoreFooter } from './load-more-footer';
 import { customerHint, type PosCustomer } from '../lib/customers';
-import { customerLabel, formatAge, formatDate, formatStatus } from '../lib/display';
+import { customerLabel, formatAge, formatDate, formatServiceType, formatStatus, type ServiceType } from '../lib/display';
 import { useDebouncedValue, useInfiniteList } from '../lib/infinite-list';
-import type { PairedPrinter, ReceiptOrder } from '../lib/receipt-printer';
+import type { PairedPrinter, ReceiptOrder, Station } from '../lib/receipt-printer';
 import { KeyboardAvoidingView, KeyboardAwareScrollView } from 'react-native-keyboard-controller';
 
 export type PosMethod = 'CASH' | 'QRIS' | 'TRANSFER' | 'GRAB' | 'GOBIZ';
@@ -24,7 +24,7 @@ export type PosProduct = {
   basePrice: string;
   available: string;
   trackInventory: boolean;
-  category?: { name: string } | null;
+  category?: { name: string; station?: Station } | null;
   unit?: { id: string; code: string; name: string } | null;
   sellingUnits: { unitId: string; conversionFactor: string; sellingPrice: string; unit: { id: string; code: string; name: string } }[];
   variants?: { id: string; name: string; priceDelta: string }[];
@@ -121,14 +121,35 @@ type CheckoutProps = {
   onDepositAmountChange: (value: string) => void;
   /** Records the deposit entered in DP mode. */
   onReceiveDeposit: () => void;
+  /** "Bagi rata": one payment method per person, each paying an equal share of the balance; null pays with `method` alone. */
+  splitMethods: PosMethod[] | null;
+  onSplitMethodsChange: (value: PosMethod[] | null) => void;
+  /** "Cetak tiket bar/dapur setelah bayar" for quick sales; the switch is omitted while an open bill is loaded. */
+  quickSaleTickets: boolean;
+  onQuickSaleTicketsChange?: (value: boolean) => void;
+  /** Opens the per-device printer settings (receipt, bar and kitchen printers). */
+  onOpenPrintSettings?: () => void;
+  /** Saves the loaded bill if needed and opens the split sheet; omitted without a loaded bill. */
+  onSplitBill?: () => void;
+  /** Saves the loaded bill if needed and picks another open bill to merge into it; omitted without a loaded bill. */
+  onMergeBill?: () => void;
+  /** Follow-up shown next to the notice, e.g. "Buka bill baru" after a split. */
+  noticeAction?: { label: string; onPress: () => void } | null;
 };
+
+/** Equal shares of `total` for `count` people in whole rupiah; the last share takes the rounding remainder. */
+export function equalShares(total: number, count: number) {
+  const share = Math.floor(total / count);
+  return Array.from({ length: count }, (_, index) => index === count - 1 ? Math.round((total - share * (count - 1)) * 100) / 100 : share);
+}
+const MAX_SPLIT_PEOPLE = 20;
 
 /** A sent line (or part of it) taken off an open bill, from GET /orders/:id itemVoids. */
 export type OpenBillVoid = { id: string; productNameSnapshot: string; variantNameSnapshot: string | null; quantity: string; amount: string; reason: string; createdAt: string };
 /** `paidTotal` is the deposit (DP) already taken on the bill; the rest is due when it is paid. */
 export type OpenBillInfo = { id: string; orderNumber: string; customerName: string; customerPhone: string; itemVoids?: OpenBillVoid[]; paidTotal?: number };
 /** `payments` are the completed payments (deposits) on the bill. */
-export type OpenBillRow = { id: string; orderNumber: string; customerName: string | null; customerPhone: string | null; grandTotal: string; createdAt: string; branch?: { name: string } | null; _count?: { items: number }; payments?: { amount: string }[] };
+export type OpenBillRow = { id: string; orderNumber: string; customerName: string | null; customerPhone: string | null; grandTotal: string; createdAt: string; serviceType?: ServiceType | null; branch?: { name: string } | null; _count?: { items: number }; payments?: { amount: string }[] };
 
 const money = (value: string | number) => `Rp ${Math.max(0, Number(value) || 0).toLocaleString('id-ID', { maximumFractionDigits: 0 })}`;
 const methods: { id: PosMethod; label: string; icon: typeof Banknote }[] = [
@@ -421,6 +442,9 @@ export function PosCheckoutFlow(props: CheckoutProps) {
   // A deposit already taken on the loaded bill: "Bayar" settles only what is left.
   const paid = props.openBill?.paidTotal ?? 0;
   const due = Math.max(0, props.total - paid);
+  // Every share must be at least Rp 1; a balance that shrank below the number of people pays in one go.
+  const splitMethods = props.splitMethods && due >= props.splitMethods.length ? props.splitMethods : null;
+  const maxPeople = Math.min(MAX_SPLIT_PEOPLE, Math.floor(due));
   const depositRows = paid > 0 ? <><SummaryRow label="Total" value={money(props.total)} /><SummaryRow label="Sudah dibayar (DP)" value={`- ${money(paid)}`} /><View style={styles.summaryDivider} /><SummaryRow label="Sisa tagihan" value={money(due)} strong /></> : null;
   const continueToPayment = () => {
     if (!props.customer.trim()) { props.onError('Nama pelanggan wajib diisi.'); return; }
@@ -457,7 +481,7 @@ export function PosCheckoutFlow(props: CheckoutProps) {
             <TextInput accessibilityLabel="Nama pelanggan" autoFocus style={styles.customerInput} value={props.customer} onChangeText={props.onCustomerChange} placeholder={props.onPickCustomer ? 'Nama pelanggan (Guest)' : 'Nama pelanggan'} placeholderTextColor="#8a97a8" />
           </>}
           <View style={styles.serviceModes}>
-            {[{ label: 'Dine in', value: false }, { label: 'Take away', value: true }].map((option) => <Pressable key={option.label} accessibilityRole="button" onPress={() => props.onTakeawayChange(option.value)} style={[styles.modeButton, props.takeaway === option.value && styles.modeButtonActive]}><Text style={[styles.modeText, props.takeaway === option.value && styles.modeTextActive]}>{option.label}</Text></Pressable>)}
+            {[{ label: 'Dine in', value: false }, { label: 'Takeaway', value: true }].map((option) => <Pressable key={option.label} accessibilityRole="button" accessibilityState={{ selected: props.takeaway === option.value }} onPress={() => props.onTakeawayChange(option.value)} style={[styles.modeButton, props.takeaway === option.value && styles.modeButtonActive]}><Text style={[styles.modeText, props.takeaway === option.value && styles.modeTextActive]}>{option.label}</Text></Pressable>)}
           </View>
         </View>
         <View style={styles.lineList}>{props.lines.map((line) => {
@@ -497,10 +521,15 @@ export function PosCheckoutFlow(props: CheckoutProps) {
             {props.onPrintPreBill ? <Pressable accessibilityRole="button" accessibilityHint="Menyimpan perubahan lalu mencetak tagihan yang belum lunas" disabled={props.billBusy || !props.lines.length} onPress={props.onPrintPreBill} style={[styles.billSaveButton, (props.billBusy || !props.lines.length) && styles.disabled]}><Printer size={16} color="#07885b" /><Text style={styles.billSaveText}>Cetak Tagihan</Text></Pressable> : null}
             {props.onStartDeposit ? <Pressable accessibilityRole="button" accessibilityHint="Menerima uang muka untuk bill ini" disabled={props.billBusy || !props.lines.length || due <= 0} onPress={props.onStartDeposit} style={[styles.billSaveButton, (props.billBusy || !props.lines.length || due <= 0) && styles.disabled]}><Wallet size={16} color="#07885b" /><Text style={styles.billSaveText}>Terima DP</Text></Pressable> : null}
           </View> : null}
+          {props.onSplitBill || props.onMergeBill ? <View style={styles.billActions}>
+            {props.onSplitBill ? <Pressable accessibilityRole="button" accessibilityHint="Memindahkan sebagian item ke bill baru" disabled={props.billBusy || !props.lines.length} onPress={props.onSplitBill} style={[styles.billSaveButton, (props.billBusy || !props.lines.length) && styles.disabled]}><Split size={16} color="#07885b" /><Text style={styles.billSaveText}>Split Bill</Text></Pressable> : null}
+            {props.onMergeBill ? <Pressable accessibilityRole="button" accessibilityHint="Menggabungkan open bill lain ke bill ini" disabled={props.billBusy} onPress={props.onMergeBill} style={[styles.billSaveButton, props.billBusy && styles.disabled]}><Merge size={16} color="#07885b" /><Text style={styles.billSaveText}>Gabung Bill</Text></Pressable> : null}
+          </View> : null}
         </View> :<Pressable accessibilityRole="button" disabled={props.billBusy || !props.lines.length} onPress={props.onSaveOpenBill} style={[styles.billSaveButton, (props.billBusy || !props.lines.length) && styles.disabled]}>{props.billBusy ? <ActivityIndicator color="#07885b" /> : <><Save size={16} color="#07885b" /><Text style={styles.billSaveText}>Simpan Open Bill</Text></>}</Pressable>}
+        {props.onOpenPrintSettings ? <Pressable accessibilityRole="button" onPress={props.onOpenPrintSettings} style={styles.settingsLink}><Printer size={14} color="#07885b" /><Text style={styles.settingsLinkText}>Pengaturan printer tiket bar/dapur</Text><ChevronRight size={14} color="#07885b" /></Pressable> : null}
         {props.error ? <Text style={styles.errorText}>{props.error}</Text> : null}
         {props.warning ? <Text style={styles.warningText}>{props.warning}</Text> : null}
-        {props.notice ? <Text style={styles.noticeText}>{props.notice}</Text> : null}
+        {props.notice ? <View style={styles.noticeBox}><Text style={[styles.noticeText, styles.noticeBoxText]}>{props.notice}</Text>{props.noticeAction ? <Pressable accessibilityRole="button" onPress={props.noticeAction.onPress} style={styles.noticeAction}><Text style={styles.noticeActionText}>{props.noticeAction.label}</Text><ChevronRight size={14} color="#07885b" /></Pressable> : null}</View> : null}
       </KeyboardAwareScrollView>
       <View style={[styles.footer, { paddingBottom: Math.max(props.bottomInset + 8, 12) }]}>
         <Pressable accessibilityRole="button" onPress={props.onClose} style={styles.secondaryButton}><Text style={styles.secondaryText}>Kembali</Text></Pressable>
@@ -508,17 +537,43 @@ export function PosCheckoutFlow(props: CheckoutProps) {
       </View>
     </> : <>
       <ScrollView style={styles.content} contentContainerStyle={styles.contentBody} keyboardShouldPersistTaps="handled">
-        <View style={styles.summaryCard}>{props.openBill ? <SummaryRow label="Open Bill" value={`${props.openBill.orderNumber} · ${props.openBill.customerName}`} /> : null}{props.selectedCustomer ? <SummaryRow label="Customer" value={customerLabel(props.selectedCustomer.name, props.selectedCustomer.phone)} /> : null}<SummaryRow label="Total tagihan" value={money(props.total)} /><SummaryRow label="Diskon" value={`- ${money(props.discountAmount)}`} /><View style={styles.summaryDivider} />{depositRows ?? <SummaryRow label="Total pembayaran" value={money(props.total)} strong />}</View>
+        <View style={styles.summaryCard}>{props.openBill ? <SummaryRow label="Open Bill" value={`${props.openBill.orderNumber} · ${props.openBill.customerName}`} /> : null}{props.selectedCustomer ? <SummaryRow label="Customer" value={customerLabel(props.selectedCustomer.name, props.selectedCustomer.phone)} /> : null}<SummaryRow label="Layanan" value={props.takeaway ? 'Takeaway' : 'Dine in'} /><SummaryRow label="Total tagihan" value={money(props.total)} /><SummaryRow label="Diskon" value={`- ${money(props.discountAmount)}`} /><View style={styles.summaryDivider} />{depositRows ?? <SummaryRow label="Total pembayaran" value={money(props.total)} strong />}</View>
+        {!props.depositMode && splitMethods ? <>
+          {/* "Bagi rata": the same order paid by several people, each with an equal share and their own method. */}
+          <View style={styles.splitHeader}>
+            <Users size={17} color="#07885b" /><Text style={styles.splitTitle}>Bagi rata ke {splitMethods.length} orang</Text>
+            <View style={styles.quantityControl}>
+              <Pressable accessibilityRole="button" accessibilityLabel="Kurangi jumlah orang" disabled={splitMethods.length <= 2} onPress={() => props.onSplitMethodsChange(splitMethods.slice(0, -1))} style={[styles.quantityButton, splitMethods.length <= 2 && styles.disabled]}><Minus size={15} color="#07885b" /></Pressable>
+              <Text style={styles.quantityValue}>{splitMethods.length}</Text>
+              <Pressable accessibilityRole="button" accessibilityLabel="Tambah jumlah orang" disabled={splitMethods.length >= maxPeople} onPress={() => props.onSplitMethodsChange([...splitMethods, props.method])} style={[styles.quantityButton, splitMethods.length >= maxPeople && styles.disabled]}><Plus size={15} color="#07885b" /></Pressable>
+            </View>
+          </View>
+          {equalShares(due, splitMethods.length).map((amount, index) => <View key={`share-${index}`} style={styles.shareRow}>
+            <View style={styles.shareTop}><Text style={styles.shareLabel}>Orang {index + 1}</Text><Text style={styles.shareAmount}>{money(amount)}</Text></View>
+            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.shareMethods}>{methods.map(({ id, label }) => {
+              const active = splitMethods[index] === id;
+              return <Pressable key={id} accessibilityRole="button" accessibilityLabel={`Orang ${index + 1} bayar ${label}`} accessibilityState={{ selected: active }} onPress={() => props.onSplitMethodsChange(splitMethods.map((method, position) => position === index ? id : method))} style={[styles.modeButton, active && styles.modeButtonActive]}><Text style={[styles.modeText, active && styles.modeTextActive]}>{label}</Text></Pressable>;
+            })}</ScrollView>
+          </View>)}
+          <Pressable accessibilityRole="button" onPress={() => props.onSplitMethodsChange(null)} style={styles.settingsLink}><X size={14} color="#07885b" /><Text style={styles.settingsLinkText}>Batal bagi rata, bayar sekaligus</Text></Pressable>
+        </> : <>
         <Text style={styles.sectionLabel}>METODE PEMBAYARAN</Text>
         <View style={styles.methodGrid}>{methods.map(({ id, label, icon: Icon }) => <Pressable key={id} accessibilityRole="button" accessibilityState={{ selected: props.method === id }} onPress={() => props.onMethodChange(id)} style={[styles.methodButton, props.method === id && styles.methodButtonActive]}><Icon size={20} color={props.method === id ? '#fff' : '#3976a8'} /><Text numberOfLines={1} style={[styles.methodLabel, props.method === id && styles.methodLabelActive]}>{label}</Text>{props.method === id ? <Check size={13} color="#fff" style={styles.methodCheck} /> : null}</Pressable>)}</View>
+        </>}
         {props.depositMode ? <>
           <Text style={styles.sectionLabel}>JUMLAH DP *</Text>
           <View style={styles.amountField}><Text style={styles.currencyPrefix}>Rp</Text><TextInput accessibilityLabel="Jumlah DP" autoFocus keyboardType="number-pad" value={props.depositAmount} onChangeText={(value) => props.onDepositAmountChange(value.replace(/\D/g, ''))} maxLength={12} placeholder="0" placeholderTextColor="#8a97a8" style={styles.receivedInput} /></View>
           <Text style={styles.sheetHint}>Lebih dari Rp 0 dan kurang dari sisa tagihan {money(due)}. Untuk melunasi, gunakan Bayar.</Text>
-        </> : <>
+        </> : !splitMethods ? <>
           <Text style={styles.sectionLabel}>JUMLAH DIBAYAR</Text>
           <View style={styles.amountField}><Text style={styles.currencyPrefix}>Rp</Text><Text style={styles.amountValue}>{money(due).replace('Rp ', '')}</Text></View>
-        </>}
+          {due >= 2 ? <Pressable accessibilityRole="button" accessibilityHint="Membagi sisa tagihan sama rata, tiap orang dengan metode bayarnya sendiri" onPress={() => props.onSplitMethodsChange([props.method, props.method])} style={styles.settingsLink}><Users size={14} color="#07885b" /><Text style={styles.settingsLinkText}>Bagi rata ke beberapa orang</Text><ChevronRight size={14} color="#07885b" /></Pressable> : null}
+        </> : null}
+        {!props.depositMode && props.onQuickSaleTicketsChange ? <Pressable accessibilityRole="switch" accessibilityState={{ checked: props.quickSaleTickets }} onPress={() => props.onQuickSaleTicketsChange?.(!props.quickSaleTickets)} style={styles.toggleRow}>
+          <View style={[styles.checkbox, props.quickSaleTickets && styles.checkboxChecked]}>{props.quickSaleTickets ? <Check size={13} color="#fff" /> : null}</View>
+          <View style={styles.lineDetails}><Text style={styles.toggleText}>Cetak tiket bar/dapur setelah bayar</Text><Text style={styles.productSku}>Disimpan di perangkat ini.</Text></View>
+          {props.onOpenPrintSettings ? <Pressable accessibilityRole="button" accessibilityLabel="Atur printer tiket" hitSlop={6} onPress={props.onOpenPrintSettings} style={styles.customerChange}><Text style={styles.customerChangeText}>Printer</Text></Pressable> : null}
+        </Pressable> : null}
         {props.error ? <Text style={styles.errorText}>{props.error}</Text> : null}
       </ScrollView>
       <View style={[styles.footer, { paddingBottom: Math.max(props.bottomInset + 8, 12) }]}>
@@ -590,6 +645,8 @@ type PrinterPickerSheetProps = {
   /** Shown when the paired devices could not be read (e.g. Bluetooth permission denied). */
   error?: string;
   bottomInset: number;
+  /** Defaults to "Pilih printer Bluetooth"; e.g. "Pilih Printer Bar" when picking a station printer. */
+  title?: string;
   onChoose: (printer: PairedPrinter) => void;
   onClose: () => void;
   onOpenBluetoothSettings: () => void;
@@ -599,7 +656,7 @@ type PrinterPickerSheetProps = {
 export function PrinterPickerSheet(props: PrinterPickerSheetProps) {
   return <Modal transparent animationType="slide" visible onRequestClose={props.onClose}>
     <View style={styles.modalBackdrop}><View style={[styles.printerModal, { paddingBottom: Math.max(props.bottomInset + 8, 28) }]}>
-      <View style={styles.printerModalHeader}><Text style={styles.printerModalTitle}>Pilih printer Bluetooth</Text><Pressable accessibilityRole="button" accessibilityLabel="Tutup" onPress={props.onClose}><X size={20} color="#526276" /></Pressable></View>
+      <View style={styles.printerModalHeader}><Text style={styles.printerModalTitle}>{props.title ?? 'Pilih printer Bluetooth'}</Text><Pressable accessibilityRole="button" accessibilityLabel="Tutup" onPress={props.onClose}><X size={20} color="#526276" /></Pressable></View>
       {props.loading ? <ActivityIndicator style={styles.printerLoading} color="#07885b" /> : null}
       {!props.loading && !props.devices.length ? <Text style={styles.printerEmpty}>Tidak ada printer yang dipasangkan.</Text> : null}
       {props.error ? <Text style={styles.errorText}>{props.error}</Text> : null}
@@ -666,6 +723,11 @@ type OpenBillListSheetProps = {
   loadingId: string;
   onSelect: (bill: OpenBillRow) => void;
   onClose: () => void;
+  /** Bill left out of the list, e.g. the loaded bill when picking one to merge into it. */
+  excludeId?: string;
+  /** Defaults to "Open Bill"; the subtitle defaults to the number of unpaid bills. */
+  title?: string;
+  subtitle?: string;
 };
 
 /** Unpaid open bills, newest first, searchable by customer name, phone or order number; mount it only while it is shown. */
@@ -675,28 +737,30 @@ export function OpenBillListSheet(props: OpenBillListSheetProps) {
   const params = new URLSearchParams({ status: 'OPEN', openBill: 'true' });
   if (search) params.set('search', search);
   const list = useInfiniteList<OpenBillRow>(props.request, `orders?${params.toString()}`);
+  const items = props.excludeId ? list.items.filter((item) => item.id !== props.excludeId) : list.items;
+  const excluded = list.items.length - items.length;
   return <Modal visible transparent animationType="slide" onRequestClose={props.onClose}>
     <KeyboardAvoidingView behavior="padding" style={catalogStyles.modalBackdrop}>
       <View style={[catalogStyles.optionSheet, styles.billListSheet, { paddingBottom: Math.max(props.bottomInset + 8, 20) }]}>
-        <View style={catalogStyles.optionHeader}><View style={styles.lineDetails}><Text style={catalogStyles.optionTitle}>Open Bill</Text><Text style={catalogStyles.catalogProductCategory}>{list.loading ? 'Memuat bill...' : `${list.total} bill belum dibayar`}</Text></View><Pressable accessibilityRole="button" accessibilityLabel="Tutup" onPress={props.onClose} style={catalogStyles.catalogHeaderIcon}><X size={19} color="#435a72" /></Pressable></View>
+        <View style={catalogStyles.optionHeader}><View style={styles.lineDetails}><Text style={catalogStyles.optionTitle}>{props.title ?? 'Open Bill'}</Text><Text style={catalogStyles.catalogProductCategory}>{list.loading ? 'Memuat bill...' : props.subtitle ?? `${list.total - excluded} bill belum dibayar`}</Text></View><Pressable accessibilityRole="button" accessibilityLabel="Tutup" onPress={props.onClose} style={catalogStyles.catalogHeaderIcon}><X size={19} color="#435a72" /></Pressable></View>
         <View style={catalogStyles.catalogSearchBox}><Search size={17} color="#78889c" /><TextInput accessibilityLabel="Cari open bill" value={searchInput} onChangeText={setSearchInput} placeholder="Cari nama, No. HP, atau nomor..." placeholderTextColor="#8290a2" returnKeyType="search" style={catalogStyles.catalogSearchInput} /></View>
         {list.error && !list.items.length ? <Pressable accessibilityRole="button" onPress={() => void list.reload()}><Text style={[styles.errorText, styles.sheetError]}>{list.error} Ketuk untuk coba lagi.</Text></Pressable> : null}
         <FlatList
           style={styles.billList}
           contentContainerStyle={styles.billListContent}
           keyboardShouldPersistTaps="handled"
-          data={list.items}
+          data={items}
           keyExtractor={(item) => item.id}
           onEndReached={list.loadMore}
           onEndReachedThreshold={0.4}
-          ListEmptyComponent={list.loading ? <ActivityIndicator style={styles.printerLoading} color="#07885b" /> : !list.error ? <Text style={styles.printerEmpty}>{search ? 'Tidak ada open bill yang cocok.' : 'Belum ada open bill.'}</Text> : null}
+          ListEmptyComponent={list.loading ? <ActivityIndicator style={styles.printerLoading} color="#07885b" /> : !list.error ? <Text style={styles.printerEmpty}>{search ? 'Tidak ada open bill yang cocok.' : props.excludeId ? 'Tidak ada open bill lain.' : 'Belum ada open bill.'}</Text> : null}
           ListFooterComponent={<LoadMoreFooter loadingMore={list.loadingMore} hasMore={list.hasMore} count={list.items.length} error={list.error} onRetry={list.loadMore} />}
           renderItem={({ item }) => {
             const paid = (item.payments ?? []).reduce((sum, payment) => sum + Number(payment.amount), 0);
             return <Pressable accessibilityRole="button" accessibilityHint="Buka bill ini di keranjang" disabled={Boolean(props.loadingId)} onPress={() => props.onSelect(item)} style={({ pressed }) => [styles.billRow, pressed && styles.billRowPressed]}>
             <View style={styles.lineDetails}>
               <Text numberOfLines={1} style={styles.productName}>{item.customerName ?? 'Tanpa nama'}{item.customerPhone ? ` · ${item.customerPhone}` : ''}</Text>
-              <Text numberOfLines={1} style={styles.productSku}>{item.orderNumber} · {item._count?.items ?? 0} item · {formatAge(item.createdAt)} lalu{item.branch?.name ? ` · ${item.branch.name}` : ''}</Text>
+              <Text numberOfLines={1} style={styles.productSku}>{item.orderNumber} · {item._count?.items ?? 0} item{item.serviceType ? ` · ${formatServiceType(item.serviceType)}` : ''} · {formatAge(item.createdAt)} lalu{item.branch?.name ? ` · ${item.branch.name}` : ''}</Text>
               {paid > 0 ? <Text numberOfLines={1} style={styles.billRowDeposit}>DP {money(paid)} · sisa {money(Number(item.grandTotal) - paid)}</Text> : null}
             </View>
             {props.loadingId === item.id ? <ActivityIndicator color="#07885b" /> : <Text style={styles.billRowTotal}>{money(item.grandTotal)}</Text>}
@@ -720,6 +784,8 @@ type ReceiptScreenProps = {
   printerPickerVisible: boolean;
   printerDevices: PairedPrinter[];
   printerLoading: boolean;
+  /** Title of the printer picker, which may be choosing a bar/kitchen printer for the tickets of this sale. */
+  printerPickerTitle?: string;
   onPrint: () => void;
   onNewOrder: () => void;
   onChoosePrinter: (printer: PairedPrinter) => void;
@@ -744,7 +810,7 @@ export function PosReceiptScreen(props: ReceiptScreenProps) {
       <View style={styles.successBanner}><CircleCheck size={25} color="#07885b" /><View style={styles.successTextWrap}><Text style={styles.successTitle}>Transaksi berhasil</Text><Text style={styles.successSubtitle}>Pesanan telah diselesaikan.</Text></View></View>
       <View style={styles.receiptCard}>
         <Text style={styles.receiptStore}>{props.order.branch?.name ?? 'Toko'}</Text>
-        <Text style={styles.receiptMeta}>{props.order.orderNumber}  ·  {completedAt ? formatDate(completedAt) : ''}</Text>
+        <Text style={styles.receiptMeta}>{props.order.orderNumber}  ·  {completedAt ? formatDate(completedAt) : ''}{props.order.serviceType ? `  ·  ${formatServiceType(props.order.serviceType)}` : ''}</Text>
         {props.order.customerName || props.order.customerPhone ? <Text style={styles.receiptMeta}>Pelanggan: {customerLabel(props.order.customerName, props.order.customerPhone)}</Text> : null}
         <Text style={styles.receiptMeta}>Kasir: {props.cashierName}</Text>
         <View style={styles.receiptDivider} />
@@ -765,7 +831,7 @@ export function PosReceiptScreen(props: ReceiptScreenProps) {
         <Pressable accessibilityRole="button" onPress={props.onPrint} disabled={props.printing} style={styles.secondaryButton}>{props.printing ? <ActivityIndicator color="#087f5b" /> : <><Printer size={17} color="#087f5b" /><Text style={styles.secondaryText}>Cetak ulang</Text></>}</Pressable>
         <Pressable accessibilityRole="button" onPress={() => void share()} style={styles.primaryButton}><Share2 size={17} color="#fff" /><Text style={styles.primaryText}>Bagikan</Text></Pressable>
       </View> : null}
-      {props.printerPickerVisible ? <PrinterPickerSheet devices={props.printerDevices} loading={props.printerLoading} bottomInset={props.bottomInset} onChoose={props.onChoosePrinter} onClose={props.onClosePrinterPicker} onOpenBluetoothSettings={props.onOpenBluetoothSettings} /> : null}
+      {props.printerPickerVisible ? <PrinterPickerSheet devices={props.printerDevices} loading={props.printerLoading} bottomInset={props.bottomInset} title={props.printerPickerTitle} onChoose={props.onChoosePrinter} onClose={props.onClosePrinterPicker} onOpenBluetoothSettings={props.onOpenBluetoothSettings} /> : null}
     </ScrollView>
     {isTablet ? <View style={styles.receiptSideActions}>
       <Pressable accessibilityRole="button" onPress={props.onPrint} disabled={props.printing} style={[styles.secondaryButton, styles.sideActionButton]}>{props.printing ? <ActivityIndicator color="#087f5b" /> : <><Printer size={18} color="#087f5b" /><Text style={styles.secondaryText}>Cetak ulang</Text></>}</Pressable>
@@ -823,6 +889,12 @@ const styles = StyleSheet.create({
   billListSheet: { height: '80%' }, billList: { flex: 1, marginTop: 8 }, billListContent: { paddingBottom: 8 },
   billRow: { minHeight: 58, flexDirection: 'row', alignItems: 'center', gap: 9, borderBottomWidth: 1, borderBottomColor: '#edf1f4' }, billRowPressed: { backgroundColor: '#f6f9f8' }, billRowTotal: { color: '#172338', fontSize: 11, fontWeight: '900' }, billRowDeposit: { marginTop: 3, color: '#8a5a08', fontSize: 9, fontWeight: '800' },
   billTotals: { paddingHorizontal: 10, paddingVertical: 4, borderRadius: 10, backgroundColor: '#fff' },
+  settingsLink: { minHeight: 40, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, paddingHorizontal: 12, borderRadius: 10, backgroundColor: '#eef7f3' }, settingsLinkText: { color: '#087c53', fontSize: 10, fontWeight: '800' },
+  noticeBox: { gap: 6, padding: 10, borderRadius: 9, backgroundColor: '#e5f8f0' }, noticeBoxText: { padding: 0 }, noticeAction: { minHeight: 36, flexDirection: 'row', alignItems: 'center', alignSelf: 'flex-start', gap: 4, paddingHorizontal: 11, borderWidth: 1, borderColor: '#9bd9bf', borderRadius: 9, backgroundColor: '#fff' }, noticeActionText: { color: '#07885b', fontSize: 10, fontWeight: '900' },
+  splitHeader: { minHeight: 44, flexDirection: 'row', alignItems: 'center', gap: 8, paddingHorizontal: 11, borderRadius: 11, backgroundColor: '#fff' }, splitTitle: { flex: 1, color: '#172338', fontSize: 11, fontWeight: '900' },
+  shareRow: { gap: 7, padding: 10, borderRadius: 11, backgroundColor: '#fff' }, shareTop: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }, shareLabel: { color: '#53677e', fontSize: 10, fontWeight: '800' }, shareAmount: { color: '#172338', fontSize: 12, fontWeight: '900' }, shareMethods: { gap: 6 },
+  toggleRow: { minHeight: 52, flexDirection: 'row', alignItems: 'center', gap: 9, paddingHorizontal: 11, borderRadius: 11, backgroundColor: '#fff' }, toggleText: { color: '#172338', fontSize: 11, fontWeight: '800' },
+  checkbox: { width: 22, height: 22, alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: '#b8c8bf', borderRadius: 6, backgroundColor: '#fff' }, checkboxChecked: { borderColor: '#07885b', backgroundColor: '#07885b' },
   receiptSplit: { flexDirection: 'row' }, receiptContentTablet: { padding: 18, gap: 12 },
   receiptSideActions: { width: 230, gap: 12, paddingTop: 18, paddingRight: 18 }, sideActionButton: { flex: 0, minHeight: 56, marginHorizontal: 0, marginBottom: 0, justifyContent: 'flex-start', paddingHorizontal: 16 },
   modalBackdrop: { flex: 1, justifyContent: 'flex-end', backgroundColor: '#0a172966' }, printerModal: { paddingHorizontal: 17, paddingTop: 17, paddingBottom: 28, borderTopLeftRadius: 20, borderTopRightRadius: 20, backgroundColor: '#fff' }, printerModalHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }, printerModalTitle: { color: '#172338', fontSize: 15, fontWeight: '900' }, printerLoading: { padding: 18 }, printerEmpty: { paddingVertical: 16, color: '#75869a', fontSize: 11, textAlign: 'center' }, printerRow: { minHeight: 55, flexDirection: 'row', alignItems: 'center', gap: 10, borderBottomWidth: 1, borderBottomColor: '#edf1f4' }, printerDetails: { flex: 1 }, printerName: { color: '#27374d', fontSize: 11, fontWeight: '800' }, settingsButton: { alignItems: 'center', marginTop: 12, padding: 11, borderRadius: 10, backgroundColor: '#eef7f3' }, settingsText: { color: '#087c53', fontSize: 10, fontWeight: '800' },

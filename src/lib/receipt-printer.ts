@@ -1,9 +1,11 @@
 import * as SecureStore from 'expo-secure-store';
 import { PermissionsAndroid, Platform } from 'react-native';
 import RNBluetoothClassic from 'react-native-bluetooth-classic';
-import { customerLabel, formatDate, formatStatus } from './display';
+import { customerLabel, formatDate, formatServiceType, formatStatus, type ServiceType } from './display';
 
 export type PairedPrinter = { name: string; address: string };
+/** Where a category's items are made: drinks at the bar, food in the kitchen (the default). */
+export type Station = 'BAR' | 'KITCHEN';
 export type ReceiptLine = {
   productNameSnapshot: string;
   variantNameSnapshot?: string | null;
@@ -14,6 +16,8 @@ export type ReceiptLine = {
   totalPrice: string;
   note?: string | null;
   addons?: { addonNameSnapshot: string; quantity: string; totalPrice: string }[];
+  /** Order lines carry their product's category, whose station decides the ticket a line is printed on. */
+  product?: { category?: { name: string; station?: Station | null } | null } | null;
 };
 export type ReceiptOrder = {
   id: string;
@@ -26,6 +30,7 @@ export type ReceiptOrder = {
   grandTotal: string;
   customerName?: string | null;
   customerPhone?: string | null;
+  serviceType?: ServiceType | null;
   createdAt?: string;
   completedAt?: string | null;
   branch?: { name: string; code?: string } | null;
@@ -114,6 +119,37 @@ export async function savePrinter(printer: PairedPrinter) {
   await SecureStore.setItemAsync(SAVED_PRINTER_KEY, JSON.stringify(printer));
 }
 
+const stationPrinterKey = (station: Station) => `inventory.bluetooth.station-printer.${station.toLowerCase()}.v1`;
+
+/** Printer for one station's tickets on this device; null means the receipt printer is used. */
+export async function getStationPrinter(station: Station): Promise<PairedPrinter | null> {
+  const raw = await SecureStore.getItemAsync(stationPrinterKey(station));
+  if (!raw) return null;
+  try {
+    const saved = JSON.parse(raw) as PairedPrinter;
+    return saved.name && saved.address ? saved : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Saves a station printer, or forgets it (null) so the station falls back to the receipt printer. */
+export async function saveStationPrinter(station: Station, printer: PairedPrinter | null) {
+  if (printer) await SecureStore.setItemAsync(stationPrinterKey(station), JSON.stringify(printer));
+  else await SecureStore.deleteItemAsync(stationPrinterKey(station));
+}
+
+const QUICK_SALE_TICKETS_KEY = 'inventory.pos.quick-sale-tickets.v1';
+
+/** Per-device "Cetak tiket bar/dapur setelah bayar" for quick sales (not open bills); off by default. */
+export async function getQuickSaleTickets() {
+  return (await SecureStore.getItemAsync(QUICK_SALE_TICKETS_KEY)) === '1';
+}
+
+export async function saveQuickSaleTickets(enabled: boolean) {
+  await SecureStore.setItemAsync(QUICK_SALE_TICKETS_KEY, enabled ? '1' : '0');
+}
+
 export function openAndroidBluetoothSettings() {
   if (Platform.OS === 'android') RNBluetoothClassic.openBluetoothSettings();
 }
@@ -148,6 +184,9 @@ function wrap(value: unknown, width: number) {
 /** "Pelanggan: Budi · 0812…" on customer-facing printouts; nothing for a guest without name or phone. */
 const customerLines = (name: string | null | undefined, phone: string | null | undefined, width: number) => name || phone ? wrap(`Pelanggan: ${customerLabel(name, phone)}`, width) : [];
 
+/** "DINE IN" / "TAKEAWAY" on printouts; nothing when the order has no service type. */
+const serviceLines = (type: ServiceType | null | undefined, width: number) => type ? [fit(formatServiceType(type).toLocaleUpperCase('id-ID'), width)] : [];
+
 const isCompleted = (payment: { status?: string }) => (payment.status ?? 'COMPLETED') === 'COMPLETED';
 
 /** Sum of the completed payments on an order, i.e. the deposit (DP) already taken on an unpaid bill. */
@@ -162,6 +201,7 @@ function receiptText(order: ReceiptOrder, width: number) {
     rule,
     fit(order.orderNumber, width),
     ...(date ? [fit(formatDate(date), width)] : []),
+    ...serviceLines(order.serviceType, width),
     ...customerLines(order.customerName, order.customerPhone, width),
     rule,
   ];
@@ -314,6 +354,7 @@ export function formatPreBill(bill: PreBill, cashierName: string, width = THERMA
     rule,
     fit(bill.orderNumber, width),
     fit(receiptDateTime(bill.preBillPrintedAt ?? new Date().toISOString()), width),
+    ...serviceLines(bill.serviceType, width),
     ...wrap(`Kasir: ${cashierName}`, width),
     ...customerLines(bill.customerName, bill.customerPhone, width),
     rule,
@@ -372,29 +413,47 @@ export function formatDepositReceipt(receipt: DepositReceipt, width = THERMAL_WI
   ].join('\n');
 }
 
-/** Lines just sent to the kitchen (POST orders/:id/open-bill/send `sentItems`) with the bill they belong to. */
+type TicketItem = {
+  productNameSnapshot: string;
+  variantNameSnapshot?: string | null;
+  quantity: string;
+  inputQuantity?: string | null;
+  unit?: { code: string } | null;
+  note?: string | null;
+  addons?: { addonNameSnapshot: string; quantity: string }[];
+  product?: { category?: { station?: Station | null } | null } | null;
+};
+
+/**
+ * One station's share of the lines just sent (POST orders/:id/open-bill/send `sentItems`, or a completed quick sale's
+ * items) with the bill they belong to.
+ */
 export type KitchenTicket = {
   orderNumber: string;
   customerName?: string | null;
   customerPhone?: string | null;
+  serviceType?: ServiceType | null;
   sentAt: string;
-  items: {
-    productNameSnapshot: string;
-    variantNameSnapshot?: string | null;
-    quantity: string;
-    inputQuantity?: string | null;
-    unit?: { code: string } | null;
-    note?: string | null;
-    addons?: { addonNameSnapshot: string; quantity: string }[];
-  }[];
+  station: Station;
+  items: TicketItem[];
 };
 
-/** Kitchen ticket: what to make, without prices. */
+export const stationLabel = (station: Station) => station === 'BAR' ? 'Bar' : 'Dapur';
+
+/** Splits lines into one ticket per station that has any (kitchen first); lines without a station go to the kitchen. */
+export function stationTickets(bill: Omit<KitchenTicket, 'station' | 'items'>, items: TicketItem[]): KitchenTicket[] {
+  return (['KITCHEN', 'BAR'] as const)
+    .map((station) => ({ ...bill, station, items: items.filter((item) => (item.product?.category?.station ?? 'KITCHEN') === station) }))
+    .filter((ticket) => ticket.items.length > 0);
+}
+
+/** Bar or kitchen ticket: what to make, without prices. */
 export function formatKitchenTicket(ticket: KitchenTicket, width = THERMAL_WIDTH) {
   const rule = '-'.repeat(width);
   return [
-    center('TIKET DAPUR', width),
+    center(`TIKET ${stationLabel(ticket.station).toLocaleUpperCase('id-ID')}`, width),
     center(ticket.orderNumber, width),
+    ...(ticket.serviceType ? [center(formatServiceType(ticket.serviceType).toLocaleUpperCase('id-ID'), width)] : []),
     center(receiptDateTime(ticket.sentAt), width),
     ...customerLines(ticket.customerName, ticket.customerPhone, width),
     rule,

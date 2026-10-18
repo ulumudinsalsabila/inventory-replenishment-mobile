@@ -8,13 +8,14 @@ import { useAuth } from '../../auth/auth-provider';
 import { ApiError } from '../../lib/api';
 import { useNotifications } from '../../notifications/notifications-provider';
 import { BarcodeScanner } from '../../components/barcode-scanner';
-import { OpenBillListSheet, OpenBillSaveSheet, OpenBillVoidSheet, PosCatalogScreen, PosCheckoutFlow, PosReceiptScreen, PrinterPickerSheet, type OpenBillInfo, type OpenBillRow, type OpenBillVoid, type PosLine, type PosMethod, type PosProduct } from '../../components/pos-flow';
-import { formatDepositReceipt, formatKitchenTicket, formatOrderReceipt, formatPreBill, getPairedPrinters, getSavedPrinter, openAndroidBluetoothSettings, paidTotalOf, printThermalReceipt, printThermalSlip, savePrinter, type KitchenTicket, type PairedPrinter, type PreBill, type ReceiptOrder } from '../../lib/receipt-printer';
+import { OpenBillListSheet, OpenBillSaveSheet, OpenBillVoidSheet, PosCatalogScreen, PosCheckoutFlow, PosReceiptScreen, PrinterPickerSheet, equalShares, type OpenBillInfo, type OpenBillRow, type OpenBillVoid, type PosLine, type PosMethod, type PosProduct } from '../../components/pos-flow';
+import { formatDepositReceipt, formatKitchenTicket, formatOrderReceipt, formatPreBill, getPairedPrinters, getQuickSaleTickets, getSavedPrinter, getStationPrinter, openAndroidBluetoothSettings, paidTotalOf, printThermalReceipt, printThermalSlip, savePrinter, saveQuickSaleTickets, saveStationPrinter, stationLabel, stationTickets, type KitchenTicket, type PairedPrinter, type PreBill, type ReceiptOrder, type Station } from '../../lib/receipt-printer';
 import { ThermalPreview } from '../../components/thermal-preview';
 import { CustomerPickerSheet } from '../../components/customer-picker';
+import { PrintSettingsSheet, SplitBillSheet, type SplitPart, type SplitSourceLine } from '../../components/cafe-sheets';
 import { DEPOSIT_SETTLE_PERMISSION, DepositSettlementSheet, closedDepositOf, depositSettlementErrorMessage, depositSettlementNotice, type DepositPayment, type DepositSettlement, type DepositSettlementResult } from '../../components/deposit-settlement-sheet';
 import { customerErrorMessage, type Customer, type PosCustomer } from '../../lib/customers';
-import { customerLabel, formatDate, formatStatus, stockWarningText, type StockShortage } from '../../lib/display';
+import { customerLabel, formatDate, formatServiceType, formatStatus, stockWarningText, type ServiceType, type StockShortage } from '../../lib/display';
 import { KeyboardAwareScrollView } from 'react-native-keyboard-controller';
 
 type Branch = { id: string; name: string; address?: string | null };
@@ -39,6 +40,8 @@ type BillItem = {
   sentAt?: string | null;
   unit?: { code: string } | null;
   addons?: { addonId: string; addonNameSnapshot: string; quantity: string; totalPrice: string }[];
+  /** The category's station picks the ticket (bar or kitchen) the line is printed on. */
+  product?: { category?: { name: string; station?: Station | null } | null } | null;
 };
 /** GET /orders/:id fields needed to load an open bill back into the cart (also the shape of the open bill PUT, send and void responses). */
 type BillOrder = Omit<Order, 'items'> & {
@@ -58,7 +61,13 @@ type BillOrder = Omit<Order, 'items'> & {
  * deposits as loaded, to tell whether one already went into a cash closing.
  */
 type LoadedBill = OpenBillInfo & { version: number; signature: string; customerId: string | null; payments?: DepositPayment[] };
-const cartSignature = (lines: Line[], discount: string, customerName: string, customerId: string) => JSON.stringify([lines.map((line) => [line.key, line.quantity]), Number(discount) || 0, customerName.trim(), customerId]);
+const cartSignature = (lines: Line[], discount: string, customerName: string, customerId: string, serviceType: ServiceType) => JSON.stringify([lines.map((line) => [line.key, line.quantity]), Number(discount) || 0, customerName.trim(), customerId, serviceType]);
+const serviceTypeOf = (takeaway: boolean): ServiceType => takeaway ? 'TAKEAWAY' : 'DINE_IN';
+/** A printout waiting for the thermal preview; station tickets go to that station's printer. */
+type Slip = { title: string; text: string; station?: Station };
+/** Which saved printer the picker is choosing. */
+type PrinterTarget = 'receipt' | Station;
+const MERGE_MISMATCH_MESSAGE = 'Hanya bill dari cabang dan gudang yang sama yang bisa digabung.';
 /** The selected customer was deactivated, deleted, or belongs to another branch since it was picked. */
 const isCustomerUnavailable = (error: unknown) => error instanceof ApiError && error.code === 'CUSTOMER_UNAVAILABLE';
 const isVersionConflict = (error: unknown) => error instanceof ApiError && error.code === 'OPEN_BILL_VERSION_CONFLICT';
@@ -67,7 +76,7 @@ const VOID_BLOCKED_MESSAGE = 'Simpan perubahan bill terlebih dahulu sebelum void
 function openBillErrorMessage(error: unknown, fallback = 'Open bill gagal disimpan.') {
   if (isCustomerUnavailable(error) || (error instanceof ApiError && error.code === 'PERMISSION_DENIED')) return customerErrorMessage(error);
   if (error instanceof ApiError) {
-    const details = (error.details ?? {}) as { product?: string; onBill?: string; paid?: string };
+    const details = (error.details ?? {}) as { product?: string; onBill?: string; paid?: string; orderNumber?: string };
     if (error.code === 'OPEN_BILL_LOCKED') return 'Bill ini sudah dibayar atau dibatalkan sehingga tidak bisa diubah lagi.';
     if (error.code === 'INVALID_CUSTOMER_PHONE') return 'No. HP tidak valid. Gunakan format 08…, 628…, atau +62 8….';
     if (error.code === 'OPEN_BILL_CUSTOMER_REQUIRED') return 'Nama pelanggan dan No. HP wajib diisi untuk open bill.';
@@ -80,6 +89,13 @@ function openBillErrorMessage(error: unknown, fallback = 'Open bill gagal disimp
     if (error.code === 'VOID_REASON_REQUIRED') return 'Alasan void wajib diisi.';
     if (error.code === 'OPEN_BILL_BELOW_DEPOSIT') return `Total bill tidak boleh di bawah DP yang sudah dibayar (${money(Number(details.paid ?? 0))}).`;
     if (error.code === 'ORDER_PAYMENT_ALREADY_CLOSED') return 'DP sudah masuk tutup kas, bill tidak bisa dibatalkan. Lunasi sisa tagihan lalu selesaikan.';
+    if (error.code === 'OPEN_BILL_SPLIT_EMPTY') return 'Sisakan minimal satu item di bill asal; pindahkan sebagian item saja.';
+    if (error.code === 'OPEN_BILL_SPLIT_HAS_DEPOSIT') return 'Bill yang sudah ada DP tidak bisa di-split. Gunakan "Bagi rata" saat pembayaran.';
+    if (error.code === 'OPEN_BILL_HAS_ADJUSTMENTS') return `Hapus diskon, pajak, dan service charge dari ${details.orderNumber ?? 'bill ini'} terlebih dahulu.`;
+    if (error.code === 'SPLIT_QUANTITY_EXCEEDED') return `Jumlah yang dipindah melebihi jumlah di bill${details.onBill ? ` (maksimal ${Number(details.onBill)})` : ''}. Buka ulang bill lalu coba lagi.`;
+    if (error.code === 'INVALID_SPLIT_QUANTITY') return 'Jumlah item yang dipindah harus lebih dari 0.';
+    if (error.code === 'OPEN_BILL_MERGE_MISMATCH') return MERGE_MISMATCH_MESSAGE;
+    if (error.code === 'OPEN_BILL_MERGE_SAME') return 'Bill tidak bisa digabung dengan dirinya sendiri.';
   }
   return error instanceof Error ? error.message : fallback;
 }
@@ -122,7 +138,8 @@ export default function PosScreen() {
   const [scannerVisible, setScannerVisible] = useState(false);
   const [cartVisible, setCartVisible] = useState(false);
   const [paymentStep, setPaymentStep] = useState(false);
-  const [takeaway, setTakeaway] = useState(true);
+  // Dine in by default; sent with the order and restored when a bill is loaded.
+  const [takeaway, setTakeaway] = useState(false);
   const [selectedCategory, setSelectedCategory] = useState('Semua');
   const [displayOnly, setDisplayOnly] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
@@ -146,8 +163,25 @@ export default function PosScreen() {
   // Sent line picked for a void, and the slip (kitchen ticket, pre-bill or DP receipt) waiting for its printer/preview.
   const [voidTarget, setVoidTarget] = useState<Line | null>(null);
   const [voidError, setVoidError] = useState('');
-  const [slip, setSlip] = useState<{ title: string; text: string } | null>(null);
+  // Slips (kitchen/bar tickets, pre-bill, DP receipt) wait in a queue and are previewed and printed one at a time.
+  const [slipQueue, setSlipQueue] = useState<Slip[]>([]);
+  const slip = slipQueue[0] ?? null;
   const [slipPreviewVisible, setSlipPreviewVisible] = useState(false);
+  // Per-device printers for bar and kitchen tickets (null = the receipt printer) and the printer the picker is choosing.
+  const [stationPrinters, setStationPrinters] = useState<Record<Station, PairedPrinter | null>>({ BAR: null, KITCHEN: null });
+  const [printerTarget, setPrinterTarget] = useState<PrinterTarget>('receipt');
+  const [printSettingsVisible, setPrintSettingsVisible] = useState(false);
+  // The printer picker was opened from the print settings, which reopen once it closes.
+  const [settingsAfterPick, setSettingsAfterPick] = useState(false);
+  // "Cetak tiket bar/dapur setelah bayar" for quick sales, remembered on this device.
+  const [quickSaleTickets, setQuickSaleTickets] = useState(false);
+  // "Bagi rata": one method per person paying an equal share; null pays the whole balance with `method`.
+  const [splitMethods, setSplitMethods] = useState<Method[] | null>(null);
+  // Lines of the saved bill offered in the split sheet (null = sheet closed), and the last split for "Buka bill baru".
+  const [splitLines, setSplitLines] = useState<SplitSourceLine[] | null>(null);
+  const [splitError, setSplitError] = useState('');
+  const [splitNotice, setSplitNotice] = useState<{ message: string; partId: string; orderNumber: string } | null>(null);
+  const [mergeListVisible, setMergeListVisible] = useState(false);
   // The payment step takes a deposit (DP) on the loaded bill instead of paying it off.
   const [depositMode, setDepositMode] = useState(false);
   const [depositAmount, setDepositAmount] = useState('');
@@ -164,6 +198,8 @@ export default function PosScreen() {
   useEffect(() => {
     let active = true;
     void getSavedPrinter().then((saved) => { if (active) setPrinter(saved); });
+    void Promise.all([getStationPrinter('BAR'), getStationPrinter('KITCHEN')]).then(([bar, kitchen]) => { if (active) setStationPrinters({ BAR: bar, KITCHEN: kitchen }); }).catch(() => undefined);
+    void getQuickSaleTickets().then((enabled) => { if (active) setQuickSaleTickets(enabled); }).catch(() => undefined);
     return () => { active = false; };
   }, []);
 
@@ -271,11 +307,12 @@ export default function PosScreen() {
     ...(line.bill?.note ? { note: line.bill.note } : {}),
     addons: line.bill ? line.bill.addons : line.addonIds.map((addonId) => ({ addonId, quantity: '1' })),
   }));
-  const openBillDirty = Boolean(openBill) && cartSignature(cart, discount, customer, selectedCustomer?.id ?? '') !== openBill?.signature;
+  const serviceType = serviceTypeOf(takeaway);
+  const openBillDirty = Boolean(openBill) && cartSignature(cart, discount, customer, selectedCustomer?.id ?? '', serviceType) !== openBill?.signature;
 
   /** Empties the cart and forgets the loaded open bill (the bill itself stays saved on the server). */
   function resetCart() {
-    setCart([]); setPendingOrder(null); setOpenBill(null); setPaymentStep(false); setTakeaway(true); setCustomer(''); setCustomerPhone(''); setDiscount('0'); setSelectedCustomer(null); setDepositMode(false);
+    setCart([]); setPendingOrder(null); setOpenBill(null); setPaymentStep(false); setTakeaway(false); setCustomer(''); setCustomerPhone(''); setDiscount('0'); setSelectedCustomer(null); setDepositMode(false); setSplitMethods(null);
   }
 
   /** Attaches a registered customer; the sale is filed under its name (and phone, when it has one). */
@@ -310,6 +347,8 @@ export default function PosScreen() {
     if (total <= 0) return setError('Total pembayaran harus lebih dari Rp 0.');
     if (!branchId || !warehouseId) return setError('Pilih cabang dan gudang terlebih dahulu.');
     setSubmitting(true); setError(''); setNotice(''); setWarning('');
+    // Station tickets after paying are only for quick sales; an open bill sends its items with "Kirim ke Dapur".
+    const quickSale = !openBill;
     try {
       let order = pendingOrder;
       if (!order && openBill) {
@@ -319,18 +358,22 @@ export default function PosScreen() {
         setPendingOrder(order);
       }
       if (!order) {
-        order = await authorizedRequest<Order>('orders', { method: 'POST', body: JSON.stringify({ branchId, warehouseId, ...(selectedCustomer ? { customerId: selectedCustomer.id } : {}), customerName: customer.trim(), discountAmount: String(discountAmount), items: orderItems() }) });
+        order = await authorizedRequest<Order>('orders', { method: 'POST', body: JSON.stringify({ branchId, warehouseId, ...(selectedCustomer ? { customerId: selectedCustomer.id } : {}), customerName: customer.trim(), serviceType, discountAmount: String(discountAmount), items: orderItems() }) });
         setPendingOrder(order);
       }
       // A deposit (DP) already taken on an open bill is kept; only the remaining balance is paid now.
-      const due = String(Math.max(0, Number(order.grandTotal) - paidTotalOf(order)));
-      const paid = order.status === 'PAID' ? order : await authorizedRequest<Order>(`orders/${order.id}/pay`, { method: 'POST', body: JSON.stringify({ payments: [{ method, amount: due, ...(method === 'CASH' ? { receivedAmount: due } : {}) }] }) });
+      const due = Math.max(0, Number(order.grandTotal) - paidTotalOf(order));
+      // "Bagi rata" pays the same balance as one payment per person, each with its own method.
+      const shares = splitMethods && due >= splitMethods.length ? equalShares(due, splitMethods.length).map((amount, index) => ({ method: splitMethods[index], amount })) : [{ method, amount: due }];
+      const payments = shares.map((share) => ({ method: share.method, amount: String(share.amount), ...(share.method === 'CASH' ? { receivedAmount: String(share.amount) } : {}) }));
+      const paid = order.status === 'PAID' ? order : await authorizedRequest<Order>(`orders/${order.id}/pay`, { method: 'POST', body: JSON.stringify({ payments }) });
       setPendingOrder(paid);
       const completed = await authorizedRequest<Order>(`orders/${paid.id}/complete`, { method: 'POST' });
       setReceipt(completed); resetCart(); setCartVisible(false);
       // Stock changed on the server; reload the catalog so the next order sees current availability.
       setReloadKey((value) => value + 1);
       void refreshNotifications();
+      if (quickSale && quickSaleTickets) printStationTickets(completed, completed.items ?? [], completed.completedAt ?? new Date().toISOString());
     } catch (e) {
       // A failed checkout keeps the customer for the retry, unless the server rejected the customer itself.
       if (handleCustomerUnavailable(e)) setError(customerErrorMessage(e));
@@ -349,13 +392,13 @@ export default function PosScreen() {
     const customerId = selectedCustomer?.id ?? null;
     const link = customerId === bill.customerId ? {} : { customerId };
     try {
-      const updated = await authorizedRequest<Order & { version: number; customerId?: string | null; stockWarnings?: StockShortage[] }>(`orders/${bill.id}/open-bill`, { method: 'PUT', body: JSON.stringify({ version: bill.version, ...link, customerName: name, customerPhone: phone, discountAmount: String(discountAmount), items: orderItems(true) }) });
+      const updated = await authorizedRequest<Order & { version: number; customerId?: string | null; stockWarnings?: StockShortage[] }>(`orders/${bill.id}/open-bill`, { method: 'PUT', body: JSON.stringify({ version: bill.version, ...link, customerName: name, customerPhone: phone, serviceType, discountAmount: String(discountAmount), items: orderItems(true) }) });
       const savedName = updated.customerName ?? name;
       const savedCustomerId = updated.customerId === undefined ? customerId : updated.customerId;
       setCustomer(savedName); setCustomerPhone(updated.customerPhone ?? phone);
       // The bill snapshots the customer's current name, which may have been edited since it was picked.
       if (selectedCustomer && savedCustomerId === selectedCustomer.id) setSelectedCustomer({ ...selectedCustomer, name: savedName });
-      setOpenBill({ ...bill, customerName: savedName, customerPhone: updated.customerPhone ?? phone, customerId: savedCustomerId, version: updated.version, signature: cartSignature(cart, discount, savedName, savedCustomerId ?? '') });
+      setOpenBill({ ...bill, customerName: savedName, customerPhone: updated.customerPhone ?? phone, customerId: savedCustomerId, version: updated.version, signature: cartSignature(cart, discount, savedName, savedCustomerId ?? '', serviceType) });
       return updated;
     } catch (e) {
       if (!isVersionConflict(e)) throw e;
@@ -383,7 +426,7 @@ export default function PosScreen() {
     setDepositMode(false); setPaymentStep(true); setCartVisible(true); setNotice(message);
   }
 
-  /** "Kirim ke Dapur": saves the bill if it changed, marks its unsent lines as sent and prints them as a kitchen ticket. */
+  /** "Kirim ke Dapur": saves the bill if it changed, marks its unsent lines as sent and prints one ticket per station (bar, kitchen). */
   async function sendToKitchen() {
     const bill = openBill;
     if (!bill) return;
@@ -393,12 +436,9 @@ export default function PosScreen() {
       if (!saved) return;
       const sent = await authorizedRequest<BillOrder & { sentItems: BillItem[] }>(`orders/${bill.id}/open-bill/send`, { method: 'POST', body: JSON.stringify({ version: saved.version }) });
       // The response has every line with its id and sentAt, so the cart is rebuilt from it.
-      applyOpenBill(sent, '', `${sent.sentItems.length} item dikirim ke dapur.`);
+      applyOpenBill(sent, '', `${sent.sentItems.length} item dikirim ke ${sent.sentItems.some((item) => item.product?.category?.station === 'BAR') ? 'bar/dapur' : 'dapur'}.`);
       setWarning(stockWarningText(saved.stockWarnings));
-      if (sent.sentItems.length) {
-        const ticket: KitchenTicket = { orderNumber: sent.orderNumber, customerName: sent.customerName, customerPhone: sent.customerPhone, sentAt: sent.sentItems[0].sentAt ?? new Date().toISOString(), items: sent.sentItems };
-        void printSlip({ title: `Tiket dapur ${sent.orderNumber}`, text: formatKitchenTicket(ticket) }, 'Tiket dapur gagal dicetak.');
-      }
+      if (sent.sentItems.length) printStationTickets(sent, sent.sentItems, sent.sentItems[0].sentAt ?? new Date().toISOString());
     } catch (e) {
       if (isVersionConflict(e)) { void loadOpenBill(bill.id, VERSION_CONFLICT_MESSAGE); return; }
       handleCustomerUnavailable(e); setError(openBillErrorMessage(e, 'Item gagal dikirim ke dapur.'));
@@ -484,6 +524,106 @@ export default function PosScreen() {
     } finally { setSubmitting(false); }
   }
 
+  /** One ticket per station (bar, kitchen) that has lines, each printed on that station's printer. */
+  function printStationTickets(order: Pick<Order, 'orderNumber' | 'customerName' | 'customerPhone' | 'serviceType'>, items: KitchenTicket['items'], sentAt: string) {
+    const tickets = stationTickets({ orderNumber: order.orderNumber, customerName: order.customerName, customerPhone: order.customerPhone, serviceType: order.serviceType, sentAt }, items);
+    void printSlip(tickets.map((ticket) => ({ title: `Tiket ${stationLabel(ticket.station).toLowerCase()} ${order.orderNumber}`, text: formatKitchenTicket(ticket), station: ticket.station })), 'Tiket bar/dapur gagal dicetak.');
+  }
+
+  /**
+   * "Split Bill": saves pending edits, reloads the bill so every line has its id (the split refers to saved lines), then
+   * opens the split sheet. Bills with a deposit or a discount cannot be split, so those are stopped here already.
+   */
+  async function startSplit() {
+    const bill = openBill;
+    if (!bill) return;
+    if (bill.paidTotal) { setError('Bill yang sudah ada DP tidak bisa di-split. Gunakan "Bagi rata" saat pembayaran.'); return; }
+    if (discountAmount > 0) { setError('Hapus diskon bill terlebih dahulu sebelum split.'); return; }
+    setBillBusy(true); setError(''); setNotice(''); setWarning('');
+    try {
+      const saved = await saveBeforeBillAction(bill);
+      if (!saved) return;
+      const fresh = await authorizedRequest<BillOrder>(`orders/${bill.id}`);
+      if (fresh.status !== 'OPEN') { setError(`Bill ${fresh.orderNumber} sudah tidak bisa diubah (${formatStatus(fresh.status)}).`); return; }
+      applyOpenBill(fresh, '');
+      setWarning(stockWarningText(saved.stockWarnings));
+      setSplitError('');
+      setSplitLines((fresh.items ?? []).map((item) => ({
+        id: item.id, name: item.productNameSnapshot, variant: item.variantNameSnapshot ?? null, quantity: Number(item.inputQuantity ?? item.quantity), unit: item.unit?.code ?? null,
+        total: Number(item.totalPrice), sent: Boolean(item.sentAt), addons: (item.addons ?? []).map((addon) => `${addon.addonNameSnapshot}${Number(addon.quantity) > 1 ? ` x${Number(addon.quantity)}` : ''}`),
+      })));
+    } catch (e) {
+      if (isVersionConflict(e)) { void loadOpenBill(bill.id, VERSION_CONFLICT_MESSAGE); return; }
+      handleCustomerUnavailable(e); setError(openBillErrorMessage(e, 'Bill gagal disiapkan untuk split.'));
+    } finally { setBillBusy(false); }
+  }
+
+  /** Moves the picked lines to a new open bill; the original stays loaded (refreshed) and the new one can be opened next. */
+  async function submitSplit(part: SplitPart) {
+    const bill = openBill;
+    if (!bill) return;
+    setBillBusy(true); setSplitError('');
+    try {
+      const result = await authorizedRequest<{ original: BillOrder; parts: BillOrder[] }>(`orders/${bill.id}/split`, { method: 'POST', body: JSON.stringify({ version: bill.version, parts: [part] }) });
+      const created = result.parts[0];
+      const message = `Bill baru ${created.orderNumber} dibuat (${money(Number(created.grandTotal))}).`;
+      setSplitLines(null);
+      applyOpenBill(result.original, '', message);
+      setSplitNotice({ message, partId: created.id, orderNumber: created.orderNumber });
+      void refreshNotifications();
+    } catch (e) {
+      if (isVersionConflict(e)) { setSplitLines(null); void loadOpenBill(bill.id, VERSION_CONFLICT_MESSAGE); return; }
+      setSplitError(openBillErrorMessage(e, 'Bill gagal di-split.'));
+    } finally { setBillBusy(false); }
+  }
+
+  /** "Gabung Bill": saves pending edits first, then lists the other open bills to bring into this one. */
+  async function startMerge() {
+    const bill = openBill;
+    if (!bill) return;
+    setBillBusy(true); setError(''); setNotice(''); setWarning('');
+    try {
+      const saved = await saveBeforeBillAction(bill);
+      if (!saved) return;
+      setWarning(stockWarningText(saved.stockWarnings));
+      setMergeListVisible(true);
+    } catch (e) {
+      if (isVersionConflict(e)) { void loadOpenBill(bill.id, VERSION_CONFLICT_MESSAGE); return; }
+      handleCustomerUnavailable(e); setError(openBillErrorMessage(e, 'Bill gagal disimpan sebelum digabung.'));
+    } finally { setBillBusy(false); }
+  }
+
+  /** Fetches the picked bill (for its version and deposit) and asks before merging it into the loaded one. */
+  async function pickMergeSource(row: OpenBillRow) {
+    const bill = openBill;
+    if (!bill) return;
+    setBillLoadingId(row.id);
+    try {
+      const source = await authorizedRequest<BillOrder>(`orders/${row.id}`);
+      if (source.status !== 'OPEN') { setMergeListVisible(false); setError(`Bill ${source.orderNumber} sudah tidak bisa digabung (${formatStatus(source.status)}).`); return; }
+      if (source.branchId !== branchId || source.warehouseId !== warehouseId) { setMergeListVisible(false); setError(MERGE_MISMATCH_MESSAGE); return; }
+      const deposit = paidTotalOf(source);
+      const summary = [source.customerName, money(Number(source.grandTotal)), deposit > 0 ? `DP ${money(deposit)}` : ''].filter(Boolean).join(', ');
+      Alert.alert('Gabung bill?', `Gabungkan ${source.orderNumber} (${summary}) ke bill ini?\n\nSemua item${deposit > 0 ? ' dan DP' : ''} pindah ke ${bill.orderNumber}, lalu ${source.orderNumber} ditutup.`, [
+        { text: 'Kembali', style: 'cancel' },
+        { text: 'Gabungkan', onPress: () => void mergeBill(bill, source) },
+      ]);
+    } catch (e) { setMergeListVisible(false); setError(e instanceof Error ? e.message : 'Bill gagal dimuat.'); }
+    finally { setBillLoadingId(''); }
+  }
+
+  async function mergeBill(bill: LoadedBill, source: BillOrder) {
+    setMergeListVisible(false); setBillBusy(true); setError(''); setNotice(''); setWarning('');
+    try {
+      const merged = await authorizedRequest<BillOrder>(`orders/${bill.id}/merge`, { method: 'POST', body: JSON.stringify({ version: bill.version, sourceOrderId: source.id, sourceVersion: source.version }) });
+      applyOpenBill(merged, '', `Bill ${source.orderNumber} digabung ke bill ini. Total sekarang ${money(Number(merged.grandTotal))}.`);
+      void refreshNotifications();
+    } catch (e) {
+      if (isVersionConflict(e)) { void loadOpenBill(bill.id, 'Salah satu bill sudah diubah di perangkat lain. Data terbaru sudah dimuat ulang, coba gabungkan lagi.'); return; }
+      setError(openBillErrorMessage(e, 'Bill gagal digabung.'));
+    } finally { setBillBusy(false); }
+  }
+
   async function saveOpenBill(name: string, phone: string) {
     if (!cart.length) return setBillError('Keranjang masih kosong.');
     if (!branchId || !warehouseId) return setBillError('Pilih cabang dan gudang terlebih dahulu.');
@@ -491,7 +631,7 @@ export default function PosScreen() {
     try {
       const saved = openBill
         ? await updateOpenBill(openBill, name, phone)
-        : await authorizedRequest<Order & { stockWarnings?: StockShortage[] }>('orders', { method: 'POST', body: JSON.stringify({ branchId, warehouseId, openBill: true, ...(selectedCustomer ? { customerId: selectedCustomer.id } : {}), customerName: name, customerPhone: phone, discountAmount: String(discountAmount), items: orderItems() }) });
+        : await authorizedRequest<Order & { stockWarnings?: StockShortage[] }>('orders', { method: 'POST', body: JSON.stringify({ branchId, warehouseId, openBill: true, ...(selectedCustomer ? { customerId: selectedCustomer.id } : {}), customerName: name, customerPhone: phone, serviceType, discountAmount: String(discountAmount), items: orderItems() }) });
       if (!saved) return;
       if (saved.status === 'PAID') { setBillSheetVisible(false); settlePaidBill(saved); return; }
       // The bill is parked on the server; the cart is cleared for the next customer.
@@ -517,7 +657,7 @@ export default function PosScreen() {
     finally { setBillLoadingId(''); }
   }
 
-  function selectOpenBill(row: OpenBillRow) {
+  function selectOpenBill(row: Pick<OpenBillRow, 'id' | 'orderNumber'>) {
     if (row.id === openBill?.id) { setBillListVisible(false); setCartVisible(true); return; }
     if (!cart.length || (openBill && !openBillDirty)) { void loadOpenBill(row.id); return; }
     Alert.alert('Ganti isi keranjang?', `Pesanan di keranjang yang belum disimpan akan diganti dengan bill ${row.orderNumber}.`, [
@@ -543,9 +683,11 @@ export default function PosScreen() {
     const billDiscount = String(Number(bill.discountAmount) || 0);
     const name = bill.customerName ?? '';
     const customerId = bill.customerId ?? null;
-    setCart(lines); setDiscount(billDiscount); setCustomer(name); setCustomerPhone(bill.customerPhone ?? ''); setPendingOrder(null); setPaymentStep(false);
+    // Older bills have no service type; they load as Dine in, the default.
+    const billTakeaway = bill.serviceType === 'TAKEAWAY';
+    setCart(lines); setDiscount(billDiscount); setCustomer(name); setCustomerPhone(bill.customerPhone ?? ''); setPendingOrder(null); setPaymentStep(false); setTakeaway(billTakeaway); setSplitMethods(null);
     setSelectedCustomer(customerId ? { id: customerId, name, phone: bill.customerPhone } : null);
-    setOpenBill({ id: bill.id, orderNumber: bill.orderNumber, customerName: name, customerPhone: bill.customerPhone ?? '', itemVoids: bill.itemVoids ?? [], paidTotal: paidTotalOf(bill), payments: bill.payments, customerId, version: bill.version, signature: cartSignature(lines, billDiscount, name, customerId ?? '') });
+    setOpenBill({ id: bill.id, orderNumber: bill.orderNumber, customerName: name, customerPhone: bill.customerPhone ?? '', itemVoids: bill.itemVoids ?? [], paidTotal: paidTotalOf(bill), payments: bill.payments, customerId, version: bill.version, signature: cartSignature(lines, billDiscount, name, customerId ?? '', serviceTypeOf(billTakeaway)) });
     setError(message); setNotice(success); setCartVisible(true);
     if (customerId && can('customer.read')) {
       // The bill only snapshots name and phone; fetch the customer's own phone (the bill's may have been typed
@@ -647,7 +789,7 @@ export default function PosScreen() {
     const esc = (value: string) => value.replace(/[&<>"']/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[char]!);
     const date = receipt.completedAt ?? receipt.createdAt;
     const rows = (receipt.items ?? []).map((item) => `<div class="item"><div class="row"><span>${esc(item.productNameSnapshot)}${item.variantNameSnapshot ? ` (${esc(item.variantNameSnapshot)})` : ''}</span><span>${money(Number(item.totalPrice))}</span></div><div class="sub">${Number(item.inputQuantity ?? item.quantity)} ${esc(item.unit?.code ?? '')} x ${money(Number(item.unitPrice))}</div>${(item.addons ?? []).map((addon) => `<div class="sub">+ ${esc(addon.addonNameSnapshot)} x ${Number(addon.quantity)} (${money(Number(addon.totalPrice))})</div>`).join('')}</div>`).join('');
-    const html = `<!doctype html><html><head><meta name="viewport" content="width=device-width, initial-scale=1"><style>@page{margin:5mm}*{box-sizing:border-box}body{font:12px Arial,sans-serif;color:#111;width:72mm;margin:0 auto}.center{text-align:center}.title{font-size:18px;font-weight:bold}.muted{color:#555;font-size:10px}.line{border-top:1px dashed #555;margin:9px 0}.row{display:flex;justify-content:space-between;gap:8px}.item{margin:8px 0}.sub{color:#555;font-size:10px;margin-top:3px}.total{font-weight:bold;font-size:15px}</style></head><body><div class="center"><div class="title">${esc(receipt.branch?.name ?? 'NOTA PEMBELIAN')}</div>${receipt.branch?.code ? `<div class="muted">${esc(receipt.branch.code)}</div>` : ''}<div class="line"></div><div>${esc(receipt.orderNumber)}</div><div class="muted">${date ? formatDate(date) : ''}</div>${receipt.customerName || receipt.customerPhone ? `<div>Pelanggan: ${esc(customerLabel(receipt.customerName, receipt.customerPhone))}</div>` : ''}</div><div class="line"></div>${rows}<div class="line"></div><div class="row"><span>Subtotal</span><span>${money(Number(receipt.subtotal))}</span></div><div class="row"><span>Diskon</span><span>-${money(Number(receipt.discountAmount))}</span></div>${Number(receipt.taxAmount ?? 0) ? `<div class="row"><span>Pajak</span><span>${money(Number(receipt.taxAmount))}</span></div>` : ''}${Number(receipt.serviceCharge ?? 0) ? `<div class="row"><span>Layanan</span><span>${money(Number(receipt.serviceCharge))}</span></div>` : ''}<div class="row total"><span>TOTAL</span><span>${money(Number(receipt.grandTotal))}</span></div>${(receipt.payments ?? []).map((payment) => `<div class="row"><span>${esc(formatStatus(payment.method))}</span><span>${money(Number(payment.amount))}</span></div>${payment.receivedAmount ? `<div class="row"><span>Diterima</span><span>${money(Number(payment.receivedAmount))}</span></div>` : ''}${payment.changeAmount ? `<div class="row"><span>Kembalian</span><span>${money(Number(payment.changeAmount))}</span></div>` : ''}`).join('')}<div class="line"></div><div class="center">Terima kasih</div></body></html>`;
+    const html = `<!doctype html><html><head><meta name="viewport" content="width=device-width, initial-scale=1"><style>@page{margin:5mm}*{box-sizing:border-box}body{font:12px Arial,sans-serif;color:#111;width:72mm;margin:0 auto}.center{text-align:center}.title{font-size:18px;font-weight:bold}.muted{color:#555;font-size:10px}.line{border-top:1px dashed #555;margin:9px 0}.row{display:flex;justify-content:space-between;gap:8px}.item{margin:8px 0}.sub{color:#555;font-size:10px;margin-top:3px}.total{font-weight:bold;font-size:15px}</style></head><body><div class="center"><div class="title">${esc(receipt.branch?.name ?? 'NOTA PEMBELIAN')}</div>${receipt.branch?.code ? `<div class="muted">${esc(receipt.branch.code)}</div>` : ''}<div class="line"></div><div>${esc(receipt.orderNumber)}</div><div class="muted">${date ? formatDate(date) : ''}</div>${receipt.serviceType ? `<div>${esc(formatServiceType(receipt.serviceType))}</div>` : ''}${receipt.customerName || receipt.customerPhone ? `<div>Pelanggan: ${esc(customerLabel(receipt.customerName, receipt.customerPhone))}</div>` : ''}</div><div class="line"></div>${rows}<div class="line"></div><div class="row"><span>Subtotal</span><span>${money(Number(receipt.subtotal))}</span></div><div class="row"><span>Diskon</span><span>-${money(Number(receipt.discountAmount))}</span></div>${Number(receipt.taxAmount ?? 0) ? `<div class="row"><span>Pajak</span><span>${money(Number(receipt.taxAmount))}</span></div>` : ''}${Number(receipt.serviceCharge ?? 0) ? `<div class="row"><span>Layanan</span><span>${money(Number(receipt.serviceCharge))}</span></div>` : ''}<div class="row total"><span>TOTAL</span><span>${money(Number(receipt.grandTotal))}</span></div>${(receipt.payments ?? []).map((payment) => `<div class="row"><span>${esc(formatStatus(payment.method))}</span><span>${money(Number(payment.amount))}</span></div>${payment.receivedAmount ? `<div class="row"><span>Diterima</span><span>${money(Number(payment.receivedAmount))}</span></div>` : ''}${payment.changeAmount ? `<div class="row"><span>Kembalian</span><span>${money(Number(payment.changeAmount))}</span></div>` : ''}`).join('')}<div class="line"></div><div class="center">Terima kasih</div></body></html>`;
     try { await Print.printAsync({ html }); }
     catch (e) { setPrintError(e instanceof Error ? e.message : 'Nota gagal dicetak.'); }
     finally { setPrinting(false); }
@@ -657,31 +799,69 @@ export default function PosScreen() {
    * Kitchen tickets, pre-bills and DP receipts use the receipt printer: the thermal preview on Android, the system print
    * dialog elsewhere. `failure` is shown when the print dialog fails.
    */
-  async function printSlip(next: { title: string; text: string }, failure: string) {
+  async function printSlip(next: Slip | Slip[], failure: string) {
+    const queue = Array.isArray(next) ? next : [next];
+    if (!queue.length) return;
     setPrintError('');
     if (Platform.OS === 'android') {
-      setSlip(next);
-      if (!printer) { await showPrinterPicker(true); return; }
+      // Several slips (bar and kitchen tickets) are previewed and printed one after another.
+      setSlipQueue(queue);
+      if (!printerFor(queue[0])) { await showPrinterPicker(true, queue[0].station ?? 'receipt'); return; }
       setSlipPreviewVisible(true);
       return;
     }
-    try { await Print.printAsync({ html: `<!doctype html><html><body><pre style="font:12px monospace">${escapeHtml(next.text)}</pre></body></html>` }); }
+    try { for (const entry of queue) await Print.printAsync({ html: `<!doctype html><html><body><pre style="font:12px monospace">${escapeHtml(entry.text)}</pre></body></html>` }); }
     catch (e) { setError(e instanceof Error ? e.message : failure); }
+  }
+
+  /** A station ticket goes to that station's printer; anything else, or a station without its own printer, to the receipt printer. */
+  function printerFor(entry: Slip) {
+    return (entry.station ? stationPrinters[entry.station] : null) ?? printer;
+  }
+
+  /** Drops the slip on screen and moves on to the next one, asking for a printer when the next station has none. */
+  function nextSlip() {
+    const rest = slipQueue.slice(1);
+    setSlipQueue(rest); setPrintError('');
+    if (!rest.length) { setSlipPreviewVisible(false); return; }
+    if (!printerFor(rest[0])) { setSlipPreviewVisible(false); void showPrinterPicker(true, rest[0].station ?? 'receipt'); }
   }
 
   async function sendSlip(target: PairedPrinter) {
     if (!slip) return;
     setPrinting(true); setPrintError('');
-    try { await printThermalSlip(slip.text, target); setSlipPreviewVisible(false); setSlip(null); }
+    try { await printThermalSlip(slip.text, target); nextSlip(); }
     catch (e) { setPrintError(e instanceof Error ? e.message : `${slip.title} gagal dikirim ke printer.`); }
     finally { setPrinting(false); }
   }
 
-  async function showPrinterPicker(printAfterSelection = false) {
-    setPrintError(''); setPrintAfterPrinterSelection(printAfterSelection); setPrinterPickerVisible(true); setPrinterLoading(true);
+  async function showPrinterPicker(printAfterSelection = false, target: PrinterTarget = 'receipt') {
+    setPrintError(''); setPrintAfterPrinterSelection(printAfterSelection); setPrinterTarget(target); setPrinterPickerVisible(true); setPrinterLoading(true);
     try { setPrinterDevices(await getPairedPrinters()); }
     catch (e) { setPrintError(e instanceof Error ? e.message : 'Tidak dapat membaca perangkat Bluetooth.'); }
     finally { setPrinterLoading(false); }
+  }
+
+  /** Closing the picker drops pending slips and returns to the print settings when it was opened from there. */
+  function closePrinterPicker() {
+    setPrinterPickerVisible(false); setPrintAfterPrinterSelection(false); setSlipQueue([]);
+    if (settingsAfterPick) { setSettingsAfterPick(false); setPrintSettingsVisible(true); }
+  }
+
+  /** Picks a printer from the print settings; the settings sheet steps aside while the picker is open. */
+  function pickPrinterFromSettings(target: PrinterTarget) {
+    setPrintSettingsVisible(false); setSettingsAfterPick(true);
+    void showPrinterPicker(false, target);
+  }
+
+  async function resetStationPrinter(station: Station) {
+    try { await saveStationPrinter(station, null); setStationPrinters((current) => ({ ...current, [station]: null })); }
+    catch (e) { setError(e instanceof Error ? e.message : 'Printer gagal disimpan.'); }
+  }
+
+  function changeQuickSaleTickets(enabled: boolean) {
+    setQuickSaleTickets(enabled);
+    void saveQuickSaleTickets(enabled).catch(() => undefined);
   }
 
   async function sendBluetoothReceipt(target: PairedPrinter) {
@@ -695,11 +875,12 @@ export default function PosScreen() {
   async function choosePrinter(target: PairedPrinter) {
     setPrinterLoading(true); setPrintError('');
     try {
-      await savePrinter(target);
-      setPrinter(target);
+      if (printerTarget === 'receipt') { await savePrinter(target); setPrinter(target); }
+      else { await saveStationPrinter(printerTarget, target); setStationPrinters((current) => ({ ...current, [printerTarget]: target })); }
       setPrinterPickerVisible(false);
-      // A pending slip (kitchen ticket, pre-bill or DP receipt) takes the freshly chosen printer; otherwise it is the receipt.
+      // A pending slip (ticket, pre-bill or DP receipt) takes the freshly chosen printer; otherwise it is the receipt.
       if (printAfterPrinterSelection) { if (slip) setSlipPreviewVisible(true); else setPreviewVisible(true); }
+      if (settingsAfterPick) { setSettingsAfterPick(false); setPrintSettingsVisible(true); }
     } catch (e) { setPrintError(e instanceof Error ? e.message : 'Printer gagal disimpan.'); }
     finally { setPrinterLoading(false); setPrintAfterPrinterSelection(false); }
   }
@@ -716,8 +897,21 @@ export default function PosScreen() {
     onClose={() => { setPreviewVisible(false); setPrintError(''); }}
   /> : null;
 
+  const printerPickerTitle = printerTarget === 'receipt' ? undefined : `Pilih Printer ${stationLabel(printerTarget)}`;
+  // Closing the preview skips this slip; the next one (e.g. the bar ticket after the kitchen ticket) follows.
+  const slipPreview = slip ? <ThermalPreview
+    visible={slipPreviewVisible}
+    title={slipQueue.length > 1 ? `${slip.title} (${slipQueue.length - 1} lagi)` : slip.title}
+    text={slip.text}
+    printer={printerFor(slip)}
+    printing={printing}
+    error={printError}
+    onPrint={() => { const target = printerFor(slip); if (target) void sendSlip(target); }}
+    onChangePrinter={() => { setSlipPreviewVisible(false); void showPrinterPicker(true, slip.station ?? 'receipt'); }}
+    onClose={nextSlip}
+  /> : null;
 
-  if (receipt && receipt.orderNumber.length > 0) return <>{thermalPreview}<PosReceiptScreen
+  if (receipt && receipt.orderNumber.length > 0) return <>{thermalPreview}{slipPreview}<PosReceiptScreen
     order={receipt}
     topInset={insets.top + 8}
     bottomInset={insets.bottom}
@@ -728,10 +922,11 @@ export default function PosScreen() {
     printerPickerVisible={printerPickerVisible}
     printerDevices={printerDevices}
     printerLoading={printerLoading}
+    printerPickerTitle={printerPickerTitle}
     onPrint={() => void printReceipt()}
     onNewOrder={() => { setReceipt(null); setPendingOrder(null); setPrintError(''); setError(''); }}
     onChoosePrinter={(target) => void choosePrinter(target)}
-    onClosePrinterPicker={() => setPrinterPickerVisible(false)}
+    onClosePrinterPicker={closePrinterPicker}
     onOpenBluetoothSettings={openAndroidBluetoothSettings}
   /></>;
 
@@ -782,26 +977,49 @@ export default function PosScreen() {
       onSubmit={(settlement, reason) => void settleDeposit(settlement, reason)}
       onClose={() => { setSettleVisible(false); setSettleError(''); }}
     /> : null}
+    {splitLines && openBill ? <SplitBillSheet
+      orderNumber={openBill.orderNumber}
+      customer={customerLabel(openBill.customerName, openBill.customerPhone)}
+      lines={splitLines}
+      saving={billBusy}
+      error={splitError}
+      bottomInset={insets.bottom}
+      onSubmit={(part) => void submitSplit(part)}
+      onClose={() => { setSplitLines(null); setSplitError(''); }}
+    /> : null}
+    {mergeListVisible && openBill ? <OpenBillListSheet
+      request={authorizedRequest}
+      bottomInset={insets.bottom}
+      loadingId={billLoadingId}
+      excludeId={openBill.id}
+      title={`Gabung ke ${openBill.orderNumber}`}
+      subtitle="Pilih bill yang item dan DP-nya dipindah ke bill ini."
+      onSelect={(row) => void pickMergeSource(row)}
+      onClose={() => setMergeListVisible(false)}
+    /> : null}
+    {printSettingsVisible ? <PrintSettingsSheet
+      receiptPrinter={printer}
+      stationPrinters={stationPrinters}
+      showPrinters={Platform.OS === 'android'}
+      quickSaleTickets={quickSaleTickets}
+      bottomInset={insets.bottom}
+      onPickReceiptPrinter={() => pickPrinterFromSettings('receipt')}
+      onPickStationPrinter={pickPrinterFromSettings}
+      onResetStationPrinter={(station) => void resetStationPrinter(station)}
+      onQuickSaleTicketsChange={changeQuickSaleTickets}
+      onClose={() => setPrintSettingsVisible(false)}
+    /> : null}
     {printerPickerVisible ? <PrinterPickerSheet
       devices={printerDevices}
       loading={printerLoading}
       error={printError}
       bottomInset={insets.bottom}
+      title={printerPickerTitle}
       onChoose={(target) => void choosePrinter(target)}
-      onClose={() => { setPrinterPickerVisible(false); setPrintAfterPrinterSelection(false); setSlip(null); }}
+      onClose={closePrinterPicker}
       onOpenBluetoothSettings={openAndroidBluetoothSettings}
     /> : null}
-    {slip ? <ThermalPreview
-      visible={slipPreviewVisible}
-      title={slip.title}
-      text={slip.text}
-      printer={printer}
-      printing={printing}
-      error={printError}
-      onPrint={() => { if (printer) void sendSlip(printer); }}
-      onChangePrinter={() => { setSlipPreviewVisible(false); void showPrinterPicker(true); }}
-      onClose={() => { setSlipPreviewVisible(false); setSlip(null); setPrintError(''); }}
-    /> : null}
+    {slipPreview}
   </>;
 
   if (cartVisible) return <><PosCheckoutFlow
@@ -822,7 +1040,7 @@ export default function PosScreen() {
     onQuantity={quantity}
     canIncrease={(line) => canAddUnit(line.product, line.unitId)}
     onCheckout={() => void checkout()}
-    onClear={() => { setCart([]); setPendingOrder(null); setOpenBill(null); setCustomerPhone(''); setPaymentStep(false); setDepositMode(false); setError(''); setNotice(''); setWarning(''); detachCustomer(); }}
+    onClear={() => { setCart([]); setPendingOrder(null); setOpenBill(null); setCustomerPhone(''); setPaymentStep(false); setDepositMode(false); setTakeaway(false); setSplitMethods(null); setError(''); setNotice(''); setWarning(''); detachCustomer(); }}
     onClose={() => { setCartVisible(false); setPaymentStep(false); setDepositMode(false); }}
     submitting={submitting}
     error={error}
@@ -848,6 +1066,14 @@ export default function PosScreen() {
     depositAmount={depositAmount}
     onDepositAmountChange={setDepositAmount}
     onReceiveDeposit={() => void receiveDeposit()}
+    splitMethods={splitMethods}
+    onSplitMethodsChange={setSplitMethods}
+    quickSaleTickets={quickSaleTickets}
+    onQuickSaleTicketsChange={openBill ? undefined : changeQuickSaleTickets}
+    onOpenPrintSettings={Platform.OS === 'android' ? () => setPrintSettingsVisible(true) : undefined}
+    onSplitBill={openBill && can('order.create') ? () => void startSplit() : undefined}
+    onMergeBill={openBill && can('order.create') ? () => void startMerge() : undefined}
+    noticeAction={splitNotice && notice === splitNotice.message && openBill?.id !== splitNotice.partId ? { label: `Buka bill baru ${splitNotice.orderNumber}`, onPress: () => selectOpenBill({ id: splitNotice.partId, orderNumber: splitNotice.orderNumber }) } : null}
   />{billSheets}</>;
     if (!receipt && !cartVisible) return <><PosCatalogScreen
       branches={branches}
@@ -883,7 +1109,7 @@ export default function PosScreen() {
       canAdd={(product, unitId) => canAddUnit(product as Product, unitId)}
       priceFor={priceFor}
       onOpenCart={() => { setPaymentStep(false); setCartVisible(true); }}
-      onClear={() => { setCart([]); setPendingOrder(null); setOpenBill(null); setCustomerPhone(''); setError(''); setWarning(''); detachCustomer(); }}
+      onClear={() => { setCart([]); setPendingOrder(null); setOpenBill(null); setCustomerPhone(''); setTakeaway(false); setSplitMethods(null); setError(''); setWarning(''); detachCustomer(); }}
       onScan={(value) => { const match = products.find((product) => product.barcode === value || product.sku === value); if (match) add(match); else { setSearch(value); setError('Barcode tidak ditemukan pada katalog gudang ini.'); } }}
       onCloseOption={() => setOptionProduct(null)}
       onOptionUnitChange={setOptionUnit}
