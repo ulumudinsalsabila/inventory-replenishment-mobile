@@ -12,6 +12,7 @@ import { OpenBillListSheet, OpenBillSaveSheet, OpenBillVoidSheet, PosCatalogScre
 import { formatDepositReceipt, formatKitchenTicket, formatOrderReceipt, formatPreBill, getPairedPrinters, getSavedPrinter, openAndroidBluetoothSettings, paidTotalOf, printThermalReceipt, printThermalSlip, savePrinter, type KitchenTicket, type PairedPrinter, type PreBill, type ReceiptOrder } from '../../lib/receipt-printer';
 import { ThermalPreview } from '../../components/thermal-preview';
 import { CustomerPickerSheet } from '../../components/customer-picker';
+import { DEPOSIT_SETTLE_PERMISSION, DepositSettlementSheet, closedDepositOf, depositSettlementErrorMessage, depositSettlementNotice, type DepositPayment, type DepositSettlement, type DepositSettlementResult } from '../../components/deposit-settlement-sheet';
 import { customerErrorMessage, type Customer, type PosCustomer } from '../../lib/customers';
 import { customerLabel, formatDate, formatStatus, stockWarningText, type StockShortage } from '../../lib/display';
 import { KeyboardAwareScrollView } from 'react-native-keyboard-controller';
@@ -53,9 +54,10 @@ type BillOrder = Omit<Order, 'items'> & {
 };
 /**
  * The open bill in the cart; `signature` is the cart as last saved, to tell whether there are unsaved changes.
- * `customerId` is the registered customer the bill is linked to on the server (null for a guest bill).
+ * `customerId` is the registered customer the bill is linked to on the server (null for a guest bill); `payments` are its
+ * deposits as loaded, to tell whether one already went into a cash closing.
  */
-type LoadedBill = OpenBillInfo & { version: number; signature: string; customerId: string | null };
+type LoadedBill = OpenBillInfo & { version: number; signature: string; customerId: string | null; payments?: DepositPayment[] };
 const cartSignature = (lines: Line[], discount: string, customerName: string, customerId: string) => JSON.stringify([lines.map((line) => [line.key, line.quantity]), Number(discount) || 0, customerName.trim(), customerId]);
 /** The selected customer was deactivated, deleted, or belongs to another branch since it was picked. */
 const isCustomerUnavailable = (error: unknown) => error instanceof ApiError && error.code === 'CUSTOMER_UNAVAILABLE';
@@ -149,6 +151,9 @@ export default function PosScreen() {
   // The payment step takes a deposit (DP) on the loaded bill instead of paying it off.
   const [depositMode, setDepositMode] = useState(false);
   const [depositAmount, setDepositAmount] = useState('');
+  // "Batalkan Bill dengan DP" for a loaded bill whose deposit is already in a cash closing.
+  const [settleVisible, setSettleVisible] = useState(false);
+  const [settleError, setSettleError] = useState('');
   // Registered customer on the current sale (null = Guest); it never outlives the sale or the branch/warehouse.
   const [selectedCustomer, setSelectedCustomer] = useState<PosCustomer | null>(null);
   const [customerPickerVisible, setCustomerPickerVisible] = useState(false);
@@ -374,7 +379,7 @@ export default function PosScreen() {
    * locked it as PAID. It is kept as the pending order, so "Bayar" only completes it (no payment is sent) and shows the receipt.
    */
   function settlePaidBill(order: Order, message = 'Total bill sudah tertutup DP, jadi bill sudah lunas. Tekan Bayar untuk menyelesaikan transaksi.') {
-    setPendingOrder(order); setOpenBill((current) => current && { ...current, paidTotal: paidTotalOf(order) });
+    setPendingOrder(order); setOpenBill((current) => current && { ...current, paidTotal: paidTotalOf(order), payments: order.payments });
     setDepositMode(false); setPaymentStep(true); setCartVisible(true); setNotice(message);
   }
 
@@ -540,7 +545,7 @@ export default function PosScreen() {
     const customerId = bill.customerId ?? null;
     setCart(lines); setDiscount(billDiscount); setCustomer(name); setCustomerPhone(bill.customerPhone ?? ''); setPendingOrder(null); setPaymentStep(false);
     setSelectedCustomer(customerId ? { id: customerId, name, phone: bill.customerPhone } : null);
-    setOpenBill({ id: bill.id, orderNumber: bill.orderNumber, customerName: name, customerPhone: bill.customerPhone ?? '', itemVoids: bill.itemVoids ?? [], paidTotal: paidTotalOf(bill), customerId, version: bill.version, signature: cartSignature(lines, billDiscount, name, customerId ?? '') });
+    setOpenBill({ id: bill.id, orderNumber: bill.orderNumber, customerName: name, customerPhone: bill.customerPhone ?? '', itemVoids: bill.itemVoids ?? [], paidTotal: paidTotalOf(bill), payments: bill.payments, customerId, version: bill.version, signature: cartSignature(lines, billDiscount, name, customerId ?? '') });
     setError(message); setNotice(success); setCartVisible(true);
     if (customerId && can('customer.read')) {
       // The bill only snapshots name and phone; fetch the customer's own phone (the bill's may have been typed
@@ -554,6 +559,8 @@ export default function PosScreen() {
   function confirmCancelOpenBill() {
     const bill = openBill;
     if (!bill) return;
+    // A deposit already counted by a cash closing cannot simply be voided; an admin refunds or forfeits it instead.
+    if (closedDepositOf(bill.payments) > 0) { setSettleError(''); setSettleVisible(true); return; }
     // Deposits not yet in a cash closing are voided with the bill; the cashier hands the money back.
     const deposit = bill.paidTotal ? `\n\nDP ${money(bill.paidTotal)} akan dibatalkan; kembalikan uang ke pelanggan.` : '';
     Alert.alert('Batalkan open bill?', `Bill ${bill.orderNumber} atas nama ${bill.customerName} akan dibatalkan dan tidak bisa dibuka lagi.${deposit}`, [
@@ -569,7 +576,29 @@ export default function PosScreen() {
       resetCart(); setCartVisible(false);
       setNotice(`Open bill ${bill.orderNumber} dibatalkan.`);
       void refreshNotifications();
-    } catch (e) { setError(openBillErrorMessage(e)); }
+    } catch (e) {
+      if (e instanceof ApiError && e.code === 'ORDER_PAYMENT_ALREADY_CLOSED') {
+        // A cash closing ran after the bill was loaded: fetch its payments so the sheet shows what is closed.
+        const latest = await authorizedRequest<BillOrder>(`orders/${bill.id}`).catch(() => null);
+        if (latest) setOpenBill((current) => current?.id === bill.id ? { ...current, payments: latest.payments } : current);
+        setSettleError(''); setSettleVisible(true);
+        return;
+      }
+      setError(openBillErrorMessage(e));
+    } finally { setBillBusy(false); }
+  }
+
+  /** Cancels the loaded bill and refunds or forfeits its deposit (order.deposit_settle), then clears the cart. */
+  async function settleDeposit(settlement: DepositSettlement, reason: string) {
+    const bill = openBill;
+    if (!bill) return;
+    setBillBusy(true); setSettleError(''); setError(''); setWarning('');
+    try {
+      const result = await authorizedRequest<DepositSettlementResult>(`orders/${bill.id}/cancel-with-deposit`, { method: 'POST', body: JSON.stringify({ settlement, reason }) });
+      setSettleVisible(false); resetCart(); setCartVisible(false);
+      setNotice(depositSettlementNotice(result));
+      void refreshNotifications();
+    } catch (e) { setSettleError(depositSettlementErrorMessage(e)); }
     finally { setBillBusy(false); }
   }
 
@@ -742,6 +771,16 @@ export default function PosScreen() {
       bottomInset={insets.bottom}
       onVoid={(quantity, reason) => void voidLine(voidTarget, quantity, reason)}
       onClose={() => { setVoidTarget(null); setVoidError(''); }}
+    /> : null}
+    {settleVisible && openBill ? <DepositSettlementSheet
+      orderNumber={openBill.orderNumber}
+      payments={openBill.payments}
+      canSettle={can(DEPOSIT_SETTLE_PERMISSION)}
+      saving={billBusy}
+      error={settleError}
+      bottomInset={insets.bottom}
+      onSubmit={(settlement, reason) => void settleDeposit(settlement, reason)}
+      onClose={() => { setSettleVisible(false); setSettleError(''); }}
     /> : null}
     {printerPickerVisible ? <PrinterPickerSheet
       devices={printerDevices}

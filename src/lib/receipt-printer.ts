@@ -30,8 +30,11 @@ export type ReceiptOrder = {
   completedAt?: string | null;
   branch?: { name: string; code?: string } | null;
   items?: ReceiptLine[];
-  /** `status` is present on order details (GET /orders/:id); only COMPLETED payments count as paid. */
-  payments?: { method: string; amount: string; receivedAmount?: string | null; changeAmount?: string | null; status?: string }[];
+  /**
+   * `status` and `cashClosingId` are present on order details (GET /orders/:id); only COMPLETED payments count as paid,
+   * and one with a cashClosingId was already counted by a cash closing.
+   */
+  payments?: { method: string; amount: string; receivedAmount?: string | null; changeAmount?: string | null; status?: string; cashClosingId?: string | null }[];
 };
 export type CashClosingReceipt = {
   closingNumber: string;

@@ -18,6 +18,14 @@ export function formatStatus(status: string) {
   return status.replaceAll('_', ' ');
 }
 
+/**
+ * Label for a refund's type where refunds are listed: DEPOSIT is a DP handed back for a cancelled bill (never a sale refund)
+ * and reads "Refund DP"; FULL/PARTIAL keep the plain refund presentation, so they get no extra label.
+ */
+export function formatRefundType(type: string | null | undefined) {
+  return type === 'DEPOSIT' ? 'Refund DP' : '';
+}
+
 /** Customer name with the phone number next to it, e.g. "Budi · 08123456789". */
 export function customerLabel(name?: string | null, phone?: string | null) {
   return [name, phone].filter(Boolean).join(' · ');
@@ -56,4 +64,20 @@ const dateFormatter = new Intl.DateTimeFormat('en-GB', {
 export function formatDate(value: string | number | Date) {
   const date = value instanceof Date ? value : new Date(value);
   return Number.isNaN(date.getTime()) ? '-' : dateFormatter.format(date);
+}
+
+const dateTimeFormatter = new Intl.DateTimeFormat('en-GB', {
+  day: '2-digit',
+  month: '2-digit',
+  year: 'numeric',
+  hour: '2-digit',
+  minute: '2-digit',
+  hour12: false,
+  timeZone: 'Asia/Jakarta',
+});
+
+/** Date with the Jakarta time, e.g. "18/10/2026, 14:05". */
+export function formatDateTime(value: string | number | Date) {
+  const date = value instanceof Date ? value : new Date(value);
+  return Number.isNaN(date.getTime()) ? '-' : dateTimeFormatter.format(date);
 }

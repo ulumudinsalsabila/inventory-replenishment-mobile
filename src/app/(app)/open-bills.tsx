@@ -2,7 +2,7 @@ import { useCallback, useState } from 'react';
 import { ActivityIndicator, Alert, FlatList, Pressable, RefreshControl, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { router, Stack } from 'expo-router';
 import * as Print from 'expo-print';
-import { Ban, CircleCheck, CircleX, Clock3, Download, ReceiptText, Search, Timer, TrendingUp } from 'lucide-react-native';
+import { Ban, CircleCheck, CircleX, Clock3, Download, PiggyBank, ReceiptText, Search, Timer, TrendingUp, Undo2 } from 'lucide-react-native';
 import type { ComponentType } from 'react';
 import { useAuth } from '../../auth/auth-provider';
 import { ApiError } from '../../lib/api';
@@ -15,6 +15,7 @@ import { dateLabel, money, percent } from '../../lib/report';
 
 type State = 'open' | 'closed' | 'cancelled';
 type Bucket = { count: number; total: string | number };
+type DepositBucket = { count: number; amount: string | number };
 type OpenBillRow = {
   id: string;
   orderNumber: string;
@@ -32,7 +33,7 @@ type OpenBillRow = {
   cashier: { id: string; name: string } | null;
 };
 type OpenBillReport = {
-  summary: { totalCount: number; open: Bucket; closed: Bucket; cancelled: Bucket; averageCloseMinutes: number | null; closeRate: number | null; voids?: { count: number; amount: string | number } };
+  summary: { totalCount: number; open: Bucket; closed: Bucket; cancelled: Bucket; averageCloseMinutes: number | null; closeRate: number | null; voids?: { count: number; amount: string | number }; deposits?: { refunded: DepositBucket; forfeited: DepositBucket } };
   data: OpenBillRow[];
   meta: { page: number; totalPages: number; total: number };
 };
@@ -119,6 +120,11 @@ export default function OpenBillReportScreen() {
     <View style={styles.grid}>
       {/* Items voided after being sent to the kitchen: the main open bill leak to watch. */}
       <Tile label="Void" value={`${summary?.voids?.count ?? 0} kali`} hint={money(summary?.voids?.amount)} icon={Ban} bg="#fff1f2" fg="#d6455a" />
+    </View>
+    <View style={styles.grid}>
+      {/* Deposits of cancelled bills: handed back, or kept as income. Neither counts as sales. */}
+      <Tile label="DP dikembalikan" value={`${summary?.deposits?.refunded.count ?? 0} bill`} hint={money(summary?.deposits?.refunded.amount)} icon={Undo2} bg="#fff6e9" fg="#e07d12" />
+      <Tile label="DP hangus" value={`${summary?.deposits?.forfeited.count ?? 0} bill`} hint={money(summary?.deposits?.forfeited.amount)} icon={PiggyBank} bg="#f3eaff" fg="#9746df" />
     </View>
 
     <View style={styles.searchBox}><Search size={18} color="#71839a" /><TextInput accessibilityLabel="Cari open bill" value={searchInput} onChangeText={setSearchInput} placeholder="Cari nama, No. HP, atau nomor..." placeholderTextColor="#94a3b4" style={styles.searchInput} returnKeyType="search" /></View>

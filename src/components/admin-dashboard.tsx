@@ -20,7 +20,10 @@ type Dashboard = {
   branchSales: { branchId: string; branch: { id: string; name: string } | null; netSales: string | number }[];
   bestSellers: { productId: string; name: string; quantity: string | number }[];
   openBills?: DashboardOpenBills;
+  /** Deposits of bills cancelled in the period: handed back or kept as income. Neither is part of sales. */
+  deposits?: { refunded: DepositBucket; forfeited: DepositBucket };
 };
+type DepositBucket = { count: number; amount: string | number };
 type StockSummary = { summary: { totalQuantity: number; productCount: number; stockValue: number } };
 type Preset = 'today' | '7days' | '30days' | 'month';
 type IconType = ComponentType<{ size?: number; color?: string }>;
@@ -119,6 +122,7 @@ export function AdminDashboard() {
   const branchRows = (data?.branchSales ?? []).map((row) => ({ id: row.branchId, name: row.branch?.name ?? 'Cabang', amount: Number(row.netSales) }));
   const branchTotal = branchRows.reduce((sum, row) => sum + Math.max(row.amount, 0), 0);
   const bestSeller = data?.bestSellers[0];
+  const depositRows = data?.deposits ? ([['DP dikembalikan', data.deposits.refunded], ['DP hangus', data.deposits.forfeited]] as const).filter(([, bucket]) => bucket.count > 0) : [];
   const openDatePicker = () => { setPickerValue(new Date(`${anchor}T12:00:00`)); setDatePicker(true); };
   const applyDate = (date: Date) => {
     const value = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
@@ -176,6 +180,12 @@ export function AdminDashboard() {
       </View>
 
       <OpenBillCard data={data?.openBills} loading={loading} actionLabel="Laporan" onAction={() => router.push('/(app)/open-bills')} onPressBill={(id) => router.push({ pathname: '/(app)/orders', params: { orderId: id } })} />
+
+      {depositRows.length ? <View style={styles.panel}>
+        <Text style={styles.panelTitle}>DP bill batal</Text>
+        <Text style={styles.depositHint}>Tidak termasuk penjualan.</Text>
+        {depositRows.map(([label, bucket]) => <View key={label} style={styles.depositRow}><Text style={styles.branchName}>{label}</Text><Text style={styles.branchAmount}>{bucket.count} bill · {money(bucket.amount)}</Text></View>)}
+      </View> : null}
 
       <View style={styles.grid}>
         <Pressable accessibilityRole="button" onPress={() => router.push('/(app)/unsold-stock')} style={({ pressed }) => [styles.bottomCard, { backgroundColor: tones.blue.bg }, pressed && styles.pressed]}>
@@ -249,6 +259,8 @@ const styles = StyleSheet.create({
   branchBarRow: { flexDirection: 'row', alignItems: 'center', gap: 10, marginTop: 6 },
   track: { flex: 1, height: 8, overflow: 'hidden', borderRadius: 4, backgroundColor: '#edf1f5' },
   bar: { height: 8, borderRadius: 4 },
+  depositHint: { marginTop: 2, color: '#7a899b', fontSize: 11 },
+  depositRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 8, marginTop: 10 },
   share: { width: 34, color: '#6d7d90', fontSize: 12, textAlign: 'right' },
   bottomCard: { flex: 1, minWidth: 0, minHeight: 92, flexDirection: 'row', alignItems: 'center', gap: 8, padding: 11, borderRadius: 16 },
   bottomIcon: { width: 36, height: 36, alignItems: 'center', justifyContent: 'center', borderRadius: 11 },

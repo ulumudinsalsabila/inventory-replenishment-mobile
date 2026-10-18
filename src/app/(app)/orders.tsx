@@ -8,7 +8,7 @@ import { ArrowLeftRight, Bluetooth, ChevronLeft, ChevronRight, Printer, Undo2, X
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useAuth } from '../../auth/auth-provider';
 import { getRange, rangeLabel, rangeOptions, type RangePreset } from '../../lib/date-range';
-import { customerLabel, formatDate, formatStatus, refundMethodsFor } from '../../lib/display';
+import { customerLabel, formatDate, formatDateTime, formatRefundType, formatStatus, refundMethodsFor } from '../../lib/display';
 import { ApiError } from '../../lib/api';
 import { formatExchangeReceipt, formatOrderReceipt, formatPreBill, getPairedPrinters, getSavedPrinter, openAndroidBluetoothSettings, paidTotalOf, printThermalExchangeReceipt, printThermalReceipt, printThermalSlip, savePrinter, type ExchangeReceipt, type PairedPrinter, type PreBill, type ReceiptOrder } from '../../lib/receipt-printer';
 import { ThermalPreview } from '../../components/thermal-preview';
@@ -17,14 +17,17 @@ import { LoadMoreFooter } from '../../components/load-more-footer';
 import { useDebouncedValue, useInfiniteList, useLoadMoreOnScroll } from '../../lib/infinite-list';
 import { KeyboardAwareScrollView } from 'react-native-keyboard-controller';
 import { PreviewImage } from '../../components/image-viewer';
+import { DEPOSIT_SETTLE_PERMISSION, DepositSettlementSheet, closedDepositOf, depositSettlementErrorMessage, depositSettlementNotice, type DepositSettlement, type DepositSettlementResult } from '../../components/deposit-settlement-sheet';
 
 type OrderLine = NonNullable<ReceiptOrder['items']>[number] & { id: string; note?: string | null; sentAt?: string | null };
 /** A sent open bill line (or part of it) taken off before payment; kept for the audit trail. */
 type ItemVoid = { id: string; productNameSnapshot: string; variantNameSnapshot: string | null; quantity: string; amount: string; reason: string; createdAt: string };
 type PaymentLine = NonNullable<ReceiptOrder['payments']>[number] & { status: string };
 type RefundEvidence = { id: string; url: string; fileName: string; createdAt: string };
+/** How the deposit of a cancelled order was settled (POST /orders/:id/cancel-with-deposit). */
+type DepositSettlementInfo = { depositSettlement?: DepositSettlement | null; depositSettledAt?: string | null; depositSettlementReason?: string | null; depositForfeitedAmount?: string | null };
 type ExchangeSummary = { id: string; exchangeNumber: string; creditAmount: string; newOrderTotal: string; differenceAmount: string; status: string; voidReason?: string | null; createdAt: string };
-type Order = Omit<ReceiptOrder, 'items' | 'payments' | 'createdAt'> & { createdAt: string; warehouseId?: string; customerId?: string | null; itemVoids?: ItemVoid[]; items?: OrderLine[]; payments?: PaymentLine[]; exchangesOut?: (ExchangeSummary & { newOrder: { id: string; orderNumber: string } })[]; exchangeIn?: (ExchangeSummary & { originalOrder: { id: string; orderNumber: string } }) | null; refunds?: { refundNumber?: string; exchangeId?: string | null; status: string; amount: string; reason: string; createdAt: string; items?: { orderItemId: string; quantity: string }[]; evidenceImages?: RefundEvidence[] }[] };
+type Order = Omit<ReceiptOrder, 'items' | 'payments' | 'createdAt'> & DepositSettlementInfo & { createdAt: string; warehouseId?: string; customerId?: string | null; itemVoids?: ItemVoid[]; items?: OrderLine[]; payments?: PaymentLine[]; exchangesOut?: (ExchangeSummary & { newOrder: { id: string; orderNumber: string } })[]; exchangeIn?: (ExchangeSummary & { originalOrder: { id: string; orderNumber: string } }) | null; refunds?: { refundNumber?: string; exchangeId?: string | null; type?: string; method?: string; status: string; amount: string; reason: string; createdAt: string; items?: { orderItemId: string; quantity: string }[]; evidenceImages?: RefundEvidence[] }[] };
 const orderRangeOptions = rangeOptions.filter((item) => item.id !== '30days');
 type CountResult = { meta: { total: number } };
 const money = (value: string) => `Rp ${Number(value).toLocaleString('id-ID', { maximumFractionDigits: 0 })}`;
@@ -72,6 +75,10 @@ export default function OrdersScreen() {
   const [voidReason, setVoidReason] = useState('');
   const [voiding, setVoiding] = useState(false);
   const [voidError, setVoidError] = useState('');
+  // "Batalkan Bill dengan DP" for an unfinished order whose deposit is already in a cash closing.
+  const [settleVisible, setSettleVisible] = useState(false);
+  const [settling, setSettling] = useState(false);
+  const [settleError, setSettleError] = useState('');
   const [printer, setPrinter] = useState<PairedPrinter | null>(null);
   const [printerPickerVisible, setPrinterPickerVisible] = useState(false);
   const [printerDevices, setPrinterDevices] = useState<PairedPrinter[]>([]);
@@ -197,6 +204,18 @@ export default function OrdersScreen() {
     } finally { setPrinting(false); }
   }
 
+  /** Cancels the order and refunds or forfeits its deposit (order.deposit_settle); the response is the updated order. */
+  async function settleDeposit(settlement: DepositSettlement, reason: string) {
+    if (!selected) return;
+    setSettling(true); setSettleError('');
+    try {
+      const result = await authorizedRequest<Order & DepositSettlementResult>(`orders/${selected.id}/cancel-with-deposit`, { method: 'POST', body: JSON.stringify({ settlement, reason }) });
+      setSettleVisible(false); setSelected(result); setNotice(depositSettlementNotice(result));
+      await list.reload();
+    } catch (cause) { setSettleError(depositSettlementErrorMessage(cause)); }
+    finally { setSettling(false); }
+  }
+
   async function reprintOrder() {
     if (!selected || detailLoading) return;
     setPrintError(''); setPreBill(null); setExchangeReceipt(null);
@@ -211,7 +230,7 @@ export default function OrdersScreen() {
     finally { setPrinting(false); }
   }
 
-  const refundedAmount = (selected?.refunds ?? []).filter((refund) => refund.status === 'COMPLETED').reduce((total, refund) => total + Number(refund.amount), 0);
+  const refundedAmount = (selected?.refunds ?? []).filter((refund) => refund.status === 'COMPLETED' && refund.type !== 'DEPOSIT').reduce((total, refund) => total + Number(refund.amount), 0);
   const refundableAmount = Math.max(0, Number(selected?.grandTotal ?? 0) - refundedAmount);
   const returnable = Boolean(selected && ['COMPLETED', 'PARTIALLY_REFUNDED'].includes(selected.status) && refundableAmount > 0);
   const canRefund = returnable && Boolean(user?.permissions.includes('order.refund'));
@@ -230,6 +249,14 @@ export default function OrdersScreen() {
   // Unpaid orders get a pre-bill instead of a receipt; a deposit (DP) already taken shows with what is left to pay.
   const unpaid = Boolean(selected && ['DRAFT', 'OPEN', 'PENDING_PAYMENT'].includes(selected.status));
   const depositPaid = selected && unpaid ? paidTotalOf(selected) : 0;
+  // Unfinished orders whose deposit a cash closing already counted can only be cancelled by settling that deposit.
+  const closedDeposit = selected && ['DRAFT', 'OPEN', 'PENDING_PAYMENT', 'PAID'].includes(selected.status) ? closedDepositOf(selected.payments) : 0;
+  const canCancelWithDeposit = closedDeposit > 0 && Boolean(user?.permissions.includes('order.cancel'));
+  // A refunded DP left through deposit refunds (closed payments) plus the payments voided on cancel; a forfeited one is stored.
+  const settledDeposit = selected?.depositSettlement === 'FORFEITED'
+    ? Number(selected.depositForfeitedAmount ?? 0)
+    : (selected?.refunds ?? []).filter((refund) => refund.type === 'DEPOSIT' && refund.status === 'COMPLETED').reduce((total, refund) => total + Number(refund.amount), 0)
+      + (selected?.payments ?? []).filter((payment) => payment.status === 'VOIDED').reduce((total, payment) => total + Number(payment.amount), 0);
 
   async function selectRefundEvidence(useCamera: boolean) {
     if (refundEvidence.length >= 8) { setRefundError('Maksimal 8 foto bukti untuk satu refund.'); return; }
@@ -295,10 +322,13 @@ export default function OrdersScreen() {
             {canRefund ? <Pressable accessibilityRole="button" onPress={() => { setRefundError(''); setRefundVisible(true); }} style={[printStyles.printButton, printStyles.actionButton, printStyles.refundOpenButton]}><Undo2 size={16} color="#b42318" /><Text style={printStyles.refundOpenText}>Pengembalian</Text></Pressable> : null}
             {canExchange ? <Pressable accessibilityRole="button" onPress={() => setExchangeVisible(true)} style={[printStyles.printButton, printStyles.actionButton, printStyles.exchangeOpenButton]}><ArrowLeftRight size={16} color="#1d5fbf" /><Text style={printStyles.exchangeOpenText}>Tukar barang</Text></Pressable> : null}
           </View> : null}
+          {canCancelWithDeposit ? <View style={printStyles.actionRow}>
+            <Pressable accessibilityRole="button" accessibilityHint="Membatalkan pesanan dan mengembalikan atau menghanguskan DP yang sudah masuk tutup kas" disabled={detailLoading} onPress={() => { setSettleError(''); setSettleVisible(true); }} style={[printStyles.printButton, printStyles.actionButton, printStyles.refundOpenButton, detailLoading && styles.disabled]}><X size={16} color="#b42318" /><Text style={printStyles.refundOpenText}>Batalkan Bill dengan DP</Text></Pressable>
+          </View> : null}
           {notice ? <Text style={printStyles.notice}>{notice}</Text> : null}
       {printError ? <Text style={printStyles.printError}>{printError}</Text> : null}
     </View>
-      <View style={styles.card}><View style={styles.row}><Text style={styles.muted}>Status</Text><Text style={styles.status}>{formatStatus(selected.status)}</Text></View><View style={styles.row}><Text style={styles.muted}>Cabang</Text><Text style={styles.value}>{selected.branch?.name ?? '—'}</Text></View>{selected.customerName || selected.customerPhone ? <View style={styles.row}><Text style={styles.muted}>Pelanggan</Text>{selected.customerId && canReadCustomer ? <Pressable accessibilityRole="link" accessibilityHint="Buka detail customer" hitSlop={6} onPress={() => openCustomer(selected.customerId!)} style={styles.customerLink}><Text style={[styles.value, styles.linkText]}>{customerLabel(selected.customerName, selected.customerPhone)}</Text><ChevronRight size={14} color="#087f5b" /></Pressable> : <Text style={styles.value}>{customerLabel(selected.customerName, selected.customerPhone)}</Text>}</View> : null}<View style={styles.row}><Text style={styles.muted}>Tanggal</Text><Text style={styles.value}>{formatDate(selected.createdAt)}</Text></View><View style={styles.row}><Text style={styles.muted}>Total</Text><Text style={styles.total}>{money(selected.grandTotal)}</Text></View>{depositPaid > 0 ? <><View style={styles.row}><Text style={styles.muted}>Sudah dibayar (DP)</Text><Text style={styles.value}>{money(String(depositPaid))}</Text></View><View style={styles.row}><Text style={styles.muted}>Sisa tagihan</Text><Text style={styles.value}>{money(String(Number(selected.grandTotal) - depositPaid))}</Text></View></> : null}</View>
+      <View style={styles.card}><View style={styles.row}><Text style={styles.muted}>Status</Text><Text style={styles.status}>{formatStatus(selected.status)}</Text></View><View style={styles.row}><Text style={styles.muted}>Cabang</Text><Text style={styles.value}>{selected.branch?.name ?? '—'}</Text></View>{selected.customerName || selected.customerPhone ? <View style={styles.row}><Text style={styles.muted}>Pelanggan</Text>{selected.customerId && canReadCustomer ? <Pressable accessibilityRole="link" accessibilityHint="Buka detail customer" hitSlop={6} onPress={() => openCustomer(selected.customerId!)} style={styles.customerLink}><Text style={[styles.value, styles.linkText]}>{customerLabel(selected.customerName, selected.customerPhone)}</Text><ChevronRight size={14} color="#087f5b" /></Pressable> : <Text style={styles.value}>{customerLabel(selected.customerName, selected.customerPhone)}</Text>}</View> : null}<View style={styles.row}><Text style={styles.muted}>Tanggal</Text><Text style={styles.value}>{formatDate(selected.createdAt)}</Text></View><View style={styles.row}><Text style={styles.muted}>Total</Text><Text style={styles.total}>{money(selected.grandTotal)}</Text></View>{depositPaid > 0 ? <><View style={styles.row}><Text style={styles.muted}>Sudah dibayar (DP)</Text><Text style={styles.value}>{money(String(depositPaid))}</Text></View><View style={styles.row}><Text style={styles.muted}>Sisa tagihan</Text><Text style={styles.value}>{money(String(Number(selected.grandTotal) - depositPaid))}</Text></View></> : null}{selected.depositSettlement ? <><View style={styles.row}><Text style={styles.muted}>{selected.depositSettlement === 'FORFEITED' ? 'DP hangus' : 'DP dikembalikan'}</Text><Text style={styles.value}>{money(String(settledDeposit))}</Text></View>{selected.depositSettledAt ? <View style={styles.row}><Text style={styles.muted}>Waktu</Text><Text style={styles.value}>{formatDateTime(selected.depositSettledAt)}</Text></View> : null}{selected.depositSettlementReason ? <Text style={styles.muted}>Alasan: {selected.depositSettlementReason}</Text> : null}</> : null}</View>
     <Text style={styles.sectionTitle}>Item pesanan</Text>
     {(selected.items ?? []).map((item) => <View key={item.id} style={styles.line}><View style={styles.flex}><Text style={styles.value}>{item.productNameSnapshot}{item.variantNameSnapshot ? ` · ${item.variantNameSnapshot}` : ''}</Text><Text style={styles.muted}>{item.quantity} item{selected.status === 'OPEN' && item.sentAt ? ' · Terkirim ke dapur' : ''}</Text>{item.note ? <Text style={styles.muted}>Catatan: {item.note}</Text> : null}{item.addons?.map((addon, i) => <Text key={`${item.id}-${i}`} style={styles.muted}>+ {addon.addonNameSnapshot} × {addon.quantity}</Text>)}</View><Text style={styles.value}>{money(item.totalPrice)}</Text></View>)}
     {selected.itemVoids?.length ? <><Text style={styles.sectionTitle}>Item void</Text>
@@ -315,7 +345,7 @@ export default function OrdersScreen() {
           {canVoidExchange && exchange.status === 'COMPLETED' ? <Pressable accessibilityRole="button" onPress={() => { setVoidTarget(exchange); setVoidReason(''); setVoidError(''); }} style={[styles.smallAction, styles.smallDanger]}><Text style={[styles.smallActionText, styles.smallDangerText]}>Batalkan tukar</Text></Pressable> : null}
         </View>
       </View>)}</> : null}
-    {(selected.refunds?.length ?? 0) > 0 ? <><Text style={styles.sectionTitle}>Pengembalian</Text>{selected.refunds?.map((refund, i) => <View key={`${refund.refundNumber ?? i}`} style={styles.refundHistory}><View style={styles.line}><View style={styles.flex}><Text style={styles.value}>{refund.refundNumber ?? 'Refund'}{refund.exchangeId ? ' · Tukar barang' : ''}</Text><Text style={styles.muted}>{refund.reason}</Text></View><Text style={styles.value}>{money(refund.amount)}</Text></View>{(refund.evidenceImages?.length ?? 0) > 0 ? <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.evidenceRow}>{refund.evidenceImages?.map((image, index, all) => <PreviewImage key={image.id} uri={image.url} images={all.map((entry) => entry.url)} index={index} style={styles.evidenceImage} />)}</ScrollView> : null}</View>)}</> : null}
+    {(selected.refunds?.length ?? 0) > 0 ? <><Text style={styles.sectionTitle}>Pengembalian</Text>{selected.refunds?.map((refund, i) => <View key={`${refund.refundNumber ?? i}`} style={styles.refundHistory}><View style={styles.line}><View style={styles.flex}><Text style={styles.value}>{refund.refundNumber ?? 'Refund'}{refund.exchangeId ? ' · Tukar barang' : ''}{formatRefundType(refund.type) ? ` · ${formatRefundType(refund.type)}${refund.method ? ` ${formatStatus(refund.method)}` : ''}` : ''}</Text><Text style={styles.muted}>{refund.reason}</Text></View><Text style={styles.value}>{money(refund.amount)}</Text></View>{(refund.evidenceImages?.length ?? 0) > 0 ? <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.evidenceRow}>{refund.evidenceImages?.map((image, index, all) => <PreviewImage key={image.id} uri={image.url} images={all.map((entry) => entry.url)} index={index} style={styles.evidenceImage} />)}</ScrollView> : null}</View>)}</> : null}
   </KeyboardAwareScrollView>
   <Modal visible={refundVisible} transparent animationType="slide" onRequestClose={() => setRefundVisible(false)}><View style={printStyles.modalBackdrop}><View style={[styles.refundSheet, { paddingBottom: Math.max(insets.bottom + 8, 16) }]}>
     <View style={styles.refundSheetHeader}><View style={styles.flex}><Text style={styles.refundSheetTitle}>Proses pengembalian</Text><Text style={styles.muted}>{selected.orderNumber}</Text></View><Pressable accessibilityRole="button" accessibilityLabel="Tutup form pengembalian" disabled={refunding} onPress={() => setRefundVisible(false)} style={styles.refundClose}><X size={18} color="#53677e" /></Pressable></View>
@@ -333,6 +363,16 @@ export default function OrdersScreen() {
     {refundError ? <Text style={[styles.errorText, styles.refundSheetError]}>{refundError}</Text> : null}
       <Pressable accessibilityRole="button" disabled={refunding || !refundReason.trim()} onPress={() => void submitRefund()} style={[styles.refundButton, styles.refundSheetButton, (refunding || !refundReason.trim()) && styles.disabled]}>{refunding ? <ActivityIndicator color="#fff" /> : <Text style={styles.refundButtonText}>Simpan pengembalian</Text>}</Pressable>
   </View></View></Modal>
+  {settleVisible && canCancelWithDeposit ? <DepositSettlementSheet
+    orderNumber={selected.orderNumber}
+    payments={selected.payments}
+    canSettle={Boolean(user?.permissions.includes(DEPOSIT_SETTLE_PERMISSION))}
+    saving={settling}
+    error={settleError}
+    bottomInset={insets.bottom}
+    onSubmit={(settlement, reason) => void settleDeposit(settlement, reason)}
+    onClose={() => { setSettleVisible(false); setSettleError(''); }}
+  /> : null}
   {canExchange && exchangeVisible ? <ExchangeSheet visible order={selected} onClose={() => setExchangeVisible(false)} onDone={(result) => void finishExchange(result)} /> : null}
   <ThermalPreview
     visible={previewVisible}
