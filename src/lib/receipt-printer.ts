@@ -1,9 +1,14 @@
 import * as SecureStore from 'expo-secure-store';
 import { PermissionsAndroid, Platform } from 'react-native';
 import RNBluetoothClassic from 'react-native-bluetooth-classic';
+import { writeBlePrinter } from './ble-printer';
 import { customerLabel, formatDate, formatServiceType, formatStatus, type ServiceType } from './display';
 
-export type PairedPrinter = { name: string; address: string };
+/**
+ * A saved thermal printer. `transport` is how it is reached: Bluetooth Classic (paired in Android settings, the default for
+ * printers saved before BLE existed) or BLE (found by scanning; `address` is then the BLE device id).
+ */
+export type PairedPrinter = { name: string; address: string; transport?: 'classic' | 'ble' };
 /** Where a category's items are made: drinks at the bar, food in the kitchen (the default). */
 export type Station = 'BAR' | 'KITCHEN';
 export type ReceiptLine = {
@@ -74,7 +79,7 @@ export type CashClosingReceipt = {
 };
 
 const SAVED_PRINTER_KEY = 'inventory.bluetooth.receipt-printer.v1';
-const PRINTER_NAME = /printer|thermal|pos|receipt|rpp|mtp|xp[- ]|pt[- ]|58|80/i;
+const PRINTER_NAME = /printer|thermal|pos|receipt|prj|rpp|mtp|xp[- ]|pt[- ]|58|80/i;
 
 async function ensureAndroidBluetoothAccess() {
   if (Platform.OS !== 'android') throw new Error('Cetak Bluetooth tersedia di Android.');
@@ -100,7 +105,7 @@ export async function getPairedPrinters(): Promise<PairedPrinter[]> {
   const devices = await RNBluetoothClassic.getBondedDevices();
   return devices
     .filter((device) => Boolean(device.address))
-    .map(({ name, address }) => ({ name: name || 'Perangkat Bluetooth', address }))
+    .map(({ name, address }) => ({ name: name || 'Perangkat Bluetooth', address, transport: 'classic' as const }))
     .sort((a, b) => Number(PRINTER_NAME.test(b.name)) - Number(PRINTER_NAME.test(a.name)) || a.name.localeCompare(b.name));
 }
 
@@ -307,6 +312,9 @@ export function formatCashClosingReceipt(closing: CashClosingReceipt, width = 32
 }
 
 async function printThermalText(text: string, printer: PairedPrinter) {
+  const payload = `${String.fromCharCode(0x1b, 0x40)}${text}\n\n\n\n${String.fromCharCode(0x1b, 0x64, 3)}`;
+  // safeText keeps receipts plain ASCII, so every character is exactly one ESC/POS byte.
+  if (printer.transport === 'ble') { await writeBlePrinter(printer.address, printer.name, Array.from(payload, (char) => char.charCodeAt(0) & 0xff)); return; }
   await ensureAndroidBluetoothAccess();
   const paired = await RNBluetoothClassic.getBondedDevices();
   const device = paired.find((candidate) => candidate.address === printer.address);
@@ -317,7 +325,6 @@ async function printThermalText(text: string, printer: PairedPrinter) {
     : await RNBluetoothClassic.connectToDevice(printer.address);
   if (!(await connected.isConnected())) throw new Error(`Gagal tersambung ke ${printer.name}. Pastikan printer menyala.`);
 
-  const payload = `${String.fromCharCode(0x1b, 0x40)}${text}\n\n\n\n${String.fromCharCode(0x1b, 0x64, 3)}`;
   if (!(await connected.write(payload, 'ascii'))) throw new Error('Printer tidak menerima nota. Periksa koneksi dan dukungan ESC/POS.');
 }
 

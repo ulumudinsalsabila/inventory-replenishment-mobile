@@ -4,7 +4,7 @@ import { File } from 'expo-file-system';
 import * as Print from 'expo-print';
 import * as ImagePicker from 'expo-image-picker';
 import { router, useLocalSearchParams, useNavigation } from 'expo-router';
-import { ArrowLeftRight, Bluetooth, ChevronLeft, ChevronRight, Printer, Undo2, X } from 'lucide-react-native';
+import { ArrowLeftRight, ChevronLeft, ChevronRight, Printer, Undo2, X } from 'lucide-react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useAuth } from '../../auth/auth-provider';
 import { getRange, rangeLabel, rangeOptions, type RangePreset } from '../../lib/date-range';
@@ -18,6 +18,7 @@ import { useDebouncedValue, useInfiniteList, useLoadMoreOnScroll } from '../../l
 import { KeyboardAwareScrollView } from 'react-native-keyboard-controller';
 import { PreviewImage } from '../../components/image-viewer';
 import { DEPOSIT_SETTLE_PERMISSION, DepositSettlementSheet, closedDepositOf, depositSettlementErrorMessage, depositSettlementNotice, type DepositSettlement, type DepositSettlementResult } from '../../components/deposit-settlement-sheet';
+import { PrinterPickerSheet } from '../../components/pos-flow';
 
 type OrderLine = NonNullable<ReceiptOrder['items']>[number] & { id: string; note?: string | null; sentAt?: string | null };
 /** A sent open bill line (or part of it) taken off before payment; kept for the audit trail. */
@@ -409,16 +410,7 @@ export default function OrdersScreen() {
     {voidError ? <Text style={[styles.errorText, styles.refundSheetError]}>{voidError}</Text> : null}
     <Pressable accessibilityRole="button" disabled={voiding || !voidReason.trim()} onPress={() => void submitVoidExchange()} style={[styles.refundButton, styles.refundSheetButton, styles.dangerButton, (voiding || !voidReason.trim()) && styles.disabled]}>{voiding ? <ActivityIndicator color="#fff" /> : <Text style={styles.refundButtonText}>Batalkan tukar barang</Text>}</Pressable>
   </View></View></Modal>
-  <Modal visible={printerPickerVisible} transparent animationType="slide" onRequestClose={() => setPrinterPickerVisible(false)}>
-    <View style={printStyles.modalBackdrop}><View style={[printStyles.printerSheet, { paddingBottom: Math.max(insets.bottom + 8, 25) }]}>
-      <View style={printStyles.modalHeader}><Text style={printStyles.modalTitle}>Pilih printer Bluetooth</Text><Pressable accessibilityRole="button" accessibilityLabel="Tutup pemilih printer" onPress={() => setPrinterPickerVisible(false)} style={printStyles.closeButton}><X size={19} color="#526276" /></Pressable></View>
-      {printerLoading ? <ActivityIndicator style={printStyles.printerLoader} color="#087f5b" /> : null}
-      {!printerLoading && !printerDevices.length ? <Text style={printStyles.printerEmpty}>Tidak ada printer yang dipasangkan.</Text> : null}
-      {printerDevices.map((device) => <Pressable key={device.address} accessibilityRole="button" onPress={() => void choosePrinter(device)} style={printStyles.printerRow}><Bluetooth size={18} color="#087f5b" /><View style={printStyles.printerLabels}><Text style={printStyles.printTitle}>{device.name}</Text><Text style={printStyles.printerLabel}>{device.address}</Text></View></Pressable>)}
-      {printError ? <Text style={printStyles.printError}>{printError}</Text> : null}
-      <Pressable accessibilityRole="button" onPress={() => { openAndroidBluetoothSettings(); setPrinterPickerVisible(false); }} style={printStyles.settingsButton}><Text style={printStyles.settingsText}>Pengaturan Bluetooth</Text></Pressable>
-    </View></View>
-  </Modal></View>;
+  {printerPickerVisible ? <PrinterPickerSheet devices={printerDevices} loading={printerLoading} error={printError} bottomInset={insets.bottom} onChoose={(target) => void choosePrinter(target)} onClose={() => setPrinterPickerVisible(false)} onOpenBluetoothSettings={() => { openAndroidBluetoothSettings(); setPrinterPickerVisible(false); }} /> : null}</View>;
 
   return <View style={styles.screen}><KeyboardAwareScrollView {...scrollProps} bottomOffset={24} contentContainerStyle={styles.page} keyboardShouldPersistTaps="handled" refreshControl={<RefreshControl refreshing={list.refreshing} onRefresh={() => void list.refresh()} tintColor="#087f5b" />}>
     <Text style={styles.subtitle}>Riwayat transaksi dan rincian pembayaran.</Text>

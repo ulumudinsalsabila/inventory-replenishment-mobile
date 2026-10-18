@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { ActivityIndicator, FlatList, Image, Modal, Pressable, RefreshControl, ScrollView, Share, StyleSheet, Text, TextInput, View } from 'react-native';
 import { Banknote, Barcode, Check, ChefHat, ChevronLeft, ChevronRight, CircleCheck, ClipboardList, CreditCard, Landmark, Merge, Minus, Plus, Printer, QrCode, ReceiptText, Save, Search, Share2, ShoppingCart, Split, Store, Trash2, UserRound, Users, Wallet, X } from 'lucide-react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -9,6 +9,7 @@ import { LoadMoreFooter } from './load-more-footer';
 import { customerHint, type PosCustomer } from '../lib/customers';
 import { customerLabel, formatAge, formatDate, formatServiceType, formatStatus, type ServiceType } from '../lib/display';
 import { useDebouncedValue, useInfiniteList } from '../lib/infinite-list';
+import { scanBlePrinters, stopBleScan, type BlePrinter } from '../lib/ble-printer';
 import type { PairedPrinter, ReceiptOrder, Station } from '../lib/receipt-printer';
 import { KeyboardAvoidingView, KeyboardAwareScrollView } from 'react-native-keyboard-controller';
 
@@ -652,16 +653,43 @@ type PrinterPickerSheetProps = {
   onOpenBluetoothSettings: () => void;
 };
 
-/** Paired Bluetooth printers to pick from; mount it only while it is shown. */
+/**
+ * Printers to pick from: Bluetooth Classic printers already paired in Android settings, or BLE printers (e.g. PRJ-58D)
+ * found by scanning, which need no pairing. Mount it only while it is shown.
+ */
 export function PrinterPickerSheet(props: PrinterPickerSheetProps) {
+  const [mode, setMode] = useState<'classic' | 'ble'>('classic');
+  const [bleDevices, setBleDevices] = useState<BlePrinter[]>([]);
+  const [scanning, setScanning] = useState(false);
+  const [bleError, setBleError] = useState('');
+  useEffect(() => stopBleScan, []);
+  const scan = async () => {
+    setScanning(true); setBleError(''); setBleDevices([]);
+    try {
+      const found = await scanBlePrinters(setBleDevices);
+      setBleDevices(found);
+      if (!found.length) setBleError('Tidak ada printer BLE ditemukan. Pastikan printer menyala dan dekat, lalu pindai ulang.');
+    } catch (error) {
+      setBleError(error instanceof Error ? error.message : 'Gagal mencari printer BLE.');
+    } finally { setScanning(false); }
+  };
+  const showBle = () => { setMode('ble'); if (!bleDevices.length && !scanning) void scan(); };
   return <Modal transparent animationType="slide" visible onRequestClose={props.onClose}>
     <View style={styles.modalBackdrop}><View style={[styles.printerModal, { paddingBottom: Math.max(props.bottomInset + 8, 28) }]}>
       <View style={styles.printerModalHeader}><Text style={styles.printerModalTitle}>{props.title ?? 'Pilih printer Bluetooth'}</Text><Pressable accessibilityRole="button" accessibilityLabel="Tutup" onPress={props.onClose}><X size={20} color="#526276" /></Pressable></View>
-      {props.loading ? <ActivityIndicator style={styles.printerLoading} color="#07885b" /> : null}
-      {!props.loading && !props.devices.length ? <Text style={styles.printerEmpty}>Tidak ada printer yang dipasangkan.</Text> : null}
-      {props.error ? <Text style={styles.errorText}>{props.error}</Text> : null}
-      {props.devices.map((device) => <Pressable key={device.address} accessibilityRole="button" onPress={() => props.onChoose(device)} style={styles.printerRow}><Printer size={18} color="#087f5b" /><View style={styles.printerDetails}><Text style={styles.printerName}>{device.name}</Text><Text style={styles.receiptMeta}>{device.address}</Text></View><ChevronRight size={17} color="#7b8ba0" /></Pressable>)}
-      <Pressable accessibilityRole="button" onPress={props.onOpenBluetoothSettings} style={styles.settingsButton}><Text style={styles.settingsText}>Pengaturan Bluetooth</Text></Pressable>
+      <View style={styles.serviceModes}>{([['classic', 'Bluetooth Classic'], ['ble', 'BLE']] as const).map(([value, label]) => <Pressable key={value} accessibilityRole="tab" accessibilityState={{ selected: mode === value }} onPress={value === 'ble' ? showBle : () => setMode('classic')} style={[styles.modeButton, mode === value && styles.modeButtonActive]}><Text style={[styles.modeText, mode === value && styles.modeTextActive]}>{label}</Text></Pressable>)}</View>
+      {mode === 'classic' ? <>
+        {props.loading ? <ActivityIndicator style={styles.printerLoading} color="#07885b" /> : null}
+        {!props.loading && !props.devices.length ? <Text style={styles.printerEmpty}>Tidak ada printer yang dipasangkan. Printer BLE seperti PRJ-58D bisa dicari di tab BLE.</Text> : null}
+        {props.error ? <Text style={styles.errorText}>{props.error}</Text> : null}
+        {props.devices.map((device) => <Pressable key={device.address} accessibilityRole="button" onPress={() => props.onChoose({ ...device, transport: 'classic' })} style={styles.printerRow}><Printer size={18} color="#087f5b" /><View style={styles.printerDetails}><Text style={styles.printerName}>{device.name}</Text><Text style={styles.receiptMeta}>{device.address}</Text></View><ChevronRight size={17} color="#7b8ba0" /></Pressable>)}
+        <Pressable accessibilityRole="button" onPress={props.onOpenBluetoothSettings} style={styles.settingsButton}><Text style={styles.settingsText}>Pengaturan Bluetooth</Text></Pressable>
+      </> : <>
+        {bleDevices.map((device) => <Pressable key={device.id} accessibilityRole="button" onPress={() => { stopBleScan(); props.onChoose({ name: device.name, address: device.id, transport: 'ble' }); }} style={styles.printerRow}><Printer size={18} color="#087f5b" /><View style={styles.printerDetails}><Text style={styles.printerName}>{device.name}</Text><Text style={styles.receiptMeta}>BLE · {device.id} · sinyal {device.rssi} dBm</Text></View><ChevronRight size={17} color="#7b8ba0" /></Pressable>)}
+        {scanning ? <ActivityIndicator style={styles.printerLoading} color="#07885b" /> : null}
+        {bleError ? <Text style={styles.errorText}>{bleError}</Text> : null}
+        <Pressable accessibilityRole="button" disabled={scanning} onPress={() => void scan()} style={[styles.settingsButton, scanning && styles.disabled]}><Text style={styles.settingsText}>{scanning ? 'Mencari printer…' : 'Pindai ulang'}</Text></Pressable>
+      </>}
     </View></View>
   </Modal>;
 }

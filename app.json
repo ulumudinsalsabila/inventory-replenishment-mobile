@@ -35,7 +35,14 @@
         }
       ],
       "@react-native-community/datetimepicker",
-      "expo-font"
+      "expo-font",
+      [
+        "react-native-ble-manager",
+        {
+          "neverForLocation": true,
+          "bluetoothAlwaysPermission": "Izinkan Inventory Replenishment terhubung ke printer struk Bluetooth."
+        }
+      ]
     ],
     "experiments": {
       "typedRoutes": true,

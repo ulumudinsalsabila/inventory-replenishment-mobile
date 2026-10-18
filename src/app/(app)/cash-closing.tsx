@@ -16,6 +16,7 @@ import { ThermalPreview } from '../../components/thermal-preview';
 import { formatCashClosingReceipt, getPairedPrinters, getSavedPrinter, openAndroidBluetoothSettings, printThermalCashClosingReceipt, savePrinter, type CashClosingReceipt, type PairedPrinter } from '../../lib/receipt-printer';
 import { KeyboardAwareScrollView } from 'react-native-keyboard-controller';
 import { PreviewImage } from '../../components/image-viewer';
+import { PrinterPickerSheet } from '../../components/pos-flow';
 
 
 type Branch = { id: string; name: string; code: string };
@@ -338,18 +339,7 @@ export default function CashClosingScreen() {
     onChangePrinter={() => { setPreviewVisible(false); void showPrinterPicker(); }}
     onClose={() => { setPreviewVisible(false); setPrintError(''); }}
   /> : null}
-  <Modal visible={printerPickerVisible} transparent animationType="slide" onRequestClose={() => setPrinterPickerVisible(false)}>
-    <View style={styles.modalBackdrop}>
-      <View style={[styles.printerSheet, { paddingBottom: Math.max(insets.bottom + 8, 24) }]}>
-        <View style={styles.printerHeader}><Text style={styles.printerTitle}>Pilih printer Bluetooth</Text><Pressable accessibilityRole="button" accessibilityLabel="Tutup pilihan printer" onPress={() => setPrinterPickerVisible(false)} style={styles.closeButton}><X size={19} color="#526276" /></Pressable></View>
-      {printError ? <Text style={styles.printError}>{printError}</Text> : null}
-        {printerLoading ? <ActivityIndicator style={styles.loader} color="#07885b" /> : null}
-        {!printerLoading && !printerDevices.length ? <Text style={styles.printerEmpty}>Tidak ada printer yang dipasangkan.</Text> : null}
-        {printerDevices.map((device) => <Pressable key={device.address} accessibilityRole="button" onPress={() => void choosePrinter(device)} style={styles.printerRow}><Bluetooth size={18} color="#087f5b" /><View style={styles.closingLabels}><Text style={styles.printerName}>{device.name}</Text><Text style={styles.muted}>{device.address}</Text></View><ChevronRight size={17} color="#7b8ba0" /></Pressable>)}
-        <Pressable accessibilityRole="button" onPress={openAndroidBluetoothSettings} style={styles.printerSettings}><Text style={styles.printerSettingsText}>Pengaturan Bluetooth</Text></Pressable>
-      </View>
-    </View>
-  </Modal>
+  {printerPickerVisible ? <PrinterPickerSheet devices={printerDevices} loading={printerLoading} error={printError} bottomInset={insets.bottom} onChoose={(target) => void choosePrinter(target)} onClose={() => setPrinterPickerVisible(false)} onOpenBluetoothSettings={openAndroidBluetoothSettings} /> : null}
   </View>;
 }
 
