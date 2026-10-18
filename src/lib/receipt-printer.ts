@@ -1,7 +1,7 @@
 import * as SecureStore from 'expo-secure-store';
 import { PermissionsAndroid, Platform } from 'react-native';
 import RNBluetoothClassic from 'react-native-bluetooth-classic';
-import { formatDate, formatStatus } from './display';
+import { customerLabel, formatDate, formatStatus } from './display';
 
 export type PairedPrinter = { name: string; address: string };
 export type ReceiptLine = {
@@ -12,6 +12,7 @@ export type ReceiptLine = {
   unit?: { code: string } | null;
   unitPrice: string;
   totalPrice: string;
+  note?: string | null;
   addons?: { addonNameSnapshot: string; quantity: string; totalPrice: string }[];
 };
 export type ReceiptOrder = {
@@ -24,11 +25,13 @@ export type ReceiptOrder = {
   serviceCharge?: string;
   grandTotal: string;
   customerName?: string | null;
+  customerPhone?: string | null;
   createdAt?: string;
   completedAt?: string | null;
   branch?: { name: string; code?: string } | null;
   items?: ReceiptLine[];
-  payments?: { method: string; amount: string; receivedAmount?: string | null; changeAmount?: string | null }[];
+  /** `status` is present on order details (GET /orders/:id); only COMPLETED payments count as paid. */
+  payments?: { method: string; amount: string; receivedAmount?: string | null; changeAmount?: string | null; status?: string }[];
 };
 export type CashClosingReceipt = {
   closingNumber: string;
@@ -139,6 +142,14 @@ function wrap(value: unknown, width: number) {
   return lines;
 }
 
+/** "Pelanggan: Budi · 0812…" on customer-facing printouts; nothing for a guest without name or phone. */
+const customerLines = (name: string | null | undefined, phone: string | null | undefined, width: number) => name || phone ? wrap(`Pelanggan: ${customerLabel(name, phone)}`, width) : [];
+
+const isCompleted = (payment: { status?: string }) => (payment.status ?? 'COMPLETED') === 'COMPLETED';
+
+/** Sum of the completed payments on an order, i.e. the deposit (DP) already taken on an unpaid bill. */
+export const paidTotalOf = (order: Pick<ReceiptOrder, 'payments'>) => (order.payments ?? []).filter(isCompleted).reduce((sum, payment) => sum + Number(payment.amount), 0);
+
 function receiptText(order: ReceiptOrder, width: number) {
   const rule = '-'.repeat(width);
   const date = order.completedAt ?? order.createdAt;
@@ -148,7 +159,7 @@ function receiptText(order: ReceiptOrder, width: number) {
     rule,
     fit(order.orderNumber, width),
     ...(date ? [fit(formatDate(date), width)] : []),
-    ...(order.customerName ? wrap(`Pelanggan: ${order.customerName}`, width) : []),
+    ...customerLines(order.customerName, order.customerPhone, width),
     rule,
   ];
 
@@ -164,7 +175,8 @@ function receiptText(order: ReceiptOrder, width: number) {
   if (Number(order.taxAmount ?? 0) > 0) lines.push(columns('Pajak', rupiah(Number(order.taxAmount)), width));
   if (Number(order.serviceCharge ?? 0) > 0) lines.push(columns('Layanan', rupiah(Number(order.serviceCharge)), width));
   lines.push(columns('TOTAL', rupiah(Number(order.grandTotal)), width));
-  for (const payment of order.payments ?? []) {
+  // Voided payments are not money taken, so they stay off the receipt.
+  for (const payment of (order.payments ?? []).filter(isCompleted)) {
     lines.push(columns(formatStatus(payment.method), rupiah(Number(payment.amount)), width));
     if (payment.receivedAmount) lines.push(columns('Diterima', rupiah(Number(payment.receivedAmount)), width));
     if (Number(payment.changeAmount ?? 0) > 0) lines.push(columns('Kembalian', rupiah(Number(payment.changeAmount)), width));
@@ -278,6 +290,120 @@ export async function printThermalReceipt(order: ReceiptOrder, printer: PairedPr
   await printThermalText(formatOrderReceipt(order), printer);
 }
 
+/** Sends already formatted text (pre-bill, DP receipt, kitchen ticket) to the thermal printer. */
+export async function printThermalSlip(text: string, printer: PairedPrinter) {
+  await printThermalText(text, printer);
+}
+
+/** POST /orders/:id/pre-bill: the unpaid order plus its print count (already incremented, so 1 = first print) and the deposit taken. */
+export type PreBill = ReceiptOrder & { preBillPrintCount: number; preBillPrintedAt?: string | null; paidTotal: string | number; balanceDue: string | number };
+
+/** Tagihan (pre-bill): what the customer owes before paying. Marked as not a proof of payment; reprints are numbered. Voided lines are no longer on the order. */
+export function formatPreBill(bill: PreBill, cashierName: string, width = THERMAL_WIDTH) {
+  const rule = '-'.repeat(width);
+  const paid = Number(bill.paidTotal);
+  return [
+    ...wrap(bill.branch?.name ?? 'INVENTORY REPLENISHMENT', width).map((line) => center(line, width)),
+    center('TAGIHAN', width),
+    center('BELUM LUNAS', width),
+    center('BUKAN BUKTI PEMBAYARAN', width),
+    ...(bill.preBillPrintCount > 1 ? [center(`CETAK ULANG ke-${bill.preBillPrintCount}`, width)] : []),
+    rule,
+    fit(bill.orderNumber, width),
+    fit(receiptDateTime(bill.preBillPrintedAt ?? new Date().toISOString()), width),
+    ...wrap(`Kasir: ${cashierName}`, width),
+    ...customerLines(bill.customerName, bill.customerPhone, width),
+    rule,
+    ...(bill.items ?? []).flatMap((item) => {
+      const addonTotal = (item.addons ?? []).reduce((sum, addon) => sum + Number(addon.totalPrice), 0);
+      return [
+        ...wrap(`${item.productNameSnapshot}${item.variantNameSnapshot ? ` (${item.variantNameSnapshot})` : ''}`, width),
+        columns(`${Number(item.inputQuantity ?? item.quantity)} ${item.unit?.code ?? ''} x ${rupiah(Number(item.unitPrice))}`, rupiah(Math.max(0, Number(item.totalPrice) - addonTotal)), width),
+        ...(item.addons ?? []).flatMap((addon) => wrap(`+ ${addon.addonNameSnapshot} x ${Number(addon.quantity)} ${rupiah(Number(addon.totalPrice))}`, width)),
+        ...(item.note ? wrap(`  Catatan: ${item.note}`, width) : []),
+      ];
+    }),
+    rule,
+    columns('Subtotal', rupiah(Number(bill.subtotal)), width),
+    columns('Diskon', `-${rupiah(Number(bill.discountAmount))}`, width),
+    ...(Number(bill.taxAmount ?? 0) > 0 ? [columns('Pajak', rupiah(Number(bill.taxAmount)), width)] : []),
+    ...(Number(bill.serviceCharge ?? 0) > 0 ? [columns('Layanan', rupiah(Number(bill.serviceCharge)), width)] : []),
+    columns('TOTAL', rupiah(Number(bill.grandTotal)), width),
+    ...(paid > 0 ? [columns('Sudah dibayar (DP)', rupiah(paid), width), columns('Sisa tagihan', rupiah(Number(bill.balanceDue)), width)] : []),
+    rule,
+    center('BELUM LUNAS', width),
+  ].join('\n');
+}
+
+/** A deposit (DP) just taken on an open bill: the payment itself and what is left to pay. */
+export type DepositReceipt = {
+  order: Pick<ReceiptOrder, 'orderNumber' | 'grandTotal' | 'customerName' | 'customerPhone' | 'branch'>;
+  payment: { method: string; amount: string | number; receivedAmount?: string | number | null; changeAmount?: string | number | null };
+  /** All deposits on the bill so far, this one included. */
+  paidTotal: number;
+  cashierName: string;
+  paidAt: string;
+};
+
+export function formatDepositReceipt(receipt: DepositReceipt, width = THERMAL_WIDTH) {
+  const rule = '-'.repeat(width);
+  const { order, payment } = receipt;
+  const amount = Number(payment.amount);
+  return [
+    ...wrap(order.branch?.name ?? 'INVENTORY REPLENISHMENT', width).map((line) => center(line, width)),
+    center('BUKTI DP', width),
+    rule,
+    fit(order.orderNumber, width),
+    fit(receiptDateTime(receipt.paidAt), width),
+    ...wrap(`Kasir: ${receipt.cashierName}`, width),
+    ...customerLines(order.customerName, order.customerPhone, width),
+    rule,
+    columns('Total bill', rupiah(Number(order.grandTotal)), width),
+    columns(`DP ${formatStatus(payment.method)}`, rupiah(amount), width),
+    ...(payment.receivedAmount ? [columns('Diterima', rupiah(Number(payment.receivedAmount)), width)] : []),
+    ...(Number(payment.changeAmount ?? 0) > 0 ? [columns('Kembalian', rupiah(Number(payment.changeAmount)), width)] : []),
+    ...(receipt.paidTotal > amount ? [columns('Total DP dibayar', rupiah(receipt.paidTotal), width)] : []),
+    columns('Sisa tagihan', rupiah(Number(order.grandTotal) - receipt.paidTotal), width),
+    rule,
+    center('Simpan bukti ini untuk pelunasan', width),
+  ].join('\n');
+}
+
+/** Lines just sent to the kitchen (POST orders/:id/open-bill/send `sentItems`) with the bill they belong to. */
+export type KitchenTicket = {
+  orderNumber: string;
+  customerName?: string | null;
+  customerPhone?: string | null;
+  sentAt: string;
+  items: {
+    productNameSnapshot: string;
+    variantNameSnapshot?: string | null;
+    quantity: string;
+    inputQuantity?: string | null;
+    unit?: { code: string } | null;
+    note?: string | null;
+    addons?: { addonNameSnapshot: string; quantity: string }[];
+  }[];
+};
+
+/** Kitchen ticket: what to make, without prices. */
+export function formatKitchenTicket(ticket: KitchenTicket, width = THERMAL_WIDTH) {
+  const rule = '-'.repeat(width);
+  return [
+    center('TIKET DAPUR', width),
+    center(ticket.orderNumber, width),
+    center(receiptDateTime(ticket.sentAt), width),
+    ...customerLines(ticket.customerName, ticket.customerPhone, width),
+    rule,
+    ...ticket.items.flatMap((item) => [
+      ...wrap(`${Number(item.inputQuantity ?? item.quantity)}${item.unit?.code ? ` ${item.unit.code}` : ''} x ${item.productNameSnapshot}${item.variantNameSnapshot ? ` (${item.variantNameSnapshot})` : ''}`, width),
+      ...(item.addons ?? []).flatMap((addon) => wrap(`  + ${addon.addonNameSnapshot} x ${Number(addon.quantity)}`, width)),
+      ...(item.note ? wrap(`  Catatan: ${item.note}`, width) : []),
+    ]),
+    rule,
+  ].join('\n');
+}
+
 /** Shape of GET orders/:id/exchanges/:exchangeId. */
 export type ExchangeReceipt = {
   exchangeNumber: string;
@@ -289,7 +415,7 @@ export type ExchangeReceipt = {
   newOrderTotal: string;
   differenceAmount: string;
   branch: { name: string };
-  originalOrder: { orderNumber: string; customerName?: string | null };
+  originalOrder: { orderNumber: string; customerName?: string | null; customerPhone?: string | null };
   newOrder: { orderNumber: string };
   returned: { name: string; quantity: string; unit: string; amount: string }[];
   replacements: { name: string; quantity: string; unit: string; amount: string; addons: string[] }[];
@@ -308,7 +434,7 @@ export function formatExchangeReceipt(exchange: ExchangeReceipt, width = THERMAL
     rule,
     columns('Pesanan asal', exchange.originalOrder.orderNumber, width),
     columns('Pesanan baru', exchange.newOrder.orderNumber, width),
-    ...(exchange.originalOrder.customerName ? wrap(`Pelanggan: ${exchange.originalOrder.customerName}`, width) : []),
+    ...customerLines(exchange.originalOrder.customerName, exchange.originalOrder.customerPhone, width),
     rule,
     'DIKEMBALIKAN',
     ...exchange.returned.flatMap(goods),

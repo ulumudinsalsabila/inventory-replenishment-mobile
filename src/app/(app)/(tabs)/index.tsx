@@ -7,6 +7,7 @@ import { useAuth } from '../../../auth/auth-provider';
 import { ApiError } from '../../../lib/api';
 import { getRange, rangeOptions, type RangePreset } from '../../../lib/date-range';
 import { AdminDashboard } from '../../../components/admin-dashboard';
+import { OpenBillCard, type DashboardOpenBills } from '../../../components/open-bill-card';
 
 type Dashboard = {
   branchName: string | null;
@@ -23,13 +24,14 @@ type Dashboard = {
   salesByMethod: { method: string; amount: string | number; count: number }[];
   recentOrders: { id: string; orderNumber: string; status: string; grandTotal: string | number; createdAt: string; paymentMethod: string | null; _count: { items: number } }[];
   cashClosing: { status: string; closingNumber: string; closedAt: string } | null;
+  openBills?: DashboardOpenBills;
 };
 type Branch = { id: string; name: string; code: string };
 type BranchPage = { data: Branch[] };
 
 const money = (value: string | number | null | undefined) => `Rp ${Number(value ?? 0).toLocaleString('id-ID', { maximumFractionDigits: 0 })}`;
 const timeFormatter = new Intl.DateTimeFormat('id-ID', { hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Jakarta' });
-const orderStatusLabel: Record<string, string> = { COMPLETED: 'SELESAI', PARTIALLY_REFUNDED: 'REFUND', REFUNDED: 'REFUND', PAID: 'DIBAYAR', PENDING_PAYMENT: 'MENUNGGU', CANCELLED: 'BATAL' };
+const orderStatusLabel: Record<string, string> = { COMPLETED: 'SELESAI', PARTIALLY_REFUNDED: 'REFUND', REFUNDED: 'REFUND', PAID: 'DIBAYAR', PENDING_PAYMENT: 'MENUNGGU', CANCELLED: 'BATAL', OPEN: 'OPEN BILL' };
 
 
 function PaymentChart({ methods }: { methods: Dashboard['salesByMethod'] }) {
@@ -129,6 +131,9 @@ function EmployeeDashboard() {
         <Pressable accessibilityRole="button" onPress={() => router.push('/(app)/(tabs)/orders')} style={({ pressed }) => [styles.overviewCard, pressed && styles.pressed]}><View style={[styles.overviewIcon, styles.green]}><ClipboardCheck size={20} color="#07956f" /></View><View style={styles.overviewText}><Text style={styles.overviewLabel}>Pesanan</Text><Text style={styles.overviewValue}>{data?.orderCountToday ?? 0}</Text><Text style={styles.metricHint}>Selesai {completedOrders}</Text></View><ChevronRight size={17} color="#75869a" /></Pressable>
         <Pressable accessibilityRole="button" onPress={() => router.push('/(app)/(tabs)/inventory')} style={({ pressed }) => [styles.overviewCard, pressed && styles.pressed]}><View style={[styles.overviewIcon, styles.red]}><Package size={20} color="#de423a" /></View><View style={styles.overviewText}><Text style={styles.overviewLabel}>Stok rendah</Text><Text style={styles.overviewValue}>{data?.lowStockCount ?? 0}</Text><Text style={styles.metricHint}>Di bawah minimum</Text></View><ChevronRight size={17} color="#75869a" /></Pressable>
       </View>
+
+      {/* Employees settle open bills in the POS tab, so the card opens bills there instead of in the order detail. */}
+      <OpenBillCard data={data?.openBills} loading={loading} actionLabel="Buka di POS" onAction={() => router.push({ pathname: '/(app)/(tabs)/kasir', params: { openBillList: '1' } })} onPressBill={(id) => router.push({ pathname: '/(app)/(tabs)/kasir', params: { openBillId: id } })} />
 
       <View style={styles.panel}><Text style={styles.panelTitle}>Penjualan per metode</Text><PaymentChart methods={data?.salesByMethod ?? []} /></View>
       <View style={styles.panel}>

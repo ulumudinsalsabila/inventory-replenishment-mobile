@@ -8,11 +8,13 @@ export type NotificationSummary = {
   pendingOrderCount: number;
   pendingRequestCount: number;
   todayOrderCount: number;
+  /** OPEN bills (saved, not yet paid) in the user's scope. */
+  openBillCount: number;
 };
 
 type NotificationsState = NotificationSummary & { refresh: () => Promise<void> };
 
-const emptySummary: NotificationSummary = { unreadCount: 0, pendingOrderCount: 0, pendingRequestCount: 0, todayOrderCount: 0 };
+const emptySummary: NotificationSummary = { unreadCount: 0, pendingOrderCount: 0, pendingRequestCount: 0, todayOrderCount: 0, openBillCount: 0 };
 const NotificationsContext = createContext<NotificationsState | null>(null);
 
 export function NotificationsProvider({ children }: { children: ReactNode }) {

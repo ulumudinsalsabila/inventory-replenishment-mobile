@@ -17,7 +17,11 @@ type LoginResponse = {
 };
 
 export class ApiError extends Error {
-  constructor(message: string, readonly status?: number) {
+  /**
+   * `code` is the API's machine-readable error code (for example OPEN_BILL_VERSION_CONFLICT), when the server sent one;
+   * `details` is its optional context (for example the existing customer behind CUSTOMER_PHONE_DUPLICATE).
+   */
+  constructor(message: string, readonly status?: number, readonly code?: string, readonly details?: unknown) {
     super(message);
     this.name = 'ApiError';
   }
@@ -55,7 +59,7 @@ async function request<T>(path: string, accessToken?: string, init?: RequestInit
     const message = Array.isArray(payload?.message)
       ? payload.message.join(', ')
       : payload?.message ?? `Permintaan gagal (${response.status}).`;
-    throw new ApiError(String(message), response.status);
+    throw new ApiError(String(message), response.status, typeof payload?.code === 'string' ? payload.code : undefined, payload?.details);
   }
   // The API wraps successful responses as { success: true, data: ... }.
   // Paginated endpoints keep their own { data, meta } object inside that envelope.

@@ -1,15 +1,19 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Barcode, ChevronUp, LogOut, Minus, Plus, ShoppingCart, Utensils } from 'lucide-react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { ActivityIndicator, Image, Modal, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
+import { ActivityIndicator, Alert, Image, Modal, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import * as Print from 'expo-print';
+import { router, useLocalSearchParams } from 'expo-router';
 import { useAuth } from '../../auth/auth-provider';
+import { ApiError } from '../../lib/api';
 import { useNotifications } from '../../notifications/notifications-provider';
 import { BarcodeScanner } from '../../components/barcode-scanner';
-import { PosCatalogScreen, PosCheckoutFlow, PosReceiptScreen, type PosLine, type PosMethod, type PosProduct } from '../../components/pos-flow';
-import { formatOrderReceipt, getPairedPrinters, getSavedPrinter, openAndroidBluetoothSettings, printThermalReceipt, savePrinter, type PairedPrinter, type ReceiptOrder } from '../../lib/receipt-printer';
+import { OpenBillListSheet, OpenBillSaveSheet, OpenBillVoidSheet, PosCatalogScreen, PosCheckoutFlow, PosReceiptScreen, PrinterPickerSheet, type OpenBillInfo, type OpenBillRow, type OpenBillVoid, type PosLine, type PosMethod, type PosProduct } from '../../components/pos-flow';
+import { formatDepositReceipt, formatKitchenTicket, formatOrderReceipt, formatPreBill, getPairedPrinters, getSavedPrinter, openAndroidBluetoothSettings, paidTotalOf, printThermalReceipt, printThermalSlip, savePrinter, type KitchenTicket, type PairedPrinter, type PreBill, type ReceiptOrder } from '../../lib/receipt-printer';
 import { ThermalPreview } from '../../components/thermal-preview';
-import { formatDate, formatStatus } from '../../lib/display';
+import { CustomerPickerSheet } from '../../components/customer-picker';
+import { customerErrorMessage, type Customer, type PosCustomer } from '../../lib/customers';
+import { customerLabel, formatDate, formatStatus, stockWarningText, type StockShortage } from '../../lib/display';
 import { KeyboardAwareScrollView } from 'react-native-keyboard-controller';
 
 type Branch = { id: string; name: string; address?: string | null };
@@ -18,11 +22,72 @@ type Product = PosProduct & { barcode?: string | null };
 type Order = ReceiptOrder;
 type Line = PosLine & { product: Product };
 type Method = PosMethod;
+/** An open bill line from GET /orders/:id; `sentAt` is set once it was sent to the kitchen. */
+type BillItem = {
+  id: string;
+  productId: string;
+  productNameSnapshot: string;
+  variantNameSnapshot?: string | null;
+  unitId: string | null;
+  variantId: string | null;
+  quantity: string;
+  inputQuantity?: string | null;
+  unitPrice: string;
+  totalPrice: string;
+  note?: string | null;
+  sentAt?: string | null;
+  unit?: { code: string } | null;
+  addons?: { addonId: string; addonNameSnapshot: string; quantity: string; totalPrice: string }[];
+};
+/** GET /orders/:id fields needed to load an open bill back into the cart (also the shape of the open bill PUT, send and void responses). */
+type BillOrder = Omit<Order, 'items'> & {
+  branchId: string;
+  warehouseId: string;
+  version: number;
+  customerId?: string | null;
+  customerPhone: string | null;
+  items?: BillItem[];
+  itemVoids?: OpenBillVoid[];
+  /** Only on save responses: products the bill needs more of than the warehouse has (non-blocking). */
+  stockWarnings?: StockShortage[];
+};
+/**
+ * The open bill in the cart; `signature` is the cart as last saved, to tell whether there are unsaved changes.
+ * `customerId` is the registered customer the bill is linked to on the server (null for a guest bill).
+ */
+type LoadedBill = OpenBillInfo & { version: number; signature: string; customerId: string | null };
+const cartSignature = (lines: Line[], discount: string, customerName: string, customerId: string) => JSON.stringify([lines.map((line) => [line.key, line.quantity]), Number(discount) || 0, customerName.trim(), customerId]);
+/** The selected customer was deactivated, deleted, or belongs to another branch since it was picked. */
+const isCustomerUnavailable = (error: unknown) => error instanceof ApiError && error.code === 'CUSTOMER_UNAVAILABLE';
+const isVersionConflict = (error: unknown) => error instanceof ApiError && error.code === 'OPEN_BILL_VERSION_CONFLICT';
+const VERSION_CONFLICT_MESSAGE = 'Bill ini sudah diubah di perangkat lain. Data terbaru sudah dimuat ulang, periksa lalu simpan lagi.';
+function openBillErrorMessage(error: unknown, fallback = 'Open bill gagal disimpan.') {
+  if (isCustomerUnavailable(error) || (error instanceof ApiError && error.code === 'PERMISSION_DENIED')) return customerErrorMessage(error);
+  if (error instanceof ApiError) {
+    const details = (error.details ?? {}) as { product?: string; onBill?: string; paid?: string };
+    if (error.code === 'OPEN_BILL_LOCKED') return 'Bill ini sudah dibayar atau dibatalkan sehingga tidak bisa diubah lagi.';
+    if (error.code === 'INVALID_CUSTOMER_PHONE') return 'No. HP tidak valid. Gunakan format 08…, 628…, atau +62 8….';
+    if (error.code === 'OPEN_BILL_CUSTOMER_REQUIRED') return 'Nama pelanggan dan No. HP wajib diisi untuk open bill.';
+    if (error.code === 'OPEN_BILL_ITEM_NOT_FOUND') return 'Ada item yang sudah tidak ada di bill ini, mungkin diubah di perangkat lain. Buka ulang bill dari daftar Open Bill lalu coba lagi.';
+    if (error.code === 'DUPLICATE_OPEN_BILL_ITEM') return 'Ada item bill yang terkirim dua kali. Buka ulang bill dari daftar Open Bill lalu coba lagi.';
+    if (error.code === 'OPEN_BILL_SENT_ITEM_LOCKED') return `${details.product ?? 'Item ini'} sudah dikirim ke dapur sehingga tidak bisa diubah atau dihapus. Gunakan Void untuk menguranginya.`;
+    if (error.code === 'OPEN_BILL_NOTHING_TO_SEND') return 'Semua item di bill ini sudah dikirim ke dapur.';
+    if (error.code === 'OPEN_BILL_ITEM_NOT_SENT') return 'Item ini belum dikirim ke dapur; hapus saja dari keranjang lalu simpan.';
+    if (error.code === 'INVALID_VOID_QUANTITY') return `Jumlah void harus lebih dari 0 dan maksimal ${details.onBill ? Number(details.onBill) : 'jumlah di bill'}.`;
+    if (error.code === 'VOID_REASON_REQUIRED') return 'Alasan void wajib diisi.';
+    if (error.code === 'OPEN_BILL_BELOW_DEPOSIT') return `Total bill tidak boleh di bawah DP yang sudah dibayar (${money(Number(details.paid ?? 0))}).`;
+    if (error.code === 'ORDER_PAYMENT_ALREADY_CLOSED') return 'DP sudah masuk tutup kas, bill tidak bisa dibatalkan. Lunasi sisa tagihan lalu selesaikan.';
+  }
+  return error instanceof Error ? error.message : fallback;
+}
 const money = (amount: number) => `Rp ${Math.max(0, amount).toLocaleString('id-ID', { maximumFractionDigits: 0 })}`;
+const escapeHtml = (value: string) => value.replace(/[&<>"']/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[char]!);
+/** Stand-in for a bill line whose product left the catalog, so the line can still be shown and sent back unchanged. */
+const offCatalogProduct = (item: BillItem): Product => ({ id: item.productId, sku: '', name: item.productNameSnapshot, basePrice: '0', available: '0', trackInventory: false, sellingUnits: [], variants: [], addons: [] });
 
 export default function PosScreen() {
   const { user, authorizedRequest, signOut } = useAuth();
-  const { refresh: refreshNotifications } = useNotifications();
+  const { refresh: refreshNotifications, openBillCount } = useNotifications();
   const insets = useSafeAreaInsets();
   const [branches, setBranches] = useState<Branch[]>([]);
   const [warehouses, setWarehouses] = useState<Warehouse[]>([]);
@@ -61,6 +126,34 @@ export default function PosScreen() {
   const [reloadKey, setReloadKey] = useState(0);
   const [warehouseReloadKey, setWarehouseReloadKey] = useState(0);
   const loadedWarehouseId = useRef('');
+  // Warehouse whose catalog is in `products`; unlike the ref above it re-renders, so a pending bill can wait for it.
+  const [catalogWarehouseId, setCatalogWarehouseId] = useState('');
+  const [customerPhone, setCustomerPhone] = useState('');
+  const [openBill, setOpenBill] = useState<LoadedBill | null>(null);
+  // A bill fetched from the list that waits for its branch/warehouse catalog before it fills the cart.
+  const [pendingBill, setPendingBill] = useState<{ bill: BillOrder; message: string } | null>(null);
+  const [billSheetVisible, setBillSheetVisible] = useState(false);
+  const [billListVisible, setBillListVisible] = useState(false);
+  const [billBusy, setBillBusy] = useState(false);
+  const [billError, setBillError] = useState('');
+  const [billLoadingId, setBillLoadingId] = useState('');
+  const [notice, setNotice] = useState('');
+  // Non-blocking stock shortages reported by the last open bill save.
+  const [warning, setWarning] = useState('');
+  // Sent line picked for a void, and the slip (kitchen ticket, pre-bill or DP receipt) waiting for its printer/preview.
+  const [voidTarget, setVoidTarget] = useState<Line | null>(null);
+  const [voidError, setVoidError] = useState('');
+  const [slip, setSlip] = useState<{ title: string; text: string } | null>(null);
+  const [slipPreviewVisible, setSlipPreviewVisible] = useState(false);
+  // The payment step takes a deposit (DP) on the loaded bill instead of paying it off.
+  const [depositMode, setDepositMode] = useState(false);
+  const [depositAmount, setDepositAmount] = useState('');
+  // Registered customer on the current sale (null = Guest); it never outlives the sale or the branch/warehouse.
+  const [selectedCustomer, setSelectedCustomer] = useState<PosCustomer | null>(null);
+  const [customerPickerVisible, setCustomerPickerVisible] = useState(false);
+  const can = (permission: string) => user?.permissions.includes(permission) ?? false;
+  // The dashboard deep-links here with ?openBillId= (load that bill) or ?openBillList=1 (show the list).
+  const params = useLocalSearchParams<{ openBillId?: string; openBillList?: string }>();
 
   useEffect(() => {
     let active = true;
@@ -98,7 +191,7 @@ export default function PosScreen() {
       setProducts([]); setProductsLoading(true);
     }
     void authorizedRequest<Product[]>(`pos/catalog?warehouseId=${encodeURIComponent(warehouseId)}`)
-      .then((rows) => { if (active) { setProducts(rows); setError(''); loadedWarehouseId.current = warehouseId; } })
+      .then((rows) => { if (active) { setProducts(rows); setError(''); loadedWarehouseId.current = warehouseId; setCatalogWarehouseId(warehouseId); } })
       .catch((e: Error) => { if (active) setError(e.message); })
       .finally(() => { if (active) { setProductsLoading(false); setRefreshing(false); } });
     return () => { active = false; };
@@ -114,7 +207,10 @@ export default function PosScreen() {
   // A category from a previous catalog may no longer exist; fall back to "Semua" instead of showing an empty grid.
   const activeCategory = categories.includes(selectedCategory) ? selectedCategory : 'Semua';
   const visible = useMemo(() => products.filter((p) => (!displayOnly || Number(p.displayQuantity ?? 0) > 0) && (activeCategory === 'Semua' || p.category?.name === activeCategory) && `${p.name} ${p.sku} ${p.barcode ?? ''} ${p.category?.name ?? ''}`.toLowerCase().includes(search.toLowerCase())), [activeCategory, displayOnly, products, search]);
-  const priceFor = (line: Line) => Number(line.product.sellingUnits.find((unit) => unit.unitId === line.unitId)?.sellingPrice ?? line.product.basePrice) + Number(line.product.variants?.find((v) => v.id === line.variantId)?.priceDelta ?? 0) + line.addonIds.reduce((sum, id) => sum + Number(line.product.addons?.find((a) => a.id === id)?.basePrice ?? 0), 0);
+  // Add-ons loaded from a bill keep their stored quantity; add-ons picked in the POS count once per item.
+  const addonQuantity = (line: Line, addonId: string) => Number(line.bill?.addons.find((addon) => addon.addonId === addonId)?.quantity ?? 1);
+  // A bill line left unchanged keeps its stored price on the server; anything else is priced from the catalog.
+  const priceFor = (line: Line) => line.bill && line.quantity === line.bill.quantity ? line.bill.total / line.bill.quantity : Number(line.product.sellingUnits.find((unit) => unit.unitId === line.unitId)?.sellingPrice ?? line.product.basePrice) + Number(line.product.variants?.find((v) => v.id === line.variantId)?.priceDelta ?? 0) + line.addonIds.reduce((sum, id) => sum + Number(line.product.addons?.find((a) => a.id === id)?.basePrice ?? 0) * addonQuantity(line, id), 0);
   const subtotal = cart.reduce((sum, line) => sum + priceFor(line) * line.quantity, 0);
   const discountAmount = Math.min(Math.max(Number(discount) || 0, 0), subtotal);
   const total = subtotal - discountAmount;
@@ -145,7 +241,7 @@ export default function PosScreen() {
   function addConfigured(product: Product, unitId: string, variantId: string, addonIds: string[]) {
     if (!canAddUnit(product, unitId)) { reportStockLimit(product, unitId); return; }
     const key = `${product.id}:${unitId}:${variantId}:${[...addonIds].sort().join(',')}`;
-    setError('');
+    setError(''); setNotice('');
     setCart((current) => {
       const found = current.find((line) => line.key === key);
       return found ? current.map((line) => line.key === key ? { ...line, quantity: line.quantity + 1 } : line) : [...current, { key, product, unitId, quantity: 1, variantId, addonIds }];
@@ -153,31 +249,358 @@ export default function PosScreen() {
   }
   function quantity(lineKey: string, delta: number) {
     const line = cart.find((entry) => entry.key === lineKey);
+    if (line?.bill?.sentAt) { setError(`${line.product.name} sudah dikirim ke dapur sehingga tidak bisa diubah. Tambahkan sebagai item baru, atau void untuk mengurangi.`); return; }
+    if (line?.bill?.missing && line.quantity + delta > 0) { setError(`${line.product.name} tidak ada di katalog gudang ini; jumlahnya tidak bisa diubah, hanya bisa dihapus.`); return; }
     if (delta > 0 && line && !canAddUnit(line.product, line.unitId)) { reportStockLimit(line.product, line.unitId); return; }
     setError('');
     setCart((current) => current.flatMap((line) => line.key !== lineKey ? [line] : line.quantity + delta <= 0 ? [] : [{ ...line, quantity: line.quantity + delta }]));
   }
+  /**
+   * Cart lines as order items. For an open bill update, lines loaded from the bill carry their orderItemId and stored
+   * note/add-on quantities, so unchanged lines are kept exactly as saved (price included, even for off-catalog products).
+   */
+  const orderItems = (billUpdate = false) => cart.map((line) => ({
+    ...(billUpdate && line.bill ? { orderItemId: line.bill.orderItemId } : {}),
+    productId: line.product.id, unitId: line.unitId || undefined, variantId: line.variantId || undefined, quantity: String(line.quantity),
+    ...(line.bill?.note ? { note: line.bill.note } : {}),
+    addons: line.bill ? line.bill.addons : line.addonIds.map((addonId) => ({ addonId, quantity: '1' })),
+  }));
+  const openBillDirty = Boolean(openBill) && cartSignature(cart, discount, customer, selectedCustomer?.id ?? '') !== openBill?.signature;
+
+  /** Empties the cart and forgets the loaded open bill (the bill itself stays saved on the server). */
+  function resetCart() {
+    setCart([]); setPendingOrder(null); setOpenBill(null); setPaymentStep(false); setTakeaway(true); setCustomer(''); setCustomerPhone(''); setDiscount('0'); setSelectedCustomer(null); setDepositMode(false);
+  }
+
+  /** Attaches a registered customer; the sale is filed under its name (and phone, when it has one). */
+  function selectCustomer(picked: PosCustomer) {
+    setSelectedCustomer(picked); setCustomer(picked.name); setError('');
+    if (picked.phone) setCustomerPhone(picked.phone);
+  }
+
+  /** Back to Guest: forgets the selected customer and the name/phone that came from it. The cart is kept. */
+  function detachCustomer() {
+    if (!selectedCustomer) return;
+    setSelectedCustomer(null); setCustomer('');
+    if (selectedCustomer.phone) setCustomerPhone('');
+  }
+
+  /** A customer belongs to one branch, so it is dropped when the cashier switches branch or warehouse. */
+  function switchLocation(apply: () => void) {
+    if (selectedCustomer) { detachCustomer(); setNotice(`Customer ${selectedCustomer.name} dilepas karena cabang/gudang berganti.`); }
+    apply();
+  }
+
+  /** Keeps the cart and the typed name, but drops a customer the server no longer accepts for this branch. */
+  function handleCustomerUnavailable(e: unknown) {
+    const denied = e instanceof ApiError && e.code === 'PERMISSION_DENIED' && Boolean(selectedCustomer);
+    if (!isCustomerUnavailable(e) && !denied) return false;
+    setSelectedCustomer(null);
+    return true;
+  }
+
   async function checkout() {
     if (!customer.trim()) return setError('Nama pelanggan wajib diisi.');
     if (total <= 0) return setError('Total pembayaran harus lebih dari Rp 0.');
     if (!branchId || !warehouseId) return setError('Pilih cabang dan gudang terlebih dahulu.');
-    setSubmitting(true); setError('');
+    setSubmitting(true); setError(''); setNotice(''); setWarning('');
     try {
       let order = pendingOrder;
-      if (!order) {
-        order = await authorizedRequest<Order>('orders', { method: 'POST', body: JSON.stringify({ branchId, warehouseId, customerName: customer.trim(), discountAmount: String(discountAmount), items: cart.map((line) => ({ productId: line.product.id, unitId: line.unitId, variantId: line.variantId || undefined, quantity: String(line.quantity), addons: line.addonIds.map((addonId) => ({ addonId, quantity: '1' })) })) }) });
+      if (!order && openBill) {
+        // A loaded bill is paid as-is; unsaved cart changes are saved to it first instead of creating a new order.
+        order = openBillDirty ? await updateOpenBill(openBill, customer.trim(), openBill.customerPhone) : await authorizedRequest<Order>(`orders/${openBill.id}`);
+        if (!order) return;
         setPendingOrder(order);
       }
-      const paid = order.status === 'PAID' ? order : await authorizedRequest<Order>(`orders/${order.id}/pay`, { method: 'POST', body: JSON.stringify({ payments: [{ method, amount: order.grandTotal, ...(method === 'CASH' ? { receivedAmount: order.grandTotal } : {}) }] }) });
+      if (!order) {
+        order = await authorizedRequest<Order>('orders', { method: 'POST', body: JSON.stringify({ branchId, warehouseId, ...(selectedCustomer ? { customerId: selectedCustomer.id } : {}), customerName: customer.trim(), discountAmount: String(discountAmount), items: orderItems() }) });
+        setPendingOrder(order);
+      }
+      // A deposit (DP) already taken on an open bill is kept; only the remaining balance is paid now.
+      const due = String(Math.max(0, Number(order.grandTotal) - paidTotalOf(order)));
+      const paid = order.status === 'PAID' ? order : await authorizedRequest<Order>(`orders/${order.id}/pay`, { method: 'POST', body: JSON.stringify({ payments: [{ method, amount: due, ...(method === 'CASH' ? { receivedAmount: due } : {}) }] }) });
       setPendingOrder(paid);
       const completed = await authorizedRequest<Order>(`orders/${paid.id}/complete`, { method: 'POST' });
-      setReceipt(completed); setPendingOrder(null); setCart([]); setCartVisible(false); setPaymentStep(false); setTakeaway(true); setCustomer(''); setDiscount('0');
+      setReceipt(completed); resetCart(); setCartVisible(false);
       // Stock changed on the server; reload the catalog so the next order sees current availability.
       setReloadKey((value) => value + 1);
       void refreshNotifications();
-    } catch (e) { setError(e instanceof Error ? e.message : 'Transaksi gagal.'); }
+    } catch (e) {
+      // A failed checkout keeps the customer for the retry, unless the server rejected the customer itself.
+      if (handleCustomerUnavailable(e)) setError(customerErrorMessage(e));
+      else if (openBill && e instanceof ApiError && e.code !== 'PERMISSION_DENIED') setError(openBillErrorMessage(e, 'Transaksi gagal.'));
+      else setError(e instanceof Error ? e.message : 'Transaksi gagal.');
+    }
     finally { setSubmitting(false); }
   }
+
+  /**
+   * Replaces the cart of a loaded open bill. Returns null when the bill was changed on another device:
+   * the latest version is then reloaded into the cart for the cashier to check before saving again.
+   */
+  async function updateOpenBill(bill: LoadedBill, name: string, phone: string) {
+    // customerId: a string links/changes the customer, null detaches it (guest bill), omitted keeps the current link.
+    const customerId = selectedCustomer?.id ?? null;
+    const link = customerId === bill.customerId ? {} : { customerId };
+    try {
+      const updated = await authorizedRequest<Order & { version: number; customerId?: string | null; stockWarnings?: StockShortage[] }>(`orders/${bill.id}/open-bill`, { method: 'PUT', body: JSON.stringify({ version: bill.version, ...link, customerName: name, customerPhone: phone, discountAmount: String(discountAmount), items: orderItems(true) }) });
+      const savedName = updated.customerName ?? name;
+      const savedCustomerId = updated.customerId === undefined ? customerId : updated.customerId;
+      setCustomer(savedName); setCustomerPhone(updated.customerPhone ?? phone);
+      // The bill snapshots the customer's current name, which may have been edited since it was picked.
+      if (selectedCustomer && savedCustomerId === selectedCustomer.id) setSelectedCustomer({ ...selectedCustomer, name: savedName });
+      setOpenBill({ ...bill, customerName: savedName, customerPhone: updated.customerPhone ?? phone, customerId: savedCustomerId, version: updated.version, signature: cartSignature(cart, discount, savedName, savedCustomerId ?? '') });
+      return updated;
+    } catch (e) {
+      if (!isVersionConflict(e)) throw e;
+      setBillSheetVisible(false);
+      void loadOpenBill(bill.id, VERSION_CONFLICT_MESSAGE);
+      return null;
+    }
+  }
+
+  /** Saves pending cart edits of the loaded bill and returns the version to act on; null after a reload (version conflict). */
+  /** Also null when the save brought the total down to the deposit: the bill is then PAID and only needs completing. */
+  async function saveBeforeBillAction(bill: LoadedBill) {
+    if (!openBillDirty) return { version: bill.version, stockWarnings: undefined };
+    const saved = await updateOpenBill(bill, customer.trim() || bill.customerName, bill.customerPhone);
+    if (saved?.status === 'PAID') { settlePaidBill(saved); return null; }
+    return saved ? { version: saved.version, stockWarnings: saved.stockWarnings } : null;
+  }
+
+  /**
+   * The bill is fully covered by its deposits (a DP, or an edit/void that brought the total down to the DP) and the server
+   * locked it as PAID. It is kept as the pending order, so "Bayar" only completes it (no payment is sent) and shows the receipt.
+   */
+  function settlePaidBill(order: Order, message = 'Total bill sudah tertutup DP, jadi bill sudah lunas. Tekan Bayar untuk menyelesaikan transaksi.') {
+    setPendingOrder(order); setOpenBill((current) => current && { ...current, paidTotal: paidTotalOf(order) });
+    setDepositMode(false); setPaymentStep(true); setCartVisible(true); setNotice(message);
+  }
+
+  /** "Kirim ke Dapur": saves the bill if it changed, marks its unsent lines as sent and prints them as a kitchen ticket. */
+  async function sendToKitchen() {
+    const bill = openBill;
+    if (!bill) return;
+    setBillBusy(true); setError(''); setNotice(''); setWarning('');
+    try {
+      const saved = await saveBeforeBillAction(bill);
+      if (!saved) return;
+      const sent = await authorizedRequest<BillOrder & { sentItems: BillItem[] }>(`orders/${bill.id}/open-bill/send`, { method: 'POST', body: JSON.stringify({ version: saved.version }) });
+      // The response has every line with its id and sentAt, so the cart is rebuilt from it.
+      applyOpenBill(sent, '', `${sent.sentItems.length} item dikirim ke dapur.`);
+      setWarning(stockWarningText(saved.stockWarnings));
+      if (sent.sentItems.length) {
+        const ticket: KitchenTicket = { orderNumber: sent.orderNumber, customerName: sent.customerName, customerPhone: sent.customerPhone, sentAt: sent.sentItems[0].sentAt ?? new Date().toISOString(), items: sent.sentItems };
+        void printSlip({ title: `Tiket dapur ${sent.orderNumber}`, text: formatKitchenTicket(ticket) }, 'Tiket dapur gagal dicetak.');
+      }
+    } catch (e) {
+      if (isVersionConflict(e)) { void loadOpenBill(bill.id, VERSION_CONFLICT_MESSAGE); return; }
+      handleCustomerUnavailable(e); setError(openBillErrorMessage(e, 'Item gagal dikirim ke dapur.'));
+    } finally { setBillBusy(false); }
+  }
+
+  /** Voids a sent line fully (no quantity) or partly; needs order.void_item. Pending cart edits are saved first so the reload keeps them. */
+  async function voidLine(line: Line, quantity: string | undefined, reason: string) {
+    const bill = openBill;
+    if (!bill || !line.bill) return;
+    setBillBusy(true); setVoidError(''); setError(''); setNotice(''); setWarning('');
+    try {
+      const saved = await saveBeforeBillAction(bill);
+      if (!saved) { setVoidTarget(null); return; }
+      const updated = await authorizedRequest<BillOrder>(`orders/${bill.id}/items/${line.bill.orderItemId}/void`, { method: 'POST', body: JSON.stringify({ version: saved.version, ...(quantity ? { quantity } : {}), reason }) });
+      setVoidTarget(null);
+      applyOpenBill(updated, '', `${line.product.name} × ${Number(quantity ?? line.quantity)} di-void.`);
+      // The void brought the total down to the deposit: the cart shows the repriced bill, which now only needs completing.
+      if (updated.status === 'PAID') settlePaidBill(updated, `${line.product.name} × ${Number(quantity ?? line.quantity)} di-void. Total bill sudah tertutup DP, tekan Bayar untuk menyelesaikan transaksi.`);
+    } catch (e) {
+      if (isVersionConflict(e)) { setVoidTarget(null); void loadOpenBill(bill.id, VERSION_CONFLICT_MESSAGE); return; }
+      setVoidError(e instanceof ApiError && e.status === 403 ? 'Akun ini belum memiliki izin void item.' : openBillErrorMessage(e, 'Item gagal di-void.'));
+    } finally { setBillBusy(false); }
+  }
+
+  /** "Cetak Tagihan": saves the bill if it changed, records the print on the server (which numbers reprints) and prints the pre-bill. */
+  async function printPreBill() {
+    const bill = openBill;
+    if (!bill) return;
+    setBillBusy(true); setError(''); setNotice(''); setWarning('');
+    try {
+      const saved = await saveBeforeBillAction(bill);
+      if (!saved) return;
+      setWarning(stockWarningText(saved.stockWarnings));
+      const preBill = await authorizedRequest<PreBill>(`orders/${bill.id}/pre-bill`, { method: 'POST' });
+      setNotice(preBill.preBillPrintCount > 1 ? `Tagihan ${preBill.orderNumber} dicetak ulang (ke-${preBill.preBillPrintCount}).` : `Tagihan ${preBill.orderNumber} siap dicetak.`);
+      void printSlip({ title: `Tagihan ${preBill.orderNumber}`, text: formatPreBill(preBill, user?.name ?? 'Kasir') }, 'Tagihan gagal dicetak.');
+    } catch (e) {
+      if (isVersionConflict(e)) { void loadOpenBill(bill.id, VERSION_CONFLICT_MESSAGE); return; }
+      handleCustomerUnavailable(e); setError(openBillErrorMessage(e, 'Tagihan gagal dicetak.'));
+    } finally { setBillBusy(false); }
+  }
+
+  /** Opens the payment step in DP mode for the loaded bill. */
+  function startDeposit() {
+    setDepositMode(true); setDepositAmount(''); setError(''); setNotice(''); setPaymentStep(true);
+  }
+
+  /**
+   * "Terima DP": takes part of the bill now. The bill stays open (still editable, still in the open bill list) and the
+   * cart is refreshed from the server; paying the full balance is the normal "Bayar" instead.
+   */
+  async function receiveDeposit() {
+    const bill = openBill;
+    if (!bill) return;
+    const amount = Number(depositAmount) || 0;
+    const due = total - (bill.paidTotal ?? 0);
+    if (amount <= 0) return setError('Jumlah DP wajib diisi dan lebih dari Rp 0.');
+    if (amount >= due) return setError(`DP harus kurang dari sisa tagihan ${money(due)}. Untuk melunasi, gunakan Bayar.`);
+    setSubmitting(true); setError(''); setNotice(''); setWarning('');
+    try {
+      // The deposit is checked against the saved bill, so pending cart edits are saved first.
+      const saved = await saveBeforeBillAction(bill);
+      if (!saved) return;
+      setWarning(stockWarningText(saved.stockWarnings));
+      const payment = { method, amount: String(amount), ...(method === 'CASH' ? { receivedAmount: String(amount) } : {}) };
+      const updated = await authorizedRequest<BillOrder>(`orders/${bill.id}/pay`, { method: 'POST', body: JSON.stringify({ payments: [payment] }) });
+      const paidTotal = paidTotalOf(updated);
+      setDepositMode(false); setDepositAmount('');
+      if (updated.status !== 'OPEN') {
+        // The deposit settled the whole bill after all; it is now locked and only needs completing via "Bayar".
+        settlePaidBill(updated, `DP ${money(amount)} diterima dan bill sudah lunas. Tekan Bayar untuk menyelesaikan transaksi.`);
+      } else {
+        applyOpenBill(updated, '', `DP ${money(amount)} diterima. Sisa tagihan ${money(Number(updated.grandTotal) - paidTotal)}.`);
+      }
+      void refreshNotifications();
+      void printSlip({ title: `Bukti DP ${updated.orderNumber}`, text: formatDepositReceipt({ order: updated, payment, paidTotal, cashierName: user?.name ?? 'Kasir', paidAt: new Date().toISOString() }) }, 'Bukti DP gagal dicetak.');
+    } catch (e) {
+      if (isVersionConflict(e)) { setDepositMode(false); void loadOpenBill(bill.id, VERSION_CONFLICT_MESSAGE); return; }
+      handleCustomerUnavailable(e); setError(openBillErrorMessage(e, 'DP gagal diterima.'));
+    } finally { setSubmitting(false); }
+  }
+
+  async function saveOpenBill(name: string, phone: string) {
+    if (!cart.length) return setBillError('Keranjang masih kosong.');
+    if (!branchId || !warehouseId) return setBillError('Pilih cabang dan gudang terlebih dahulu.');
+    setBillBusy(true); setBillError(''); setWarning('');
+    try {
+      const saved = openBill
+        ? await updateOpenBill(openBill, name, phone)
+        : await authorizedRequest<Order & { stockWarnings?: StockShortage[] }>('orders', { method: 'POST', body: JSON.stringify({ branchId, warehouseId, openBill: true, ...(selectedCustomer ? { customerId: selectedCustomer.id } : {}), customerName: name, customerPhone: phone, discountAmount: String(discountAmount), items: orderItems() }) });
+      if (!saved) return;
+      if (saved.status === 'PAID') { setBillSheetVisible(false); settlePaidBill(saved); return; }
+      // The bill is parked on the server; the cart is cleared for the next customer.
+      resetCart(); setBillSheetVisible(false); setCartVisible(false); setError('');
+      setNotice(`Open bill ${saved.orderNumber} atas nama ${saved.customerName ?? name} disimpan.`);
+      // Short stock does not block saving (payment re-checks it), but the cashier should know now.
+      setWarning(stockWarningText(saved.stockWarnings));
+      void refreshNotifications();
+    } catch (e) { handleCustomerUnavailable(e); setBillError(openBillErrorMessage(e)); }
+    finally { setBillBusy(false); }
+  }
+
+  /** Fetches a bill and queues it; the effect below fills the cart once its warehouse catalog is loaded. */
+  async function loadOpenBill(id: string, message = '') {
+    setBillLoadingId(id); setError(''); setNotice(''); setWarning('');
+    try {
+      const bill = await authorizedRequest<BillOrder>(`orders/${id}`);
+      if (bill.status !== 'OPEN') { setBillListVisible(false); setError(`Bill ${bill.orderNumber} sudah tidak bisa diubah (${formatStatus(bill.status)}).`); return; }
+      setBillListVisible(false);
+      if (bill.branchId !== branchId) setBranchId(bill.branchId);
+      setPendingBill({ bill, message });
+    } catch (e) { setBillListVisible(false); setError(e instanceof Error ? e.message : 'Open bill gagal dimuat.'); }
+    finally { setBillLoadingId(''); }
+  }
+
+  function selectOpenBill(row: OpenBillRow) {
+    if (row.id === openBill?.id) { setBillListVisible(false); setCartVisible(true); return; }
+    if (!cart.length || (openBill && !openBillDirty)) { void loadOpenBill(row.id); return; }
+    Alert.alert('Ganti isi keranjang?', `Pesanan di keranjang yang belum disimpan akan diganti dengan bill ${row.orderNumber}.`, [
+      { text: 'Kembali', style: 'cancel' },
+      { text: 'Ganti', onPress: () => void loadOpenBill(row.id) },
+    ]);
+  }
+
+  /** Fills the cart from a bill; `message` is shown as an error (e.g. after a reload), `success` as a notice. */
+  function applyOpenBill(bill: BillOrder, message: string, success = '') {
+    // Every bill line stays its own cart line with its identity, so unchanged lines are kept as stored on the next save.
+    // Lines whose product left this warehouse's catalog are kept too, read-only, instead of refusing the whole bill.
+    const lines: Line[] = (bill.items ?? []).map((item) => {
+      const product = products.find((entry) => entry.id === item.productId);
+      // POS lines count in the selling unit, which the server keeps as inputQuantity.
+      const lineQuantity = Number(item.inputQuantity ?? item.quantity);
+      const addons = (item.addons ?? []).map((addon) => ({ addonId: addon.addonId, quantity: String(Number(addon.quantity)) }));
+      return {
+        key: `bill:${item.id}`, product: product ?? offCatalogProduct(item), unitId: item.unitId ?? '', quantity: lineQuantity, variantId: item.variantId ?? '', addonIds: addons.map((addon) => addon.addonId),
+        bill: { orderItemId: item.id, quantity: lineQuantity, note: item.note ?? null, addons, total: Number(item.totalPrice), variantName: item.variantNameSnapshot ?? null, sentAt: item.sentAt ?? null, missing: !product },
+      };
+    });
+    const billDiscount = String(Number(bill.discountAmount) || 0);
+    const name = bill.customerName ?? '';
+    const customerId = bill.customerId ?? null;
+    setCart(lines); setDiscount(billDiscount); setCustomer(name); setCustomerPhone(bill.customerPhone ?? ''); setPendingOrder(null); setPaymentStep(false);
+    setSelectedCustomer(customerId ? { id: customerId, name, phone: bill.customerPhone } : null);
+    setOpenBill({ id: bill.id, orderNumber: bill.orderNumber, customerName: name, customerPhone: bill.customerPhone ?? '', itemVoids: bill.itemVoids ?? [], paidTotal: paidTotalOf(bill), customerId, version: bill.version, signature: cartSignature(lines, billDiscount, name, customerId ?? '') });
+    setError(message); setNotice(success); setCartVisible(true);
+    if (customerId && can('customer.read')) {
+      // The bill only snapshots name and phone; fetch the customer's own phone (the bill's may have been typed
+      // because the customer has none) and its transaction count. Failing here just keeps the snapshot.
+      void authorizedRequest<Customer>(`customers/${encodeURIComponent(customerId)}`)
+        .then((found) => setSelectedCustomer((current) => current?.id === found.id ? { ...current, phone: found.phone, transactionCount: found.transactionCount } : current))
+        .catch(() => undefined);
+    }
+  }
+
+  function confirmCancelOpenBill() {
+    const bill = openBill;
+    if (!bill) return;
+    // Deposits not yet in a cash closing are voided with the bill; the cashier hands the money back.
+    const deposit = bill.paidTotal ? `\n\nDP ${money(bill.paidTotal)} akan dibatalkan; kembalikan uang ke pelanggan.` : '';
+    Alert.alert('Batalkan open bill?', `Bill ${bill.orderNumber} atas nama ${bill.customerName} akan dibatalkan dan tidak bisa dibuka lagi.${deposit}`, [
+      { text: 'Kembali', style: 'cancel' },
+      { text: 'Ya, batalkan', style: 'destructive', onPress: () => void cancelOpenBill(bill) },
+    ]);
+  }
+
+  async function cancelOpenBill(bill: LoadedBill) {
+    setBillBusy(true); setError('');
+    try {
+      await authorizedRequest(`orders/${bill.id}/cancel`, { method: 'POST' });
+      resetCart(); setCartVisible(false);
+      setNotice(`Open bill ${bill.orderNumber} dibatalkan.`);
+      void refreshNotifications();
+    } catch (e) { setError(openBillErrorMessage(e)); }
+    finally { setBillBusy(false); }
+  }
+
+  useEffect(() => {
+    if (!pendingBill) return;
+    const { bill, message } = pendingBill;
+    // Wait until the bill's branch has its warehouses loaded, then switch to the bill's warehouse and wait for its catalog.
+    if (branchId !== bill.branchId || !warehouseId || warehouses[0]?.branchId !== bill.branchId) return;
+    if (warehouseId !== bill.warehouseId) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      if (warehouses.some((warehouse) => warehouse.id === bill.warehouseId)) setWarehouseId(bill.warehouseId);
+      else { setError(`Gudang bill ${bill.orderNumber} tidak tersedia di POS.`); setPendingBill(null); }
+      return;
+    }
+    if (catalogWarehouseId !== warehouseId || productsLoading) return;
+    setPendingBill(null);
+    applyOpenBill(bill, message);
+  // applyOpenBill reads the catalog this effect waits for; it is not a trigger on its own.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pendingBill, branchId, warehouseId, warehouses, catalogWarehouseId, productsLoading]);
+
+  useEffect(() => {
+    if (params.openBillList) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      setBillListVisible(true);
+      router.setParams({ openBillList: undefined });
+    }
+    if (params.openBillId) {
+      void loadOpenBill(params.openBillId);
+      router.setParams({ openBillId: undefined });
+    }
+  // Deep-link params are handled once each and then cleared.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [params.openBillId, params.openBillList]);
 
   async function printReceipt() {
     if (!receipt) return;
@@ -192,9 +615,33 @@ export default function PosScreen() {
     const esc = (value: string) => value.replace(/[&<>"']/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[char]!);
     const date = receipt.completedAt ?? receipt.createdAt;
     const rows = (receipt.items ?? []).map((item) => `<div class="item"><div class="row"><span>${esc(item.productNameSnapshot)}${item.variantNameSnapshot ? ` (${esc(item.variantNameSnapshot)})` : ''}</span><span>${money(Number(item.totalPrice))}</span></div><div class="sub">${Number(item.inputQuantity ?? item.quantity)} ${esc(item.unit?.code ?? '')} x ${money(Number(item.unitPrice))}</div>${(item.addons ?? []).map((addon) => `<div class="sub">+ ${esc(addon.addonNameSnapshot)} x ${Number(addon.quantity)} (${money(Number(addon.totalPrice))})</div>`).join('')}</div>`).join('');
-    const html = `<!doctype html><html><head><meta name="viewport" content="width=device-width, initial-scale=1"><style>@page{margin:5mm}*{box-sizing:border-box}body{font:12px Arial,sans-serif;color:#111;width:72mm;margin:0 auto}.center{text-align:center}.title{font-size:18px;font-weight:bold}.muted{color:#555;font-size:10px}.line{border-top:1px dashed #555;margin:9px 0}.row{display:flex;justify-content:space-between;gap:8px}.item{margin:8px 0}.sub{color:#555;font-size:10px;margin-top:3px}.total{font-weight:bold;font-size:15px}</style></head><body><div class="center"><div class="title">${esc(receipt.branch?.name ?? 'NOTA PEMBELIAN')}</div>${receipt.branch?.code ? `<div class="muted">${esc(receipt.branch.code)}</div>` : ''}<div class="line"></div><div>${esc(receipt.orderNumber)}</div><div class="muted">${date ? formatDate(date) : ''}</div>${receipt.customerName ? `<div>Pelanggan: ${esc(receipt.customerName)}</div>` : ''}</div><div class="line"></div>${rows}<div class="line"></div><div class="row"><span>Subtotal</span><span>${money(Number(receipt.subtotal))}</span></div><div class="row"><span>Diskon</span><span>-${money(Number(receipt.discountAmount))}</span></div>${Number(receipt.taxAmount ?? 0) ? `<div class="row"><span>Pajak</span><span>${money(Number(receipt.taxAmount))}</span></div>` : ''}${Number(receipt.serviceCharge ?? 0) ? `<div class="row"><span>Layanan</span><span>${money(Number(receipt.serviceCharge))}</span></div>` : ''}<div class="row total"><span>TOTAL</span><span>${money(Number(receipt.grandTotal))}</span></div>${(receipt.payments ?? []).map((payment) => `<div class="row"><span>${esc(formatStatus(payment.method))}</span><span>${money(Number(payment.amount))}</span></div>${payment.receivedAmount ? `<div class="row"><span>Diterima</span><span>${money(Number(payment.receivedAmount))}</span></div>` : ''}${payment.changeAmount ? `<div class="row"><span>Kembalian</span><span>${money(Number(payment.changeAmount))}</span></div>` : ''}`).join('')}<div class="line"></div><div class="center">Terima kasih</div></body></html>`;
+    const html = `<!doctype html><html><head><meta name="viewport" content="width=device-width, initial-scale=1"><style>@page{margin:5mm}*{box-sizing:border-box}body{font:12px Arial,sans-serif;color:#111;width:72mm;margin:0 auto}.center{text-align:center}.title{font-size:18px;font-weight:bold}.muted{color:#555;font-size:10px}.line{border-top:1px dashed #555;margin:9px 0}.row{display:flex;justify-content:space-between;gap:8px}.item{margin:8px 0}.sub{color:#555;font-size:10px;margin-top:3px}.total{font-weight:bold;font-size:15px}</style></head><body><div class="center"><div class="title">${esc(receipt.branch?.name ?? 'NOTA PEMBELIAN')}</div>${receipt.branch?.code ? `<div class="muted">${esc(receipt.branch.code)}</div>` : ''}<div class="line"></div><div>${esc(receipt.orderNumber)}</div><div class="muted">${date ? formatDate(date) : ''}</div>${receipt.customerName || receipt.customerPhone ? `<div>Pelanggan: ${esc(customerLabel(receipt.customerName, receipt.customerPhone))}</div>` : ''}</div><div class="line"></div>${rows}<div class="line"></div><div class="row"><span>Subtotal</span><span>${money(Number(receipt.subtotal))}</span></div><div class="row"><span>Diskon</span><span>-${money(Number(receipt.discountAmount))}</span></div>${Number(receipt.taxAmount ?? 0) ? `<div class="row"><span>Pajak</span><span>${money(Number(receipt.taxAmount))}</span></div>` : ''}${Number(receipt.serviceCharge ?? 0) ? `<div class="row"><span>Layanan</span><span>${money(Number(receipt.serviceCharge))}</span></div>` : ''}<div class="row total"><span>TOTAL</span><span>${money(Number(receipt.grandTotal))}</span></div>${(receipt.payments ?? []).map((payment) => `<div class="row"><span>${esc(formatStatus(payment.method))}</span><span>${money(Number(payment.amount))}</span></div>${payment.receivedAmount ? `<div class="row"><span>Diterima</span><span>${money(Number(payment.receivedAmount))}</span></div>` : ''}${payment.changeAmount ? `<div class="row"><span>Kembalian</span><span>${money(Number(payment.changeAmount))}</span></div>` : ''}`).join('')}<div class="line"></div><div class="center">Terima kasih</div></body></html>`;
     try { await Print.printAsync({ html }); }
     catch (e) { setPrintError(e instanceof Error ? e.message : 'Nota gagal dicetak.'); }
+    finally { setPrinting(false); }
+  }
+
+  /**
+   * Kitchen tickets, pre-bills and DP receipts use the receipt printer: the thermal preview on Android, the system print
+   * dialog elsewhere. `failure` is shown when the print dialog fails.
+   */
+  async function printSlip(next: { title: string; text: string }, failure: string) {
+    setPrintError('');
+    if (Platform.OS === 'android') {
+      setSlip(next);
+      if (!printer) { await showPrinterPicker(true); return; }
+      setSlipPreviewVisible(true);
+      return;
+    }
+    try { await Print.printAsync({ html: `<!doctype html><html><body><pre style="font:12px monospace">${escapeHtml(next.text)}</pre></body></html>` }); }
+    catch (e) { setError(e instanceof Error ? e.message : failure); }
+  }
+
+  async function sendSlip(target: PairedPrinter) {
+    if (!slip) return;
+    setPrinting(true); setPrintError('');
+    try { await printThermalSlip(slip.text, target); setSlipPreviewVisible(false); setSlip(null); }
+    catch (e) { setPrintError(e instanceof Error ? e.message : `${slip.title} gagal dikirim ke printer.`); }
     finally { setPrinting(false); }
   }
 
@@ -219,7 +666,8 @@ export default function PosScreen() {
       await savePrinter(target);
       setPrinter(target);
       setPrinterPickerVisible(false);
-      if (printAfterPrinterSelection) setPreviewVisible(true);
+      // A pending slip (kitchen ticket, pre-bill or DP receipt) takes the freshly chosen printer; otherwise it is the receipt.
+      if (printAfterPrinterSelection) { if (slip) setSlipPreviewVisible(true); else setPreviewVisible(true); }
     } catch (e) { setPrintError(e instanceof Error ? e.message : 'Printer gagal disimpan.'); }
     finally { setPrinterLoading(false); setPrintAfterPrinterSelection(false); }
   }
@@ -255,11 +703,70 @@ export default function PosScreen() {
     onOpenBluetoothSettings={openAndroidBluetoothSettings}
   /></>;
 
-  if (cartVisible) return <PosCheckoutFlow
+  const billSheets = <>
+    {billSheetVisible ? <OpenBillSaveSheet
+      editing={Boolean(openBill)}
+      initialName={customer}
+      initialPhone={customerPhone}
+      saving={billBusy}
+      error={billError}
+      bottomInset={insets.bottom}
+      linkedCustomer={selectedCustomer}
+      onSave={(name, phone) => void saveOpenBill(name, phone)}
+      onClose={() => { setBillSheetVisible(false); setBillError(''); }}
+    /> : null}
+    {billListVisible ? <OpenBillListSheet
+      request={authorizedRequest}
+      bottomInset={insets.bottom}
+      loadingId={billLoadingId}
+      onSelect={selectOpenBill}
+      onClose={() => setBillListVisible(false)}
+    /> : null}
+    {customerPickerVisible && branchId ? <CustomerPickerSheet
+      request={authorizedRequest}
+      branchId={branchId}
+      selectedId={selectedCustomer?.id ?? ''}
+      canCreate={can('customer.create')}
+      bottomInset={insets.bottom}
+      onSelect={selectCustomer}
+      onGuest={detachCustomer}
+      onClose={() => setCustomerPickerVisible(false)}
+    /> : null}
+    {voidTarget ? <OpenBillVoidSheet
+      line={voidTarget}
+      saving={billBusy}
+      error={voidError}
+      bottomInset={insets.bottom}
+      onVoid={(quantity, reason) => void voidLine(voidTarget, quantity, reason)}
+      onClose={() => { setVoidTarget(null); setVoidError(''); }}
+    /> : null}
+    {printerPickerVisible ? <PrinterPickerSheet
+      devices={printerDevices}
+      loading={printerLoading}
+      error={printError}
+      bottomInset={insets.bottom}
+      onChoose={(target) => void choosePrinter(target)}
+      onClose={() => { setPrinterPickerVisible(false); setPrintAfterPrinterSelection(false); setSlip(null); }}
+      onOpenBluetoothSettings={openAndroidBluetoothSettings}
+    /> : null}
+    {slip ? <ThermalPreview
+      visible={slipPreviewVisible}
+      title={slip.title}
+      text={slip.text}
+      printer={printer}
+      printing={printing}
+      error={printError}
+      onPrint={() => { if (printer) void sendSlip(printer); }}
+      onChangePrinter={() => { setSlipPreviewVisible(false); void showPrinterPicker(true); }}
+      onClose={() => { setSlipPreviewVisible(false); setSlip(null); setPrintError(''); }}
+    /> : null}
+  </>;
+
+  if (cartVisible) return <><PosCheckoutFlow
     lines={cart}
     topInset={insets.top + 8}
     paymentStep={paymentStep}
-    onPaymentStepChange={setPaymentStep}
+    onPaymentStepChange={(value) => { setPaymentStep(value); if (!value) setDepositMode(false); }}
     customer={customer}
     onCustomerChange={setCustomer}
     discount={discount}
@@ -273,16 +780,34 @@ export default function PosScreen() {
     onQuantity={quantity}
     canIncrease={(line) => canAddUnit(line.product, line.unitId)}
     onCheckout={() => void checkout()}
-    onClear={() => { setCart([]); setPendingOrder(null); setPaymentStep(false); setError(''); }}
-    onClose={() => { setCartVisible(false); setPaymentStep(false); }}
+    onClear={() => { setCart([]); setPendingOrder(null); setOpenBill(null); setCustomerPhone(''); setPaymentStep(false); setDepositMode(false); setError(''); setNotice(''); setWarning(''); detachCustomer(); }}
+    onClose={() => { setCartVisible(false); setPaymentStep(false); setDepositMode(false); }}
     submitting={submitting}
     error={error}
     onError={setError}
     takeaway={takeaway}
     onTakeawayChange={setTakeaway}
     bottomInset={insets.bottom}
-  />;
-    if (!receipt && !cartVisible) return <PosCatalogScreen
+    openBill={openBill}
+    openBillDirty={openBillDirty}
+    billBusy={billBusy}
+    onSaveOpenBill={() => { setBillError(''); setBillSheetVisible(true); }}
+    onCancelOpenBill={can('order.cancel') ? confirmCancelOpenBill : undefined}
+    selectedCustomer={selectedCustomer}
+    onPickCustomer={can('customer.read') && branchId ? () => setCustomerPickerVisible(true) : undefined}
+    onRemoveCustomer={detachCustomer}
+    notice={notice}
+    warning={warning}
+    onSendToKitchen={openBill ? () => void sendToKitchen() : undefined}
+    onVoidLine={can('order.void_item') ? (line) => { setVoidError(''); setVoidTarget(line as Line); } : undefined}
+    onPrintPreBill={openBill ? () => void printPreBill() : undefined}
+    onStartDeposit={openBill && can('payment.create') ? startDeposit : undefined}
+    depositMode={depositMode}
+    depositAmount={depositAmount}
+    onDepositAmountChange={setDepositAmount}
+    onReceiveDeposit={() => void receiveDeposit()}
+  />{billSheets}</>;
+    if (!receipt && !cartVisible) return <><PosCatalogScreen
       branches={branches}
       warehouses={warehouses}
       branchId={branchId}
@@ -306,8 +831,8 @@ export default function PosScreen() {
       optionAddons={optionAddons}
       topInset={0}
       bottomInset={0}
-      onBranchChange={setBranchId}
-      onWarehouseChange={setWarehouseId}
+      onBranchChange={(id) => { if (id !== branchId) switchLocation(() => setBranchId(id)); }}
+      onWarehouseChange={(id) => { if (id !== warehouseId) switchLocation(() => setWarehouseId(id)); }}
       onCategoryChange={setSelectedCategory}
       onDisplayOnlyChange={setDisplayOnly}
       onSearchChange={setSearch}
@@ -316,14 +841,19 @@ export default function PosScreen() {
       canAdd={(product, unitId) => canAddUnit(product as Product, unitId)}
       priceFor={priceFor}
       onOpenCart={() => { setPaymentStep(false); setCartVisible(true); }}
-      onClear={() => { setCart([]); setPendingOrder(null); setError(''); }}
+      onClear={() => { setCart([]); setPendingOrder(null); setOpenBill(null); setCustomerPhone(''); setError(''); setWarning(''); detachCustomer(); }}
       onScan={(value) => { const match = products.find((product) => product.barcode === value || product.sku === value); if (match) add(match); else { setSearch(value); setError('Barcode tidak ditemukan pada katalog gudang ini.'); } }}
       onCloseOption={() => setOptionProduct(null)}
       onOptionUnitChange={setOptionUnit}
       onOptionVariantChange={setOptionVariant}
       onOptionAddonsChange={setOptionAddons}
       onAddConfigured={() => { if (optionProduct) addConfigured(optionProduct, optionUnit, optionVariant, optionAddons); setOptionProduct(null); }}
-  />;
+      notice={notice}
+      openBillLabel={openBill ? `Open Bill ${openBill.orderNumber} · ${openBill.customerName}${openBill.paidTotal ? ` · DP ${money(openBill.paidTotal)} · sisa ${money(total - openBill.paidTotal)}` : ''}${openBillDirty ? ' · belum disimpan' : ''}` : null}
+      onOpenBills={can('order.read') ? () => { setNotice(''); setBillListVisible(true); } : undefined}
+      openBillCount={openBillCount}
+      warning={warning}
+  />{billSheets}</>;
   if (receipt) return <ScrollView style={styles.screen} contentContainerStyle={[styles.page, { paddingTop: 18 + insets.top }]}><Text style={styles.eyebrow}>TRANSAKSI BERHASIL</Text><Text style={styles.title}>Nota pembayaran</Text><View style={styles.receiptCard}><Text style={styles.receiptStore}>{receipt.branch?.name ?? 'Inventory Replenishment'}</Text><Text style={styles.muted}>{receipt.orderNumber}{receipt.createdAt ? ` Â· ${formatDate(receipt.createdAt)}` : ''}</Text>{receipt.customerName ? <Text style={styles.receiptCustomer}>Pelanggan: {receipt.customerName}</Text> : null}<View style={styles.receiptDivider} />{receipt.items?.map((item, index) => <View key={`${item.productNameSnapshot}-${index}`} style={styles.receiptItem}><View style={styles.receiptRow}><Text style={styles.receiptItemName}>{item.productNameSnapshot}{item.variantNameSnapshot ? ` (${item.variantNameSnapshot})` : ''}</Text><Text style={styles.receiptItemPrice}>{money(Number(item.totalPrice))}</Text></View><Text style={styles.muted}>{Number(item.quantity)} Ã— {money(Number(item.unitPrice))}</Text>{item.addons?.map((addon, addIndex) => <Text key={`${addon.addonNameSnapshot}-${addIndex}`} style={styles.muted}>+ {addon.addonNameSnapshot} Ã— {Number(addon.quantity)} Â· {money(Number(addon.totalPrice))}</Text>)}</View>)}<View style={styles.receiptDivider} /><Text style={styles.receiptRow}>Subtotal<Text>{money(Number(receipt.subtotal))}</Text></Text><Text style={styles.receiptRow}>Diskon<Text>-{money(Number(receipt.discountAmount))}</Text></Text>{Number(receipt.taxAmount ?? 0) > 0 ? <Text style={styles.receiptRow}>Pajak<Text>{money(Number(receipt.taxAmount))}</Text></Text> : null}{Number(receipt.serviceCharge ?? 0) > 0 ? <Text style={styles.receiptRow}>Layanan<Text>{money(Number(receipt.serviceCharge))}</Text></Text> : null}<Text style={styles.receiptTotal}>TOTAL<Text>{money(Number(receipt.grandTotal))}</Text></Text>{receipt.payments?.map((payment, index) => <View key={`${payment.method}-${index}`}><Text style={styles.receiptRow}>{formatStatus(payment.method)}<Text>{money(Number(payment.amount))}</Text></Text>{payment.receivedAmount ? <Text style={styles.receiptRow}>Diterima<Text>{money(Number(payment.receivedAmount))}</Text></Text> : null}{payment.changeAmount && Number(payment.changeAmount) > 0 ? <Text style={styles.receiptRow}>Kembalian<Text>{money(Number(payment.changeAmount))}</Text></Text> : null}</View>)}<View style={styles.receiptDivider} /><Text style={styles.receiptThanks}>Terima kasih</Text></View>{Platform.OS === 'android' ? <View style={styles.printerBox}><View style={styles.productInfo}><Text style={styles.label}>Printer Bluetooth</Text><Text style={styles.printerName}>{printer?.name ?? 'Belum dipilih'}</Text></View><Pressable onPress={() => void showPrinterPicker(false)} style={styles.scanButton}><Text style={styles.scanText}>{printer ? 'Ganti' : 'Pilih'}</Text></Pressable></View> : null}{printError ? <View style={styles.errorBox}><Text style={styles.errorText}>{printError}</Text></View> : null}<Pressable disabled={printing} style={[styles.primary, printing && styles.disabled]} onPress={() => void printReceipt()}><Text style={styles.primaryText}>{printing ? 'Mencetak nota...' : 'Cetak nota'}</Text></Pressable><Text style={styles.printHint}>{Platform.OS === 'android' ? 'Printer tersimpan akan tersambung otomatis saat cetak. Pastikan printer sudah dipasangkan di pengaturan Bluetooth Android.' : 'Buka layanan cetak yang tersedia untuk mencetak atau menyimpan nota.'}</Text><Pressable style={styles.secondary} onPress={() => { setReceipt(null); setPrintError(''); }}><Text style={styles.secondaryText}>Transaksi baru</Text></Pressable><Modal visible={printerPickerVisible} animationType="slide" transparent onRequestClose={() => { setPrinterPickerVisible(false); setPrintAfterPrinterSelection(false); }}><View style={styles.modalBackdrop}><View style={styles.optionPanel}><Text style={styles.sectionTitle}>Pilih printer Bluetooth</Text><Text style={styles.muted}>Pilih perangkat thermal yang sudah dipasangkan di pengaturan Android.</Text>{printError ? <View style={styles.errorBox}><Text style={styles.errorText}>{printError}</Text></View> : null}{printerLoading ? <ActivityIndicator style={styles.loader} color="#087f5b" /> : printerDevices.length ? printerDevices.map((device) => <Pressable key={device.address} disabled={printerLoading} onPress={() => void choosePrinter(device)} style={styles.optionRow}><Text style={styles.optionText}>{device.name}</Text><Text style={styles.muted}>{device.address}</Text></Pressable>) : !printerLoading ? <Text style={styles.empty}>Belum ada perangkat Bluetooth yang dipasangkan.</Text> : null}<View style={styles.modalActions}><Pressable style={styles.cancelButton} onPress={openAndroidBluetoothSettings}><Text style={styles.cancelText}>Pengaturan Bluetooth</Text></Pressable><Pressable style={styles.primary} disabled={printerLoading} onPress={() => void showPrinterPicker(printAfterPrinterSelection)}><Text style={styles.primaryText}>Muat ulang</Text></Pressable></View><Pressable style={styles.cancelButton} onPress={() => { setPrinterPickerVisible(false); setPrintAfterPrinterSelection(false); }}><Text style={styles.cancelText}>Tutup</Text></Pressable></View></View></Modal></ScrollView>;
 
   if (cartVisible) return <View style={[styles.cartFlow, { paddingTop: insets.top + 8 }]}>

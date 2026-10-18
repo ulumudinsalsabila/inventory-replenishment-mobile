@@ -8,6 +8,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useAuth } from '../auth/auth-provider';
 import { useBranchFilter } from '../auth/branch-filter';
 import { ApiError } from '../lib/api';
+import { OpenBillCard, type DashboardOpenBills } from './open-bill-card';
 import { OptionSheet } from './option-sheet';
 import { dateLabel, daysBetween, jakartaToday, money, percent, percentChange, quantity, shiftDate } from '../lib/report';
 
@@ -18,6 +19,7 @@ type Dashboard = {
   itemSoldCount: string | number;
   branchSales: { branchId: string; branch: { id: string; name: string } | null; netSales: string | number }[];
   bestSellers: { productId: string; name: string; quantity: string | number }[];
+  openBills?: DashboardOpenBills;
 };
 type StockSummary = { summary: { totalQuantity: number; productCount: number; stockValue: number } };
 type Preset = 'today' | '7days' | '30days' | 'month';
@@ -172,6 +174,8 @@ export function AdminDashboard() {
           </View>;
         })}
       </View>
+
+      <OpenBillCard data={data?.openBills} loading={loading} actionLabel="Laporan" onAction={() => router.push('/(app)/open-bills')} onPressBill={(id) => router.push({ pathname: '/(app)/orders', params: { orderId: id } })} />
 
       <View style={styles.grid}>
         <Pressable accessibilityRole="button" onPress={() => router.push('/(app)/unsold-stock')} style={({ pressed }) => [styles.bottomCard, { backgroundColor: tones.blue.bg }, pressed && styles.pressed]}>

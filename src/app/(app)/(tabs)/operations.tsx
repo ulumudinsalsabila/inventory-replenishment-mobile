@@ -1,12 +1,12 @@
 import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { router, type Href } from 'expo-router';
-import { ArrowLeftRight, Banknote, ChevronRight, ClipboardList, FileText, MonitorSmartphone, PackageSearch, ReceiptText, UserRound } from 'lucide-react-native';
+import { ArrowLeftRight, Banknote, ChevronRight, ClipboardList, FileText, MonitorSmartphone, PackageSearch, ReceiptText, UserRound, Users } from 'lucide-react-native';
 import { useAuth } from '../../../auth/auth-provider';
 import { useNotifications } from '../../../notifications/notifications-provider';
 
-type FeatureIconName = 'ReceiptText' | 'PackageSearch' | 'ClipboardList' | 'Banknote' | 'FileText' | 'UserRound' | 'MonitorSmartphone' | 'ArrowLeftRight';
+type FeatureIconName = 'ReceiptText' | 'PackageSearch' | 'ClipboardList' | 'Banknote' | 'FileText' | 'UserRound' | 'MonitorSmartphone' | 'ArrowLeftRight' | 'Users';
 function FeatureIcon({ name }: { name: FeatureIconName }) {
-  const icons = { ReceiptText, PackageSearch, ClipboardList, Banknote, FileText, UserRound, MonitorSmartphone, ArrowLeftRight };
+  const icons = { ReceiptText, PackageSearch, ClipboardList, Banknote, FileText, UserRound, MonitorSmartphone, ArrowLeftRight, Users };
   const Icon = icons[name];
   return <Icon size={23} color="#c70d17" />;
 }
@@ -15,14 +15,17 @@ type Feature = { section: string; title: string; description: string; destinatio
 const adminFeatures: Feature[] = [
   { section: 'Stok & Gudang', title: 'Stok', description: 'Ketersediaan produk per gudang', destination: '/(app)/inventory', permission: 'inventory.read', icon: 'PackageSearch' },
   { section: 'Stok & Gudang', title: 'Pergerakan stok', description: 'Riwayat barang masuk dan keluar', destination: '/(app)/movements', permission: 'inventory.read', icon: 'ClipboardList' },
+  { section: 'Penjualan', title: 'Customer', description: 'Data customer dan riwayat belanja per cabang', destination: '/(app)/customers', permission: 'customer.read', icon: 'Users' },
   { section: 'Kas', title: 'Cash Closing', description: 'Tutup kas dan rekonsiliasi operasional', destination: '/(app)/(tabs)/cash', permission: 'cash_closing.read', icon: 'Banknote' },
   { section: 'Kas', title: 'Cash in/out', description: 'Catat kas masuk atau keluar', destination: '/(app)/(tabs)/cash-in-out', permission: 'cash_transaction.create', icon: 'Banknote' },
+  { section: 'Laporan', title: 'Laporan Open Bill', description: 'Bill yang masih open, selesai, dan batal', destination: '/(app)/open-bills', permission: 'report.read', icon: 'ReceiptText' },
   { section: 'Akun', title: 'Akun / profil', description: 'Peran, akses, dan pengaturan akun', destination: '/(app)/(tabs)/account', icon: 'UserRound' },
 ];
 const employeeFeatures: Feature[] = [
   { section: 'Stok & Gudang', title: 'Stok', description: 'Ketersediaan produk di gudang', destination: '/(app)/inventory', permission: 'inventory.read', icon: 'PackageSearch' },
   { section: 'Stok & Gudang', title: 'Pergerakan stok', description: 'Riwayat barang masuk dan keluar', destination: '/(app)/movements', permission: 'inventory.read', icon: 'ClipboardList' },
   { section: 'Operasional', title: 'Display toko', description: 'Kelola stok yang tampil di area penjualan', destination: '/(app)/(tabs)/display', permission: 'display.read', icon: 'MonitorSmartphone' },
+  { section: 'Operasional', title: 'Customer', description: 'Cari, tambah, dan lihat riwayat belanja customer', destination: '/(app)/customers', permission: 'customer.read', icon: 'Users' },
   { section: 'Kas', title: 'Cash in/out', description: 'Catat kas masuk atau keluar', destination: '/(app)/(tabs)/cash-in-out', permission: 'cash_transaction.create', icon: 'ArrowLeftRight' },
   { section: 'Kas', title: 'Cash Closing', description: 'Tutup kas dan rekonsiliasi harian', destination: '/(app)/(tabs)/cash', permission: 'cash_closing.read', icon: 'Banknote' },
   { section: 'Akun', title: 'Akun / profil', description: 'Peran, akses, dan pengaturan akun', destination: '/(app)/(tabs)/account', icon: 'UserRound' },
@@ -30,7 +33,7 @@ const employeeFeatures: Feature[] = [
 
 export default function OperationsScreen() {
   const { user } = useAuth();
-  const { pendingOrderCount, pendingRequestCount } = useNotifications();
+  const { pendingOrderCount, pendingRequestCount, openBillCount } = useNotifications();
   const isEmployee = user?.roles.some((role) => role.toUpperCase() === 'PEGAWAI') ?? false;
   const features = isEmployee ? employeeFeatures : adminFeatures;
   const visibleFeatures = features.filter(({ permission, title }) =>
@@ -46,7 +49,7 @@ export default function OperationsScreen() {
         if (!sectionFeatures.length) return null;
         return <View key={section} style={styles.section}>
           <Text style={styles.sectionTitle}>{section}</Text>
-          <View style={styles.list}>{sectionFeatures.map((feature) => { const badge = feature.title === 'Pesanan' ? pendingOrderCount : feature.title === 'Permintaan stok' ? pendingRequestCount : 0; return <Pressable accessibilityRole="button" onPress={() => router.push(feature.destination)} key={feature.title} style={({ pressed }) => [styles.card, pressed && styles.cardPressed]}>
+          <View style={styles.list}>{sectionFeatures.map((feature) => { const badge = feature.title === 'Pesanan' ? pendingOrderCount : feature.title === 'Permintaan stok' ? pendingRequestCount : feature.title === 'Laporan Open Bill' ? openBillCount : 0; return <Pressable accessibilityRole="button" onPress={() => router.push(feature.destination)} key={feature.title} style={({ pressed }) => [styles.card, pressed && styles.cardPressed]}>
             <View style={styles.icon}><FeatureIcon name={feature.icon as FeatureIconName} /></View>
             <View style={styles.content}><Text style={styles.cardTitle}>{feature.title}</Text><Text style={styles.cardDescription}>{feature.description}</Text></View>
             {badge ? <View style={styles.countBadge}><Text style={styles.countBadgeText}>{badge > 99 ? '99+' : badge}</Text></View> : null}

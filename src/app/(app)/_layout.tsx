@@ -36,6 +36,9 @@ export default function AppLayout() {
     <Stack.Screen name="opnames" options={{ title: 'Stock Opname' }} />
     <Stack.Screen name="branch-profit" options={{ title: 'Keuntungan per cabang' }} />
     <Stack.Screen name="unsold-stock" options={{ title: 'Stok belum terjual' }} />
+    <Stack.Screen name="open-bills" options={{ title: 'Laporan Open Bill' }} />
+    <Stack.Screen name="customers" options={{ title: 'Customer' }} />
+    <Stack.Screen name="customer-detail" options={{ title: 'Detail Customer' }} />
     <Stack.Screen name="stock-detail" options={{ title: 'Detail stok produk' }} />
     <Stack.Screen name="notifications" options={{ title: 'Notifikasi' }} />
   </Stack></BranchFilterProvider>;

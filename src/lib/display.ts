@@ -9,12 +9,41 @@ export function refundMethodsFor(payments: { method: string; status: string }[] 
 }
 
 export function formatStatus(status: string) {
+  if (status === 'OPEN') return 'Open Bill';
   if (status === 'GOBIZ') return 'GoBiz';
   if (status === 'EXCHANGE') return 'Kredit tukar';
   if (status === 'DEBIT_CARD') return 'Kartu debit';
   if (status === 'CREDIT_CARD') return 'Kartu kredit';
   if (status === 'OTHER') return 'Lainnya';
   return status.replaceAll('_', ' ');
+}
+
+/** Customer name with the phone number next to it, e.g. "Budi · 08123456789". */
+export function customerLabel(name?: string | null, phone?: string | null) {
+  return [name, phone].filter(Boolean).join(' · ');
+}
+
+/** A product an open bill needs more of than the warehouse has (stockWarnings / stock-check shortages). */
+export type StockShortage = { productId: string; product: string; required: string; available: string };
+
+/** "Stok kurang: cake (butuh 2, tersedia 1), kopi (butuh 3, tersedia 0)"; empty when nothing is short. */
+export function stockWarningText(shortages: StockShortage[] | null | undefined) {
+  if (!shortages?.length) return '';
+  const quantity = (value: string) => Number(value).toLocaleString('id-ID', { maximumFractionDigits: 3 });
+  return `Stok kurang: ${shortages.map((entry) => `${entry.product} (butuh ${quantity(entry.required)}, tersedia ${quantity(entry.available)})`).join(', ')}`;
+}
+
+/** Short elapsed time: 45 -> "45 mnt", 130 -> "2 jam 10 mnt", 3000 -> "2 hari". */
+export function formatDuration(minutes: number) {
+  const value = Math.max(0, Math.round(minutes));
+  if (value < 60) return `${value} mnt`;
+  if (value < 1440) return `${Math.floor(value / 60)} jam${value % 60 ? ` ${value % 60} mnt` : ''}`;
+  return `${Math.floor(value / 1440)} hari`;
+}
+
+/** How long ago `value` happened, e.g. the age of an open bill. */
+export function formatAge(value: string | number | Date) {
+  return formatDuration((Date.now() - new Date(value).getTime()) / 60_000);
 }
 
 const dateFormatter = new Intl.DateTimeFormat('en-GB', {

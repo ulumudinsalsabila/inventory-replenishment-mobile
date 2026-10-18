@@ -1,13 +1,16 @@
 import { useMemo, useState } from 'react';
 import { ActivityIndicator, FlatList, Image, Modal, Pressable, RefreshControl, ScrollView, Share, StyleSheet, Text, TextInput, View } from 'react-native';
-import { Banknote, Barcode, Check, ChevronLeft, ChevronRight, CircleCheck, CreditCard, Landmark, Minus, Plus, Printer, QrCode, ReceiptText, Search, Share2, ShoppingCart, Store, Trash2, Wallet, X } from 'lucide-react-native';
+import { Banknote, Barcode, Check, ChefHat, ChevronLeft, ChevronRight, CircleCheck, ClipboardList, CreditCard, Landmark, Minus, Plus, Printer, QrCode, ReceiptText, Save, Search, Share2, ShoppingCart, Store, Trash2, UserRound, Wallet, X } from 'lucide-react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useResponsive } from '../lib/responsive';
 import { AppShellHeader } from './app-shell-header';
 import { BarcodeScanner } from './barcode-scanner';
-import { formatDate, formatStatus } from '../lib/display';
+import { LoadMoreFooter } from './load-more-footer';
+import { customerHint, type PosCustomer } from '../lib/customers';
+import { customerLabel, formatAge, formatDate, formatStatus } from '../lib/display';
+import { useDebouncedValue, useInfiniteList } from '../lib/infinite-list';
 import type { PairedPrinter, ReceiptOrder } from '../lib/receipt-printer';
-import { KeyboardAwareScrollView } from 'react-native-keyboard-controller';
+import { KeyboardAvoidingView, KeyboardAwareScrollView } from 'react-native-keyboard-controller';
 
 export type PosMethod = 'CASH' | 'QRIS' | 'TRANSFER' | 'GRAB' | 'GOBIZ';
 
@@ -28,6 +31,22 @@ export type PosProduct = {
   addons?: { id: string; name: string; basePrice: string }[];
 };
 
+/** An open bill line as stored on the server, kept on the cart line it was loaded into. */
+export type PosBillLine = {
+  orderItemId: string;
+  /** Quantity (selling unit), note and add-ons as stored; sent back unchanged so the server keeps the line as is. */
+  quantity: number;
+  note: string | null;
+  addons: { addonId: string; quantity: string }[];
+  /** Stored line total, which stays the line's price while it is unchanged. */
+  total: number;
+  variantName: string | null;
+  /** Set once the line was sent to the kitchen; it is then locked and can only be voided. */
+  sentAt: string | null;
+  /** The product left this warehouse's catalog: the line is read-only and can only be removed while unsent. */
+  missing: boolean;
+};
+
 export type PosLine = {
   key: string;
   product: PosProduct;
@@ -35,7 +54,13 @@ export type PosLine = {
   quantity: number;
   variantId: string;
   addonIds: string[];
+  /** Present on lines loaded from a saved open bill. */
+  bill?: PosBillLine;
 };
+
+/** Sent and off-catalog bill lines keep their quantity; only new or unsent catalog lines can change. */
+export const isLineEditable = (line: PosLine) => !line.bill?.sentAt && !line.bill?.missing;
+const lineSubtitle = (line: PosLine) => line.bill?.variantName ?? line.product.variants?.find((item) => item.id === line.variantId)?.name ?? (line.product.sku || '-');
 
 type CheckoutProps = {
   lines: PosLine[];
@@ -63,7 +88,47 @@ type CheckoutProps = {
   takeaway: boolean;
   onTakeawayChange: (value: boolean) => void;
   bottomInset: number;
+  /** The open bill currently loaded in the cart, if any. */
+  openBill: OpenBillInfo | null;
+  /** True when the cart differs from the last saved version of the loaded bill. */
+  openBillDirty: boolean;
+  billBusy: boolean;
+  /** Opens the name/phone sheet to save the cart as a new open bill or save changes to the loaded one. */
+  onSaveOpenBill: () => void;
+  /** Omitted when the user may not cancel orders. */
+  onCancelOpenBill?: () => void;
+  /** Registered customer attached to this sale; null means Guest (the typed name is used as is). */
+  selectedCustomer: PosCustomer | null;
+  /** Opens the customer picker; omitted when the user may not read customers. */
+  onPickCustomer?: () => void;
+  /** Detaches the selected customer, turning the sale back into a Guest sale. */
+  onRemoveCustomer: () => void;
+  /** Success message, e.g. after lines were sent to the kitchen or voided. */
+  notice: string;
+  /** Non-blocking warning, e.g. stock shortages reported when the bill was saved. */
+  warning: string;
+  /** Saves the loaded bill if needed, then sends its unsent lines to the kitchen; omitted without a loaded bill. */
+  onSendToKitchen?: () => void;
+  /** Opens the void sheet for a sent line; omitted when the user lacks order.void_item. */
+  onVoidLine?: (line: PosLine) => void;
+  /** Saves the loaded bill if needed and prints its pre-bill (tagihan); omitted without a loaded bill. */
+  onPrintPreBill?: () => void;
+  /** Opens the payment step in DP mode for the loaded bill; omitted without a loaded bill or payment.create. */
+  onStartDeposit?: () => void;
+  /** The payment step takes a deposit (DP) on the loaded bill instead of paying it off. */
+  depositMode: boolean;
+  depositAmount: string;
+  onDepositAmountChange: (value: string) => void;
+  /** Records the deposit entered in DP mode. */
+  onReceiveDeposit: () => void;
 };
+
+/** A sent line (or part of it) taken off an open bill, from GET /orders/:id itemVoids. */
+export type OpenBillVoid = { id: string; productNameSnapshot: string; variantNameSnapshot: string | null; quantity: string; amount: string; reason: string; createdAt: string };
+/** `paidTotal` is the deposit (DP) already taken on the bill; the rest is due when it is paid. */
+export type OpenBillInfo = { id: string; orderNumber: string; customerName: string; customerPhone: string; itemVoids?: OpenBillVoid[]; paidTotal?: number };
+/** `payments` are the completed payments (deposits) on the bill. */
+export type OpenBillRow = { id: string; orderNumber: string; customerName: string | null; customerPhone: string | null; grandTotal: string; createdAt: string; branch?: { name: string } | null; _count?: { items: number }; payments?: { amount: string }[] };
 
 const money = (value: string | number) => `Rp ${Math.max(0, Number(value) || 0).toLocaleString('id-ID', { maximumFractionDigits: 0 })}`;
 const methods: { id: PosMethod; label: string; icon: typeof Banknote }[] = [
@@ -116,6 +181,16 @@ type CatalogProps = {
   onOptionVariantChange: (id: string) => void;
   onOptionAddonsChange: (ids: string[]) => void;
   onAddConfigured: () => void;
+  /** Success message, e.g. after an open bill was saved. */
+  notice: string;
+  /** "Open Bill <nomor> · <pelanggan>" while a saved bill is loaded in the cart. */
+  openBillLabel: string | null;
+  /** Opens the open bill list; omitted when the user may not read orders. */
+  onOpenBills?: () => void;
+  /** Unpaid open bills in the user's scope, shown as a badge on the Open Bill button. */
+  openBillCount: number;
+  /** Non-blocking warning, e.g. stock shortages reported when an open bill was saved. */
+  warning: string;
 };
 
 function ProductRowGap() {
@@ -135,7 +210,8 @@ export function PosCatalogScreen(props: CatalogProps) {
     const byProduct = new Map<string, { quantity: number; line: PosLine }>();
     for (const line of props.cart) {
       const current = byProduct.get(line.product.id);
-      byProduct.set(line.product.id, { quantity: (current?.quantity ?? 0) + line.quantity, line: current?.line ?? line });
+      // The card's minus button works on the latest line that may still change, not on a sent bill line.
+      byProduct.set(line.product.id, { quantity: (current?.quantity ?? 0) + line.quantity, line: current && !isLineEditable(line) ? current.line : line });
     }
     return byProduct;
   }, [props.cart]);
@@ -168,6 +244,8 @@ export function PosCatalogScreen(props: CatalogProps) {
     <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.categoryChoices}>{props.categories.map((category) => <Pressable key={category} onPress={() => props.onCategoryChange(category)} style={[styles.catalogCategory, props.selectedCategory === category && styles.catalogCategoryActive]}><Text style={[styles.catalogCategoryText, props.selectedCategory === category && styles.catalogCategoryTextActive]}>{category}</Text></Pressable>)}</ScrollView>
     {props.loading ? <View style={styles.loadingRow}><ActivityIndicator color="#07885b" /><Text style={styles.loadingText}>Memuat produk...</Text></View> : null}
     {props.error ? <Text style={[styles.errorText, styles.catalogError]}>{props.error}</Text> : null}
+    {props.notice ? <Text style={[styles.noticeText, styles.catalogError]}>{props.notice}</Text> : null}
+    {props.warning ? <Text style={[styles.warningText, styles.catalogError]}>{props.warning}</Text> : null}
   </>;
 
   const grid = <FlatList
@@ -195,14 +273,16 @@ export function PosCatalogScreen(props: CatalogProps) {
       return <View style={[styles.catalogProductCard, cardWidth ? { width: cardWidth } : null]}>
         {product.imageUrl ? <Image source={{ uri: product.imageUrl }} style={styles.catalogProductImage} resizeMode="cover" /> : <View style={[styles.catalogProductImage, styles.catalogImageFallback]}><ReceiptText size={28} color="#8191a3" /></View>}
         <Text numberOfLines={isTablet ? 2 : 1} style={styles.catalogProductName}>{product.name}</Text><Text style={styles.catalogProductCategory}>{product.category?.name ?? 'Produk'}</Text><Text style={styles.catalogProductStock}>{props.displayOnly ? `Display ${product.displayQuantity ?? 0} ${product.unit?.code ?? ''}` : `Stok ${product.available} ${product.unit?.code ?? ''}`}</Text>
-        <View style={styles.catalogCardFooter}><Text numberOfLines={1} adjustsFontSizeToFit style={styles.catalogProductPrice}>{money(price)}</Text>{selected && selectedLine ? <View style={styles.catalogQuantity}><Pressable accessibilityRole="button" accessibilityLabel={`Kurangi ${product.name}`} onPress={() => props.onQuantity(selectedLine.key, -1)} style={styles.catalogQtyButton}><Minus size={15} color="#07885b" /></Pressable><Text style={styles.catalogQtyValue}>{selected}</Text><Pressable accessibilityRole="button" accessibilityLabel={`Tambah ${product.name}`} disabled={!props.canAdd(product, selectedLine.unitId)} onPress={() => props.onAdd(product)} style={[styles.catalogQtyButtonActive, !props.canAdd(product, selectedLine.unitId) && styles.disabled]}><Plus size={17} color="#fff" /></Pressable></View> : <Pressable accessibilityRole="button" accessibilityLabel={`Tambah ${product.name}`} disabled={!props.canAdd(product)} onPress={() => props.onAdd(product)} style={[styles.catalogAddButton, !props.canAdd(product) && styles.disabled]}><Plus size={19} color="#fff" /></Pressable>}</View>
+        <View style={styles.catalogCardFooter}><Text numberOfLines={1} adjustsFontSizeToFit style={styles.catalogProductPrice}>{money(price)}</Text>{selected && selectedLine ? <View style={styles.catalogQuantity}><Pressable accessibilityRole="button" accessibilityLabel={`Kurangi ${product.name}`} disabled={!isLineEditable(selectedLine)} onPress={() => props.onQuantity(selectedLine.key, -1)} style={[styles.catalogQtyButton, !isLineEditable(selectedLine) && styles.disabled]}><Minus size={15} color="#07885b" /></Pressable><Text style={styles.catalogQtyValue}>{selected}</Text><Pressable accessibilityRole="button" accessibilityLabel={`Tambah ${product.name}`} disabled={!props.canAdd(product, selectedLine.unitId)} onPress={() => props.onAdd(product)} style={[styles.catalogQtyButtonActive, !props.canAdd(product, selectedLine.unitId) && styles.disabled]}><Plus size={17} color="#fff" /></Pressable></View> : <Pressable accessibilityRole="button" accessibilityLabel={`Tambah ${product.name}`} disabled={!props.canAdd(product)} onPress={() => props.onAdd(product)} style={[styles.catalogAddButton, !props.canAdd(product) && styles.disabled]}><Plus size={19} color="#fff" /></Pressable>}</View>
       </View>;
     }}
   />;
 
-  const cartButton = <Pressable accessibilityRole="button" disabled={isTablet && !props.cart.length} onPress={props.onOpenCart} style={[styles.catalogCartBar, isTablet ? styles.tabletCartBar : { marginBottom: 4 }, isTablet && !props.cart.length && styles.disabled]}>
+  const cartButton = <Pressable accessibilityRole="button" disabled={isTablet && !props.cart.length} onPress={props.onOpenCart} style={[styles.catalogCartBar, isTablet ? styles.tabletCartBar : styles.phoneCartBar, isTablet && !props.cart.length && styles.disabled]}>
     <ShoppingCart size={19} color="#fff" /><View style={styles.cartBarText}><Text style={styles.catalogCartLabel}>Pesanan ({totalItems})</Text>{isTablet ? <Text style={styles.catalogCartTotal}>{money(props.total)}</Text> : null}</View>{!isTablet ? <Text style={styles.catalogCartTotal}>{money(props.total)}</Text> : null}<ChevronRight size={18} color="#fff" />
   </Pressable>;
+  const billButton = props.onOpenBills ? <Pressable accessibilityRole="button" accessibilityLabel={`Daftar open bill${props.openBillCount ? `, ${props.openBillCount} belum dibayar` : ''}`} onPress={props.onOpenBills} style={isTablet ? styles.cartPanelClear : styles.catalogBillButton}><ClipboardList size={isTablet ? 17 : 20} color="#07885b" />{props.openBillCount ? <View style={styles.billCountBadge}><Text style={styles.billCountText}>{props.openBillCount > 99 ? '99+' : props.openBillCount}</Text></View> : null}</Pressable> : null;
+  const billBanner = props.openBillLabel ? <Pressable accessibilityRole="button" onPress={props.onOpenCart} style={[styles.billBanner, !isTablet && styles.phoneBillBanner]}><ReceiptText size={15} color="#8a5a08" /><Text numberOfLines={1} style={styles.billBannerText}>{props.openBillLabel}</Text></Pressable> : null;
 
   if (isTablet) return <View style={[styles.screen, styles.tabletScreen]}>
     <View style={styles.tabletCatalog}>
@@ -210,13 +290,14 @@ export function PosCatalogScreen(props: CatalogProps) {
       {grid}
     </View>
     <View style={[styles.cartPanel, { paddingTop: insets.top + 14, paddingBottom: Math.max(insets.bottom, 12) }]}>
-      <View style={styles.cartPanelHeader}><Text style={styles.cartPanelTitle}>Pesanan ({totalItems})</Text><Pressable accessibilityRole="button" accessibilityLabel="Kosongkan pesanan" disabled={!props.cart.length} onPress={props.onClear} style={[styles.cartPanelClear, !props.cart.length && styles.disabled]}><Trash2 size={17} color="#8a97a8" /></Pressable></View>
+      <View style={styles.cartPanelHeader}><Text style={styles.cartPanelTitle}>Pesanan ({totalItems})</Text><View style={styles.cartPanelActions}>{billButton}<Pressable accessibilityRole="button" accessibilityLabel="Kosongkan pesanan" disabled={!props.cart.length} onPress={props.onClear} style={[styles.cartPanelClear, !props.cart.length && styles.disabled]}><Trash2 size={17} color="#8a97a8" /></Pressable></View></View>
+      {billBanner}
       {props.cart.length ? <ScrollView style={styles.content} contentContainerStyle={styles.cartPanelList}>{props.cart.map((line) => {
-        const variant = line.product.variants?.find((item) => item.id === line.variantId)?.name;
         const canIncrease = props.canAdd(line.product, line.unitId);
         return <View key={line.key} style={styles.cartPanelLine}>
-          <View style={styles.cartPanelLineText}><Text numberOfLines={2} style={styles.cartPanelName}>{line.product.name}</Text><Text numberOfLines={1} style={styles.catalogProductCategory}>{variant ?? line.product.sku}</Text><Text style={styles.cartPanelPrice}>{money(props.priceFor(line) * line.quantity)}</Text></View>
-          <View style={styles.catalogQuantity}><Pressable accessibilityRole="button" accessibilityLabel={`Kurangi ${line.product.name}`} onPress={() => props.onQuantity(line.key, -1)} style={styles.catalogQtyButton}><Minus size={15} color="#07885b" /></Pressable><Text style={styles.catalogQtyValue}>{line.quantity}</Text><Pressable accessibilityRole="button" accessibilityLabel={`Tambah ${line.product.name}`} disabled={!canIncrease} onPress={() => props.onQuantity(line.key, 1)} style={[styles.catalogQtyButtonActive, !canIncrease && styles.disabled]}><Plus size={17} color="#fff" /></Pressable></View>
+          <View style={styles.cartPanelLineText}><Text numberOfLines={2} style={styles.cartPanelName}>{line.product.name}</Text><Text numberOfLines={1} style={styles.catalogProductCategory}>{lineSubtitle(line)}</Text><LineBadges line={line} /><Text style={styles.cartPanelPrice}>{money(props.priceFor(line) * line.quantity)}</Text></View>
+          {isLineEditable(line) ? <View style={styles.catalogQuantity}><Pressable accessibilityRole="button" accessibilityLabel={`Kurangi ${line.product.name}`} onPress={() => props.onQuantity(line.key, -1)} style={styles.catalogQtyButton}><Minus size={15} color="#07885b" /></Pressable><Text style={styles.catalogQtyValue}>{line.quantity}</Text><Pressable accessibilityRole="button" accessibilityLabel={`Tambah ${line.product.name}`} disabled={!canIncrease} onPress={() => props.onQuantity(line.key, 1)} style={[styles.catalogQtyButtonActive, !canIncrease && styles.disabled]}><Plus size={17} color="#fff" /></Pressable></View>
+            : <View style={styles.catalogQuantity}><Text style={styles.catalogQtyValue}>×{line.quantity}</Text>{!line.bill?.sentAt ? <Pressable accessibilityRole="button" accessibilityLabel={`Hapus ${line.product.name}`} hitSlop={6} onPress={() => props.onQuantity(line.key, -line.quantity)} style={styles.catalogQtyButton}><Trash2 size={14} color="#8a97a8" /></Pressable> : null}</View>}
         </View>;
       })}</ScrollView> : <View style={styles.cartPanelEmpty}><ShoppingCart size={42} color="#b9c4cf" /><Text style={styles.cartPanelEmptyTitle}>Belum ada pesanan</Text><Text style={styles.cartPanelEmptyText}>Pilih produk untuk menambah ke keranjang</Text></View>}
       {cartButton}
@@ -228,7 +309,8 @@ export function PosCatalogScreen(props: CatalogProps) {
   return <View style={[styles.screen, { paddingTop: props.topInset }]}>
     <AppShellHeader />
     {grid}
-    {cartButton}
+    {billBanner}
+    <View style={styles.catalogFooter}>{billButton}{cartButton}</View>
     {optionSheet}
     <BarcodeScanner visible={scannerVisible} onClose={() => setScannerVisible(false)} onScanned={(value) => { setScannerVisible(false); props.onScan(value); }} />
   </View>;
@@ -298,6 +380,17 @@ const catalogStyles = StyleSheet.create({
   catalogAddButton: { width: 30, height: 30, alignItems: 'center', justifyContent: 'center', borderRadius: 10, backgroundColor: '#07956f' },
   catalogEmpty: { paddingVertical: 18, color: '#75869a', fontSize: 11, textAlign: 'center' },
   catalogCartBar: { minHeight: 49, flexDirection: 'row', alignItems: 'center', gap: 8, marginHorizontal: 13, marginTop: 5, paddingHorizontal: 12, borderRadius: 12, backgroundColor: '#008c63' },
+  catalogFooter: { flexDirection: 'row', gap: 8, marginHorizontal: 13, marginTop: 5, marginBottom: 4 },
+  phoneCartBar: { flex: 1, marginHorizontal: 0, marginTop: 0 },
+  catalogBillButton: { width: 49, minHeight: 49, alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: '#cfeadf', borderRadius: 12, backgroundColor: '#fff' },
+  cartPanelActions: { flexDirection: 'row', gap: 6 },
+  billBanner: { minHeight: 36, flexDirection: 'row', alignItems: 'center', gap: 7, marginBottom: 8, paddingHorizontal: 11, borderWidth: 1, borderColor: '#f6d79b', borderRadius: 10, backgroundColor: '#fff8e8' },
+  phoneBillBanner: { marginHorizontal: 13, marginTop: 5, marginBottom: 0 },
+  billBannerText: { flex: 1, color: '#8a5a08', fontSize: 11, fontWeight: '800' },
+  noticeText: { padding: 10, borderRadius: 9, color: '#087c53', backgroundColor: '#e5f8f0', fontSize: 10 },
+  warningText: { padding: 10, borderRadius: 9, overflow: 'hidden', color: '#8a5a08', backgroundColor: '#fff8e8', fontSize: 10, lineHeight: 15 },
+  billCountBadge: { position: 'absolute', top: -6, right: -6, minWidth: 18, height: 18, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 4, borderRadius: 9, backgroundColor: '#d92d2d' },
+  billCountText: { color: '#fff', fontSize: 9, fontWeight: '900' },
   // Same size and line height so the label and total share one baseline in the cart bar.
   catalogCartLabel: { color: '#fff', fontSize: 12, lineHeight: 16, fontWeight: '900' },
   catalogCartTotal: { color: '#fff', fontSize: 12, lineHeight: 16, fontWeight: '900' },
@@ -324,6 +417,11 @@ function FlowHeader({ title, count, onClose, onClear }: { title: string; count?:
 
 export function PosCheckoutFlow(props: CheckoutProps) {
   const count = props.lines.reduce((sum, line) => sum + line.quantity, 0);
+  const unsentCount = props.lines.filter((line) => !line.bill?.sentAt).length;
+  // A deposit already taken on the loaded bill: "Bayar" settles only what is left.
+  const paid = props.openBill?.paidTotal ?? 0;
+  const due = Math.max(0, props.total - paid);
+  const depositRows = paid > 0 ? <><SummaryRow label="Total" value={money(props.total)} /><SummaryRow label="Sudah dibayar (DP)" value={`- ${money(paid)}`} /><View style={styles.summaryDivider} /><SummaryRow label="Sisa tagihan" value={money(due)} strong /></> : null;
   const continueToPayment = () => {
     if (!props.customer.trim()) { props.onError('Nama pelanggan wajib diisi.'); return; }
     props.onError('');
@@ -331,7 +429,7 @@ export function PosCheckoutFlow(props: CheckoutProps) {
   };
 
   return <View style={[styles.screen, { paddingTop: props.topInset }]}>
-    <FlowHeader title={props.paymentStep ? 'Pembayaran' : 'Pesanan'} count={count} onClose={props.onClose} onClear={props.onClear} />
+    <FlowHeader title={props.paymentStep ? props.depositMode ? 'Terima DP' : 'Pembayaran' : 'Pesanan'} count={count} onClose={props.onClose} onClear={props.onClear} />
     <View style={styles.steps}>
       <Pressable accessibilityRole="button" onPress={() => props.onPaymentStepChange(false)} style={[styles.step, !props.paymentStep && styles.stepActive]}>
         <View style={[styles.stepNumber, !props.paymentStep && styles.stepNumberActive]}><Text style={[styles.stepNumberText, !props.paymentStep && styles.stepNumberTextActive]}>1</Text></View><Text style={[styles.stepLabel, !props.paymentStep && styles.stepLabelActive]}>Pesanan</Text>
@@ -345,28 +443,64 @@ export function PosCheckoutFlow(props: CheckoutProps) {
       <KeyboardAwareScrollView bottomOffset={24} style={styles.content} contentContainerStyle={styles.contentBody} keyboardShouldPersistTaps="handled">
         <View style={styles.customerCard}>
           <Text style={styles.fieldLabel}>PELANGGAN</Text>
-          <TextInput accessibilityLabel="Nama pelanggan" autoFocus style={styles.customerInput} value={props.customer} onChangeText={props.onCustomerChange} placeholder="Nama pelanggan" placeholderTextColor="#8a97a8" />
+          {props.selectedCustomer ? <View style={styles.customerSelected}>
+            <View style={styles.customerAvatar}><Text style={styles.customerAvatarText}>{props.selectedCustomer.name.trim().charAt(0).toUpperCase() || '?'}</Text></View>
+            <View style={styles.lineDetails}><Text numberOfLines={1} style={styles.customerName}>{props.selectedCustomer.name}</Text><Text numberOfLines={1} style={styles.productSku}>{customerHint(props.selectedCustomer)}</Text></View>
+            {props.onPickCustomer ? <Pressable accessibilityRole="button" accessibilityLabel="Ganti customer" onPress={props.onPickCustomer} style={styles.customerChange}><Text style={styles.customerChangeText}>Ganti</Text></Pressable> : null}
+            <Pressable accessibilityRole="button" accessibilityLabel="Lepas customer, jadikan Guest" onPress={props.onRemoveCustomer} style={styles.customerRemove}><X size={17} color="#8a97a8" /></Pressable>
+          </View> : <>
+            {props.onPickCustomer ? <Pressable accessibilityRole="button" accessibilityLabel="Pilih customer terdaftar" onPress={props.onPickCustomer} style={({ pressed }) => [styles.customerPicker, pressed && styles.disabled]}>
+              <View style={styles.customerAvatar}><UserRound size={17} color="#61738a" /></View>
+              <View style={styles.lineDetails}><Text style={styles.customerName}>Guest</Text><Text numberOfLines={1} style={styles.productSku}>Pilih customer terdaftar atau tambah baru</Text></View>
+              <Text style={styles.customerChangeText}>Pilih</Text><ChevronRight size={16} color="#07885b" />
+            </Pressable> : null}
+            <TextInput accessibilityLabel="Nama pelanggan" autoFocus style={styles.customerInput} value={props.customer} onChangeText={props.onCustomerChange} placeholder={props.onPickCustomer ? 'Nama pelanggan (Guest)' : 'Nama pelanggan'} placeholderTextColor="#8a97a8" />
+          </>}
           <View style={styles.serviceModes}>
             {[{ label: 'Dine in', value: false }, { label: 'Take away', value: true }].map((option) => <Pressable key={option.label} accessibilityRole="button" onPress={() => props.onTakeawayChange(option.value)} style={[styles.modeButton, props.takeaway === option.value && styles.modeButtonActive]}><Text style={[styles.modeText, props.takeaway === option.value && styles.modeTextActive]}>{option.label}</Text></Pressable>)}
           </View>
         </View>
         <View style={styles.lineList}>{props.lines.map((line) => {
-          const variant = line.product.variants?.find((item) => item.id === line.variantId)?.name;
+          const sent = Boolean(line.bill?.sentAt);
           return <View key={line.key} style={styles.lineItem}>
             {line.product.imageUrl ? <Image source={{ uri: line.product.imageUrl }} style={styles.productImage} /> : <View style={[styles.productImage, styles.imageFallback]}><ReceiptText size={18} color="#8191a3" /></View>}
             <View style={styles.lineDetails}>
-              <Text numberOfLines={1} style={styles.productName}>{line.product.name}</Text><Text style={styles.productSku}>{variant ?? line.product.sku}</Text>
-              <View style={styles.lineBottom}><View style={styles.quantityControl}><Pressable accessibilityRole="button" accessibilityLabel={`Kurangi ${line.product.name}`} onPress={() => props.onQuantity(line.key, -1)} style={styles.quantityButton}><Text style={styles.quantityButtonText}>−</Text></Pressable><Text style={styles.quantityValue}>{line.quantity}</Text><Pressable accessibilityRole="button" accessibilityLabel={`Tambah ${line.product.name}`} disabled={!props.canIncrease(line)} onPress={() => props.onQuantity(line.key, 1)} style={[styles.quantityButton, !props.canIncrease(line) && styles.disabled]}><Text style={styles.quantityButtonText}>+</Text></Pressable></View><Text style={styles.linePrice}>{money(props.priceFor(line) * line.quantity)}</Text></View>
+              <Text numberOfLines={1} style={styles.productName}>{line.product.name}</Text><Text style={styles.productSku}>{lineSubtitle(line)}</Text>
+              <LineBadges line={line} />
+              <View style={styles.lineBottom}>{isLineEditable(line) ? <View style={styles.quantityControl}><Pressable accessibilityRole="button" accessibilityLabel={`Kurangi ${line.product.name}`} onPress={() => props.onQuantity(line.key, -1)} style={styles.quantityButton}><Text style={styles.quantityButtonText}>−</Text></Pressable><Text style={styles.quantityValue}>{line.quantity}</Text><Pressable accessibilityRole="button" accessibilityLabel={`Tambah ${line.product.name}`} disabled={!props.canIncrease(line)} onPress={() => props.onQuantity(line.key, 1)} style={[styles.quantityButton, !props.canIncrease(line) && styles.disabled]}><Text style={styles.quantityButtonText}>+</Text></Pressable></View> : <Text style={styles.quantityValue}>× {line.quantity}</Text>}<Text style={styles.linePrice}>{money(props.priceFor(line) * line.quantity)}</Text></View>
+              {/* Sent lines are locked: more of the same is a new line, less needs a void. */}
+              {sent ? props.onVoidLine ? <Pressable accessibilityRole="button" accessibilityLabel={`Void ${line.product.name}`} disabled={props.billBusy} onPress={() => props.onVoidLine?.(line)} style={[styles.voidButton, props.billBusy && styles.disabled]}><Text style={styles.voidButtonText}>Void</Text></Pressable> : <Text style={styles.lockHint}>Terkunci · Butuh izin void</Text> : null}
             </View>
-            <Pressable accessibilityRole="button" accessibilityLabel={`Hapus ${line.product.name}`} hitSlop={6} onPress={() => props.onQuantity(line.key, -line.quantity)} style={styles.lineRemove}><Trash2 size={16} color="#8a97a8" /></Pressable>
+            {!sent ? <Pressable accessibilityRole="button" accessibilityLabel={`Hapus ${line.product.name}`} hitSlop={6} onPress={() => props.onQuantity(line.key, -line.quantity)} style={styles.lineRemove}><Trash2 size={16} color="#8a97a8" /></Pressable> : null}
           </View>;
-        })}</View>
+        })}{(props.openBill?.itemVoids ?? []).map((entry) => <View key={entry.id} style={[styles.lineItem, styles.voidLine]}>
+          <View style={styles.lineDetails}>
+            <Text numberOfLines={1} style={[styles.productName, styles.struck]}>{entry.productNameSnapshot}{entry.variantNameSnapshot ? ` (${entry.variantNameSnapshot})` : ''}</Text>
+            <Text style={styles.productSku}>Void × {Number(entry.quantity)} · {entry.reason}</Text>
+          </View>
+          <Text style={[styles.linePrice, styles.struck]}>{money(entry.amount)}</Text>
+        </View>)}</View>
         <View style={styles.summaryCard}>
           <SummaryRow label="Subtotal" value={money(props.subtotal)} />
           <View style={styles.discountRow}><Text style={styles.summaryLabel}>Diskon</Text><TextInput accessibilityLabel="Diskon rupiah" keyboardType="numeric" value={props.discount} onChangeText={props.onDiscountChange} style={styles.discountInput} /></View>
           <View style={styles.summaryDivider} /><SummaryRow label="Total" value={money(props.total)} strong />
         </View>
+        {props.openBill ? <View style={styles.billCard}>
+          <View style={styles.billCardHeader}><ReceiptText size={18} color="#8a5a08" /><View style={styles.lineDetails}><Text numberOfLines={1} style={styles.billCardTitle}>Open Bill {props.openBill.orderNumber}</Text><Text numberOfLines={1} style={styles.productSku}>{customerLabel(props.openBill.customerName, props.openBill.customerPhone)}{props.openBillDirty ? ' · ada perubahan belum disimpan' : ''}</Text></View></View>
+          {depositRows ? <View style={styles.billTotals}>{depositRows}</View> : null}
+          <View style={styles.billActions}>
+            {props.onCancelOpenBill ? <Pressable accessibilityRole="button" disabled={props.billBusy} onPress={props.onCancelOpenBill} style={[styles.billDangerButton, props.billBusy && styles.disabled]}><Text style={styles.billDangerText}>Batalkan Bill</Text></Pressable> : null}
+            <Pressable accessibilityRole="button" disabled={props.billBusy || !props.lines.length} onPress={props.onSaveOpenBill} style={[styles.billSaveButton, (props.billBusy || !props.lines.length) && styles.disabled]}>{props.billBusy ? <ActivityIndicator color="#07885b" /> : <><Save size={16} color="#07885b" /><Text style={styles.billSaveText}>Simpan Perubahan</Text></>}</Pressable>
+          </View>
+          {props.onSendToKitchen ? <Pressable accessibilityRole="button" accessibilityHint="Menyimpan perubahan lalu mengirim item yang belum terkirim ke dapur" disabled={props.billBusy || !unsentCount} onPress={props.onSendToKitchen} style={[styles.kitchenButton, (props.billBusy || !unsentCount) && styles.disabled]}><ChefHat size={16} color="#fff" /><Text style={styles.primaryText}>{unsentCount ? `Kirim ke Dapur (${unsentCount} item)` : 'Semua item sudah terkirim'}</Text></Pressable> : null}
+          {props.onPrintPreBill || props.onStartDeposit ? <View style={styles.billActions}>
+            {props.onPrintPreBill ? <Pressable accessibilityRole="button" accessibilityHint="Menyimpan perubahan lalu mencetak tagihan yang belum lunas" disabled={props.billBusy || !props.lines.length} onPress={props.onPrintPreBill} style={[styles.billSaveButton, (props.billBusy || !props.lines.length) && styles.disabled]}><Printer size={16} color="#07885b" /><Text style={styles.billSaveText}>Cetak Tagihan</Text></Pressable> : null}
+            {props.onStartDeposit ? <Pressable accessibilityRole="button" accessibilityHint="Menerima uang muka untuk bill ini" disabled={props.billBusy || !props.lines.length || due <= 0} onPress={props.onStartDeposit} style={[styles.billSaveButton, (props.billBusy || !props.lines.length || due <= 0) && styles.disabled]}><Wallet size={16} color="#07885b" /><Text style={styles.billSaveText}>Terima DP</Text></Pressable> : null}
+          </View> : null}
+        </View> :<Pressable accessibilityRole="button" disabled={props.billBusy || !props.lines.length} onPress={props.onSaveOpenBill} style={[styles.billSaveButton, (props.billBusy || !props.lines.length) && styles.disabled]}>{props.billBusy ? <ActivityIndicator color="#07885b" /> : <><Save size={16} color="#07885b" /><Text style={styles.billSaveText}>Simpan Open Bill</Text></>}</Pressable>}
         {props.error ? <Text style={styles.errorText}>{props.error}</Text> : null}
+        {props.warning ? <Text style={styles.warningText}>{props.warning}</Text> : null}
+        {props.notice ? <Text style={styles.noticeText}>{props.notice}</Text> : null}
       </KeyboardAwareScrollView>
       <View style={[styles.footer, { paddingBottom: Math.max(props.bottomInset + 8, 12) }]}>
         <Pressable accessibilityRole="button" onPress={props.onClose} style={styles.secondaryButton}><Text style={styles.secondaryText}>Kembali</Text></Pressable>
@@ -374,16 +508,24 @@ export function PosCheckoutFlow(props: CheckoutProps) {
       </View>
     </> : <>
       <ScrollView style={styles.content} contentContainerStyle={styles.contentBody} keyboardShouldPersistTaps="handled">
-        <View style={styles.summaryCard}><SummaryRow label="Total tagihan" value={money(props.total)} /><SummaryRow label="Diskon" value={`- ${money(props.discountAmount)}`} /><View style={styles.summaryDivider} /><SummaryRow label="Total pembayaran" value={money(props.total)} strong /></View>
+        <View style={styles.summaryCard}>{props.openBill ? <SummaryRow label="Open Bill" value={`${props.openBill.orderNumber} · ${props.openBill.customerName}`} /> : null}{props.selectedCustomer ? <SummaryRow label="Customer" value={customerLabel(props.selectedCustomer.name, props.selectedCustomer.phone)} /> : null}<SummaryRow label="Total tagihan" value={money(props.total)} /><SummaryRow label="Diskon" value={`- ${money(props.discountAmount)}`} /><View style={styles.summaryDivider} />{depositRows ?? <SummaryRow label="Total pembayaran" value={money(props.total)} strong />}</View>
         <Text style={styles.sectionLabel}>METODE PEMBAYARAN</Text>
         <View style={styles.methodGrid}>{methods.map(({ id, label, icon: Icon }) => <Pressable key={id} accessibilityRole="button" accessibilityState={{ selected: props.method === id }} onPress={() => props.onMethodChange(id)} style={[styles.methodButton, props.method === id && styles.methodButtonActive]}><Icon size={20} color={props.method === id ? '#fff' : '#3976a8'} /><Text numberOfLines={1} style={[styles.methodLabel, props.method === id && styles.methodLabelActive]}>{label}</Text>{props.method === id ? <Check size={13} color="#fff" style={styles.methodCheck} /> : null}</Pressable>)}</View>
-        <Text style={styles.sectionLabel}>JUMLAH DIBAYAR</Text>
-        <View style={styles.amountField}><Text style={styles.currencyPrefix}>Rp</Text><Text style={styles.amountValue}>{money(props.total).replace('Rp ', '')}</Text></View>
+        {props.depositMode ? <>
+          <Text style={styles.sectionLabel}>JUMLAH DP *</Text>
+          <View style={styles.amountField}><Text style={styles.currencyPrefix}>Rp</Text><TextInput accessibilityLabel="Jumlah DP" autoFocus keyboardType="number-pad" value={props.depositAmount} onChangeText={(value) => props.onDepositAmountChange(value.replace(/\D/g, ''))} maxLength={12} placeholder="0" placeholderTextColor="#8a97a8" style={styles.receivedInput} /></View>
+          <Text style={styles.sheetHint}>Lebih dari Rp 0 dan kurang dari sisa tagihan {money(due)}. Untuk melunasi, gunakan Bayar.</Text>
+        </> : <>
+          <Text style={styles.sectionLabel}>JUMLAH DIBAYAR</Text>
+          <View style={styles.amountField}><Text style={styles.currencyPrefix}>Rp</Text><Text style={styles.amountValue}>{money(due).replace('Rp ', '')}</Text></View>
+        </>}
         {props.error ? <Text style={styles.errorText}>{props.error}</Text> : null}
       </ScrollView>
       <View style={[styles.footer, { paddingBottom: Math.max(props.bottomInset + 8, 12) }]}>
         <Pressable accessibilityRole="button" onPress={() => props.onPaymentStepChange(false)} style={styles.secondaryButton}><Text style={styles.secondaryText}>Kembali</Text></Pressable>
-        <Pressable accessibilityRole="button" disabled={!props.lines.length || props.submitting} onPress={props.onCheckout} style={[styles.primaryButton, (!props.lines.length || props.submitting) && styles.disabled]}>{props.submitting ? <ActivityIndicator color="#fff" /> : <><CreditCard size={17} color="#fff" /><Text style={styles.primaryText}>Bayar {money(props.total)}</Text></>}</Pressable>
+        {props.depositMode
+          ? <Pressable accessibilityRole="button" disabled={!Number(props.depositAmount) || props.submitting} onPress={props.onReceiveDeposit} style={[styles.primaryButton, (!Number(props.depositAmount) || props.submitting) && styles.disabled]}>{props.submitting ? <ActivityIndicator color="#fff" /> : <><Wallet size={17} color="#fff" /><Text style={styles.primaryText}>Terima DP {money(props.depositAmount)}</Text></>}</Pressable>
+          : <Pressable accessibilityRole="button" disabled={!props.lines.length || props.submitting} onPress={props.onCheckout} style={[styles.primaryButton, (!props.lines.length || props.submitting) && styles.disabled]}>{props.submitting ? <ActivityIndicator color="#fff" /> : <><CreditCard size={17} color="#fff" /><Text style={styles.primaryText}>{paid > 0 && due <= 0 ? 'Bayar · Selesaikan transaksi' : `Bayar ${money(due)}`}</Text></>}</Pressable>}
       </View>
     </>}
   </View>;
@@ -391,6 +533,180 @@ export function PosCheckoutFlow(props: CheckoutProps) {
 
 function SummaryRow({ label, value, strong }: { label: string; value: string; strong?: boolean }) {
   return <View style={styles.summaryRow}><Text style={[styles.summaryLabel, strong && styles.summaryStrong]}>{label}</Text><Text style={[styles.summaryValue, strong && styles.summaryTotal]}>{value}</Text></View>;
+}
+
+/** "Terkirim" on lines already sent to the kitchen, "Tidak ada di katalog" on products this warehouse no longer sells. */
+function LineBadges({ line }: { line: PosLine }) {
+  const bill = line.bill;
+  if (!bill || (!bill.sentAt && !bill.missing)) return null;
+  return <View style={styles.lineBadges}>
+    {bill.sentAt ? <Text style={[styles.lineBadge, styles.sentBadge]}>Terkirim</Text> : null}
+    {bill.missing ? <Text style={[styles.lineBadge, styles.missingBadge]}>Tidak ada di katalog</Text> : null}
+  </View>;
+}
+
+type OpenBillVoidSheetProps = {
+  line: PosLine;
+  saving: boolean;
+  error: string;
+  bottomInset: number;
+  /** `quantity` is omitted for a full void. */
+  onVoid: (quantity: string | undefined, reason: string) => void;
+  onClose: () => void;
+};
+
+/** Takes a sent line (or part of it) off the bill with a required reason; mount it only while it is shown. */
+export function OpenBillVoidSheet(props: OpenBillVoidSheetProps) {
+  const [quantity, setQuantity] = useState(String(props.line.quantity));
+  const [reason, setReason] = useState('');
+  const [localError, setLocalError] = useState('');
+  const submit = () => {
+    const value = Number(quantity.replace(',', '.'));
+    if (!Number.isFinite(value) || value <= 0 || value > props.line.quantity) { setLocalError(`Jumlah void harus lebih dari 0 dan maksimal ${props.line.quantity}.`); return; }
+    if (!reason.trim()) { setLocalError('Alasan void wajib diisi.'); return; }
+    setLocalError('');
+    props.onVoid(value === props.line.quantity ? undefined : String(value), reason.trim());
+  };
+  const error = localError || props.error;
+  return <Modal visible transparent animationType="slide" onRequestClose={() => { if (!props.saving) props.onClose(); }}>
+    <KeyboardAvoidingView behavior="padding" style={catalogStyles.modalBackdrop}>
+      <View style={[catalogStyles.optionSheet, { paddingBottom: Math.max(props.bottomInset + 8, 26) }]}>
+        <View style={catalogStyles.optionHeader}><View style={styles.lineDetails}><Text style={catalogStyles.optionTitle}>Void item</Text><Text numberOfLines={2} style={catalogStyles.catalogProductCategory}>{props.line.product.name} · {lineSubtitle(props.line)} · sudah dikirim ke dapur ({props.line.quantity})</Text></View><Pressable accessibilityRole="button" accessibilityLabel="Tutup" disabled={props.saving} onPress={props.onClose} style={catalogStyles.catalogHeaderIcon}><X size={19} color="#435a72" /></Pressable></View>
+        <Text style={catalogStyles.optionSection}>JUMLAH VOID</Text>
+        <TextInput accessibilityLabel="Jumlah void" keyboardType="decimal-pad" value={quantity} onChangeText={setQuantity} maxLength={10} style={styles.sheetInput} />
+        <Text style={styles.sheetHint}>Default seluruh jumlah di bill. Isi lebih kecil untuk void sebagian.</Text>
+        <Text style={catalogStyles.optionSection}>ALASAN *</Text>
+        <TextInput accessibilityLabel="Alasan void" autoFocus value={reason} onChangeText={setReason} maxLength={300} multiline placeholder="Wajib diisi, contoh: pelanggan batal pesan" placeholderTextColor="#8a97a8" style={[styles.sheetInput, styles.sheetMultiline]} />
+        {error ? <Text style={[styles.errorText, styles.sheetError]}>{error}</Text> : null}
+        <Pressable accessibilityRole="button" disabled={props.saving || !reason.trim()} onPress={submit} style={[catalogStyles.primaryButton, styles.voidSubmit, (props.saving || !reason.trim()) && catalogStyles.disabled]}>{props.saving ? <ActivityIndicator color="#fff" /> : <Text style={catalogStyles.primaryText}>Void item</Text>}</Pressable>
+      </View>
+    </KeyboardAvoidingView>
+  </Modal>;
+}
+
+type PrinterPickerSheetProps = {
+  devices: PairedPrinter[];
+  loading: boolean;
+  /** Shown when the paired devices could not be read (e.g. Bluetooth permission denied). */
+  error?: string;
+  bottomInset: number;
+  onChoose: (printer: PairedPrinter) => void;
+  onClose: () => void;
+  onOpenBluetoothSettings: () => void;
+};
+
+/** Paired Bluetooth printers to pick from; mount it only while it is shown. */
+export function PrinterPickerSheet(props: PrinterPickerSheetProps) {
+  return <Modal transparent animationType="slide" visible onRequestClose={props.onClose}>
+    <View style={styles.modalBackdrop}><View style={[styles.printerModal, { paddingBottom: Math.max(props.bottomInset + 8, 28) }]}>
+      <View style={styles.printerModalHeader}><Text style={styles.printerModalTitle}>Pilih printer Bluetooth</Text><Pressable accessibilityRole="button" accessibilityLabel="Tutup" onPress={props.onClose}><X size={20} color="#526276" /></Pressable></View>
+      {props.loading ? <ActivityIndicator style={styles.printerLoading} color="#07885b" /> : null}
+      {!props.loading && !props.devices.length ? <Text style={styles.printerEmpty}>Tidak ada printer yang dipasangkan.</Text> : null}
+      {props.error ? <Text style={styles.errorText}>{props.error}</Text> : null}
+      {props.devices.map((device) => <Pressable key={device.address} accessibilityRole="button" onPress={() => props.onChoose(device)} style={styles.printerRow}><Printer size={18} color="#087f5b" /><View style={styles.printerDetails}><Text style={styles.printerName}>{device.name}</Text><Text style={styles.receiptMeta}>{device.address}</Text></View><ChevronRight size={17} color="#7b8ba0" /></Pressable>)}
+      <Pressable accessibilityRole="button" onPress={props.onOpenBluetoothSettings} style={styles.settingsButton}><Text style={styles.settingsText}>Pengaturan Bluetooth</Text></Pressable>
+    </View></View>
+  </Modal>;
+}
+
+type OpenBillSaveSheetProps = {
+  /** True when saving changes to a loaded bill rather than creating a new one. */
+  editing: boolean;
+  initialName: string;
+  initialPhone: string;
+  saving: boolean;
+  error: string;
+  bottomInset: number;
+  /** Registered customer on the sale: the bill takes its name, and its phone unless the customer has none. */
+  linkedCustomer?: PosCustomer | null;
+  onSave: (name: string, phone: string) => void;
+  onClose: () => void;
+};
+
+/** Asks for the customer name and phone an open bill is filed under; mount it only while it is shown. */
+export function OpenBillSaveSheet(props: OpenBillSaveSheetProps) {
+  const linked = props.linkedCustomer ?? null;
+  const [name, setName] = useState(linked?.name ?? props.initialName);
+  const [phone, setPhone] = useState(linked?.phone ?? props.initialPhone);
+  const [localError, setLocalError] = useState('');
+  const nameLocked = Boolean(linked);
+  const phoneLocked = Boolean(linked?.phone);
+  const shownName = linked ? linked.name : name;
+  const shownPhone = phoneLocked ? linked?.phone ?? '' : phone;
+  const save = () => {
+    const digits = shownPhone.replace(/\D/g, '');
+    if (!shownName.trim()) { setLocalError('Nama pelanggan wajib diisi.'); return; }
+    // The server normalises 08…/628…/+62 8… and validates the exact length; only catch obvious typos here.
+    if (!phoneLocked && (digits.length < 9 || digits.length > 15 || /[^\d\s+\-]/.test(shownPhone))) { setLocalError('No. HP wajib diisi dengan angka yang valid.'); return; }
+    setLocalError('');
+    props.onSave(shownName.trim(), shownPhone.trim());
+  };
+  const error = localError || props.error;
+  return <Modal visible transparent animationType="slide" onRequestClose={props.onClose}>
+    <KeyboardAvoidingView behavior="padding" style={catalogStyles.modalBackdrop}>
+      <View style={[catalogStyles.optionSheet, { paddingBottom: Math.max(props.bottomInset + 8, 26) }]}>
+        <View style={catalogStyles.optionHeader}><View style={styles.lineDetails}><Text style={catalogStyles.optionTitle}>{props.editing ? 'Simpan perubahan bill' : 'Simpan Open Bill'}</Text><Text style={catalogStyles.catalogProductCategory}>Bill disimpan tanpa pembayaran dan bisa dibuka lagi dari daftar Open Bill.</Text></View><Pressable accessibilityRole="button" accessibilityLabel="Tutup" onPress={props.onClose} style={catalogStyles.catalogHeaderIcon}><X size={19} color="#435a72" /></Pressable></View>
+        <Text style={catalogStyles.optionSection}>NAMA PELANGGAN</Text>
+        <TextInput accessibilityLabel="Nama pelanggan" autoFocus={!nameLocked && !props.initialName} editable={!nameLocked} value={shownName} onChangeText={setName} maxLength={100} placeholder="Nama pelanggan" placeholderTextColor="#8a97a8" style={[styles.sheetInput, nameLocked && styles.sheetInputLocked]} />
+        {nameLocked ? <Text style={styles.sheetHint}>Mengikuti data customer terdaftar.</Text> : null}
+        <Text style={catalogStyles.optionSection}>NO. HP</Text>
+        <TextInput accessibilityLabel="Nomor HP pelanggan" autoFocus={!phoneLocked && Boolean(shownName) && !phone} editable={!phoneLocked} value={shownPhone} onChangeText={setPhone} maxLength={20} keyboardType="phone-pad" placeholder="08xxxxxxxxxx" placeholderTextColor="#8a97a8" style={[styles.sheetInput, phoneLocked && styles.sheetInputLocked]} />
+        {linked && !phoneLocked ? <Text style={styles.sheetHint}>Customer ini belum punya No. HP; nomor ini hanya disimpan di bill.</Text> : null}
+        {error ? <Text style={[styles.errorText, styles.sheetError]}>{error}</Text> : null}
+        <Pressable accessibilityRole="button" disabled={props.saving} onPress={save} style={[catalogStyles.primaryButton, props.saving && catalogStyles.disabled]}>{props.saving ? <ActivityIndicator color="#fff" /> : <><Save size={16} color="#fff" /><Text style={catalogStyles.primaryText}>{props.editing ? 'Simpan Perubahan' : 'Simpan Open Bill'}</Text></>}</Pressable>
+      </View>
+    </KeyboardAvoidingView>
+  </Modal>;
+}
+
+type OpenBillListSheetProps = {
+  request: <R>(path: string) => Promise<R>;
+  bottomInset: number;
+  /** Id of the bill being loaded into the cart, shown with a spinner. */
+  loadingId: string;
+  onSelect: (bill: OpenBillRow) => void;
+  onClose: () => void;
+};
+
+/** Unpaid open bills, newest first, searchable by customer name, phone or order number; mount it only while it is shown. */
+export function OpenBillListSheet(props: OpenBillListSheetProps) {
+  const [searchInput, setSearchInput] = useState('');
+  const search = useDebouncedValue(searchInput.trim());
+  const params = new URLSearchParams({ status: 'OPEN', openBill: 'true' });
+  if (search) params.set('search', search);
+  const list = useInfiniteList<OpenBillRow>(props.request, `orders?${params.toString()}`);
+  return <Modal visible transparent animationType="slide" onRequestClose={props.onClose}>
+    <KeyboardAvoidingView behavior="padding" style={catalogStyles.modalBackdrop}>
+      <View style={[catalogStyles.optionSheet, styles.billListSheet, { paddingBottom: Math.max(props.bottomInset + 8, 20) }]}>
+        <View style={catalogStyles.optionHeader}><View style={styles.lineDetails}><Text style={catalogStyles.optionTitle}>Open Bill</Text><Text style={catalogStyles.catalogProductCategory}>{list.loading ? 'Memuat bill...' : `${list.total} bill belum dibayar`}</Text></View><Pressable accessibilityRole="button" accessibilityLabel="Tutup" onPress={props.onClose} style={catalogStyles.catalogHeaderIcon}><X size={19} color="#435a72" /></Pressable></View>
+        <View style={catalogStyles.catalogSearchBox}><Search size={17} color="#78889c" /><TextInput accessibilityLabel="Cari open bill" value={searchInput} onChangeText={setSearchInput} placeholder="Cari nama, No. HP, atau nomor..." placeholderTextColor="#8290a2" returnKeyType="search" style={catalogStyles.catalogSearchInput} /></View>
+        {list.error && !list.items.length ? <Pressable accessibilityRole="button" onPress={() => void list.reload()}><Text style={[styles.errorText, styles.sheetError]}>{list.error} Ketuk untuk coba lagi.</Text></Pressable> : null}
+        <FlatList
+          style={styles.billList}
+          contentContainerStyle={styles.billListContent}
+          keyboardShouldPersistTaps="handled"
+          data={list.items}
+          keyExtractor={(item) => item.id}
+          onEndReached={list.loadMore}
+          onEndReachedThreshold={0.4}
+          ListEmptyComponent={list.loading ? <ActivityIndicator style={styles.printerLoading} color="#07885b" /> : !list.error ? <Text style={styles.printerEmpty}>{search ? 'Tidak ada open bill yang cocok.' : 'Belum ada open bill.'}</Text> : null}
+          ListFooterComponent={<LoadMoreFooter loadingMore={list.loadingMore} hasMore={list.hasMore} count={list.items.length} error={list.error} onRetry={list.loadMore} />}
+          renderItem={({ item }) => {
+            const paid = (item.payments ?? []).reduce((sum, payment) => sum + Number(payment.amount), 0);
+            return <Pressable accessibilityRole="button" accessibilityHint="Buka bill ini di keranjang" disabled={Boolean(props.loadingId)} onPress={() => props.onSelect(item)} style={({ pressed }) => [styles.billRow, pressed && styles.billRowPressed]}>
+            <View style={styles.lineDetails}>
+              <Text numberOfLines={1} style={styles.productName}>{item.customerName ?? 'Tanpa nama'}{item.customerPhone ? ` · ${item.customerPhone}` : ''}</Text>
+              <Text numberOfLines={1} style={styles.productSku}>{item.orderNumber} · {item._count?.items ?? 0} item · {formatAge(item.createdAt)} lalu{item.branch?.name ? ` · ${item.branch.name}` : ''}</Text>
+              {paid > 0 ? <Text numberOfLines={1} style={styles.billRowDeposit}>DP {money(paid)} · sisa {money(Number(item.grandTotal) - paid)}</Text> : null}
+            </View>
+            {props.loadingId === item.id ? <ActivityIndicator color="#07885b" /> : <Text style={styles.billRowTotal}>{money(item.grandTotal)}</Text>}
+            <ChevronRight size={16} color="#8a97a8" />
+          </Pressable>;
+          }}
+        />
+      </View>
+    </KeyboardAvoidingView>
+  </Modal>;
 }
 
 type ReceiptScreenProps = {
@@ -429,7 +745,7 @@ export function PosReceiptScreen(props: ReceiptScreenProps) {
       <View style={styles.receiptCard}>
         <Text style={styles.receiptStore}>{props.order.branch?.name ?? 'Toko'}</Text>
         <Text style={styles.receiptMeta}>{props.order.orderNumber}  ·  {completedAt ? formatDate(completedAt) : ''}</Text>
-        {props.order.customerName ? <Text style={styles.receiptMeta}>Pelanggan: {props.order.customerName}</Text> : null}
+        {props.order.customerName || props.order.customerPhone ? <Text style={styles.receiptMeta}>Pelanggan: {customerLabel(props.order.customerName, props.order.customerPhone)}</Text> : null}
         <Text style={styles.receiptMeta}>Kasir: {props.cashierName}</Text>
         <View style={styles.receiptDivider} />
         {(props.order.items ?? []).map((item, index) => <View key={`${item.productNameSnapshot}-${index}`} style={styles.receiptLine}>
@@ -449,15 +765,7 @@ export function PosReceiptScreen(props: ReceiptScreenProps) {
         <Pressable accessibilityRole="button" onPress={props.onPrint} disabled={props.printing} style={styles.secondaryButton}>{props.printing ? <ActivityIndicator color="#087f5b" /> : <><Printer size={17} color="#087f5b" /><Text style={styles.secondaryText}>Cetak ulang</Text></>}</Pressable>
         <Pressable accessibilityRole="button" onPress={() => void share()} style={styles.primaryButton}><Share2 size={17} color="#fff" /><Text style={styles.primaryText}>Bagikan</Text></Pressable>
       </View> : null}
-      {props.printerPickerVisible ? <Modal transparent animationType="slide" visible onRequestClose={props.onClosePrinterPicker}>
-        <View style={styles.modalBackdrop}><View style={[styles.printerModal, { paddingBottom: Math.max(props.bottomInset + 8, 28) }]}>
-          <View style={styles.printerModalHeader}><Text style={styles.printerModalTitle}>Pilih printer Bluetooth</Text><Pressable accessibilityRole="button" onPress={props.onClosePrinterPicker}><X size={20} color="#526276" /></Pressable></View>
-          {props.printerLoading ? <ActivityIndicator style={styles.printerLoading} color="#07885b" /> : null}
-          {!props.printerLoading && !props.printerDevices.length ? <Text style={styles.printerEmpty}>Tidak ada printer yang dipasangkan.</Text> : null}
-          {props.printerDevices.map((device) => <Pressable key={device.address} accessibilityRole="button" onPress={() => props.onChoosePrinter(device)} style={styles.printerRow}><Printer size={18} color="#087f5b" /><View style={styles.printerDetails}><Text style={styles.printerName}>{device.name}</Text><Text style={styles.receiptMeta}>{device.address}</Text></View><ChevronRight size={17} color="#7b8ba0" /></Pressable>)}
-          <Pressable accessibilityRole="button" onPress={props.onOpenBluetoothSettings} style={styles.settingsButton}><Text style={styles.settingsText}>Pengaturan Bluetooth</Text></Pressable>
-        </View></View>
-      </Modal> : null}
+      {props.printerPickerVisible ? <PrinterPickerSheet devices={props.printerDevices} loading={props.printerLoading} bottomInset={props.bottomInset} onChoose={props.onChoosePrinter} onClose={props.onClosePrinterPicker} onOpenBluetoothSettings={props.onOpenBluetoothSettings} /> : null}
     </ScrollView>
     {isTablet ? <View style={styles.receiptSideActions}>
       <Pressable accessibilityRole="button" onPress={props.onPrint} disabled={props.printing} style={[styles.secondaryButton, styles.sideActionButton]}>{props.printing ? <ActivityIndicator color="#087f5b" /> : <><Printer size={18} color="#087f5b" /><Text style={styles.secondaryText}>Cetak ulang</Text></>}</Pressable>
@@ -493,6 +801,28 @@ const styles = StyleSheet.create({
   receiptCard: { padding: 14, borderRadius: 13, backgroundColor: '#fff' }, receiptStore: { color: '#172338', fontSize: 12, fontWeight: '900', textAlign: 'center' }, receiptMeta: { marginTop: 4, color: '#74859b', fontSize: 9, lineHeight: 14 }, receiptDivider: { height: 1, marginVertical: 9, borderTopWidth: 1, borderColor: '#dce5eb', borderStyle: 'dashed' }, receiptLine: { paddingVertical: 6 }, receiptRow: { flexDirection: 'row', alignItems: 'flex-start', justifyContent: 'space-between', gap: 9 }, receiptItemName: { flex: 1, color: '#24344a', fontSize: 10, fontWeight: '800' }, receiptItemAmount: { color: '#172338', fontSize: 10, fontWeight: '800' },
   thanks: { alignItems: 'center', marginTop: 12 }, thanksTitle: { color: '#456178', fontSize: 10, fontWeight: '800' }, orderCode: { marginTop: 12, color: '#3c4a5e', fontSize: 10, fontWeight: '900', letterSpacing: 1.4 }, receiptActions: { flexDirection: 'row', gap: 8, marginBottom: 2 }, newOrderButton: { minHeight: 44, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 7, marginHorizontal: 13, marginBottom: 8, borderRadius: 11, backgroundColor: '#e1f7ee' }, newOrderText: { color: '#087c53', fontSize: 10, fontWeight: '900' },
   lineRemove: { alignSelf: 'flex-start', padding: 4 },
+  customerPicker: { minHeight: 52, flexDirection: 'row', alignItems: 'center', gap: 9, marginTop: 7, marginBottom: 4, paddingHorizontal: 10, borderWidth: 1, borderColor: '#cfeadf', borderRadius: 11, backgroundColor: '#f6fbf9' },
+  customerSelected: { minHeight: 56, flexDirection: 'row', alignItems: 'center', gap: 9, marginTop: 7, marginBottom: 2, paddingHorizontal: 10, borderWidth: 1, borderColor: '#9fdcc5', borderRadius: 11, backgroundColor: '#effbf5' },
+  customerAvatar: { width: 34, height: 34, alignItems: 'center', justifyContent: 'center', borderRadius: 17, backgroundColor: '#ddf7ed' }, customerAvatarText: { color: '#07885b', fontSize: 13, fontWeight: '900' },
+  customerName: { color: '#172338', fontSize: 12, fontWeight: '900' },
+  customerChange: { minHeight: 44, justifyContent: 'center', paddingHorizontal: 12, borderWidth: 1, borderColor: '#9bd9bf', borderRadius: 10, backgroundColor: '#fff' }, customerChangeText: { color: '#07885b', fontSize: 11, fontWeight: '900' },
+  customerRemove: { width: 44, height: 44, alignItems: 'center', justifyContent: 'center', borderRadius: 10, backgroundColor: '#fff' },
+  sheetInputLocked: { backgroundColor: '#f1f5f3', color: '#4b5e57' }, sheetHint: { marginTop: 5, color: '#71839a', fontSize: 10 },
+  billCard: { gap: 10, padding: 12, borderWidth: 1, borderColor: '#f6d79b', borderRadius: 13, backgroundColor: '#fff8e8' }, billCardHeader: { flexDirection: 'row', alignItems: 'center', gap: 9 }, billCardTitle: { color: '#6f4a08', fontSize: 11, fontWeight: '900' },
+  billActions: { flexDirection: 'row', gap: 8 }, billSaveButton: { flex: 1, minHeight: 42, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 7, paddingHorizontal: 12, borderWidth: 1, borderColor: '#9bd9bf', borderRadius: 11, backgroundColor: '#fff' }, billSaveText: { color: '#07885b', fontSize: 11, fontWeight: '900' },
+  billDangerButton: { minHeight: 42, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 12, borderWidth: 1, borderColor: '#f3c5c1', borderRadius: 11, backgroundColor: '#fff' }, billDangerText: { color: '#c0392b', fontSize: 11, fontWeight: '900' },
+  sheetInput: { height: 44, paddingHorizontal: 11, borderWidth: 1, borderColor: '#e3eaf0', borderRadius: 10, color: '#172338', fontSize: 12, fontWeight: '700' }, sheetError: { marginTop: 10 },
+  kitchenButton: { minHeight: 42, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 7, paddingHorizontal: 12, borderRadius: 11, backgroundColor: '#b86e05' },
+  lineBadges: { flexDirection: 'row', flexWrap: 'wrap', gap: 5, marginTop: 4 }, lineBadge: { overflow: 'hidden', paddingHorizontal: 6, paddingVertical: 2, borderRadius: 6, fontSize: 9, fontWeight: '900' }, sentBadge: { color: '#087c53', backgroundColor: '#dff7ee' }, missingBadge: { color: '#8a5a08', backgroundColor: '#fff1d6' },
+  voidButton: { alignSelf: 'flex-start', minHeight: 32, justifyContent: 'center', marginTop: 7, paddingHorizontal: 12, borderWidth: 1, borderColor: '#f3c5c1', borderRadius: 9, backgroundColor: '#fff' }, voidButtonText: { color: '#c0392b', fontSize: 10, fontWeight: '900' },
+  lockHint: { marginTop: 6, color: '#8a97a8', fontSize: 9, fontWeight: '700' },
+  voidLine: { minHeight: 52, backgroundColor: '#fdf6f5' }, struck: { color: '#9aa6b4', textDecorationLine: 'line-through' },
+  noticeText: { padding: 10, borderRadius: 9, overflow: 'hidden', color: '#087c53', backgroundColor: '#e5f8f0', fontSize: 10, lineHeight: 15 },
+  warningText: { padding: 10, borderRadius: 9, overflow: 'hidden', color: '#8a5a08', backgroundColor: '#fff8e8', fontSize: 10, lineHeight: 15 },
+  sheetMultiline: { height: 76, paddingTop: 10, textAlignVertical: 'top' }, voidSubmit: { backgroundColor: '#c0392b' },
+  billListSheet: { height: '80%' }, billList: { flex: 1, marginTop: 8 }, billListContent: { paddingBottom: 8 },
+  billRow: { minHeight: 58, flexDirection: 'row', alignItems: 'center', gap: 9, borderBottomWidth: 1, borderBottomColor: '#edf1f4' }, billRowPressed: { backgroundColor: '#f6f9f8' }, billRowTotal: { color: '#172338', fontSize: 11, fontWeight: '900' }, billRowDeposit: { marginTop: 3, color: '#8a5a08', fontSize: 9, fontWeight: '800' },
+  billTotals: { paddingHorizontal: 10, paddingVertical: 4, borderRadius: 10, backgroundColor: '#fff' },
   receiptSplit: { flexDirection: 'row' }, receiptContentTablet: { padding: 18, gap: 12 },
   receiptSideActions: { width: 230, gap: 12, paddingTop: 18, paddingRight: 18 }, sideActionButton: { flex: 0, minHeight: 56, marginHorizontal: 0, marginBottom: 0, justifyContent: 'flex-start', paddingHorizontal: 16 },
   modalBackdrop: { flex: 1, justifyContent: 'flex-end', backgroundColor: '#0a172966' }, printerModal: { paddingHorizontal: 17, paddingTop: 17, paddingBottom: 28, borderTopLeftRadius: 20, borderTopRightRadius: 20, backgroundColor: '#fff' }, printerModalHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }, printerModalTitle: { color: '#172338', fontSize: 15, fontWeight: '900' }, printerLoading: { padding: 18 }, printerEmpty: { paddingVertical: 16, color: '#75869a', fontSize: 11, textAlign: 'center' }, printerRow: { minHeight: 55, flexDirection: 'row', alignItems: 'center', gap: 10, borderBottomWidth: 1, borderBottomColor: '#edf1f4' }, printerDetails: { flex: 1 }, printerName: { color: '#27374d', fontSize: 11, fontWeight: '800' }, settingsButton: { alignItems: 'center', marginTop: 12, padding: 11, borderRadius: 10, backgroundColor: '#eef7f3' }, settingsText: { color: '#087c53', fontSize: 10, fontWeight: '800' },

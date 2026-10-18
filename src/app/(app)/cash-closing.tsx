@@ -57,12 +57,14 @@ type Preview = {
   netTotal: string;
   transactionCount: number;
   periodStart: string | null;
+  /** Unpaid open bills of this branch; they are not part of the closing and only trigger a warning. */
+  openBills?: { count: number; total: string };
 };
 type Evidence = ImagePicker.ImagePickerAsset;
 const money = (value?: string | number | null) => `Rp ${Number(value ?? 0).toLocaleString('id-ID', { maximumFractionDigits: 0 })}`;
 const escapeHtml = (value: string) => value.replace(/[&<>"']/g, (character) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[character]!);
-const paymentRows: [string, keyof Preview][] = [['Cash', 'cashSales'], ['QRIS', 'qrisSales'], ['Transfer', 'transferSales'], ['Grab', 'grabSales'], ['GoBiz', 'gobizSales'], ['Kartu', 'cardSales'], ['Lainnya', 'otherSales']];
-const refundRows: [string, keyof Preview][] = [['Cash', 'cashRefund'], ['QRIS', 'qrisRefund'], ['Transfer', 'transferRefund'], ['Grab', 'grabRefund'], ['GoBiz', 'gobizRefund'], ['Kartu', 'cardRefund'], ['Lainnya', 'otherRefund']];
+const paymentRows: [string, Exclude<keyof Preview, 'openBills'>][] = [['Cash', 'cashSales'], ['QRIS', 'qrisSales'], ['Transfer', 'transferSales'], ['Grab', 'grabSales'], ['GoBiz', 'gobizSales'], ['Kartu', 'cardSales'], ['Lainnya', 'otherSales']];
+const refundRows: [string, Exclude<keyof Preview, 'openBills'>][] = [['Cash', 'cashRefund'], ['QRIS', 'qrisRefund'], ['Transfer', 'transferRefund'], ['Grab', 'grabRefund'], ['GoBiz', 'gobizRefund'], ['Kartu', 'cardRefund'], ['Lainnya', 'otherRefund']];
 
 export default function CashClosingScreen() {
   const { user, authorizedRequest } = useAuth();
@@ -236,6 +238,9 @@ export default function CashClosingScreen() {
     finally { setPrinting(false); }
   }
 
+  // Open bills are not settled yet, so they never block the closing; the cashier is only reminded of them.
+  const openBillWarning = preview?.openBills?.count ? <View style={styles.openBillWarning}><Text style={styles.openBillWarningText}>Masih ada {preview.openBills.count} open bill belum dibayar ({money(preview.openBills.total)}).</Text></View> : null;
+
   if (formVisible) return <View style={styles.screen}>
     <View style={styles.formHeader}><Pressable accessibilityRole="button" accessibilityLabel="Kembali ke daftar closing" onPress={step ? () => setStep((value) => value - 1) : resetForm} style={styles.backButton}><ChevronLeft size={21} color="#1e3444" /></Pressable><Text style={styles.formTitle}>Tutup kas baru</Text></View>
     <View style={styles.steps}>{['Input data', 'Rekonsiliasi', 'Konfirmasi'].map((label, index) => <View key={label} style={styles.step}><View style={[styles.stepNumber, index <= step && styles.stepNumberActive]}>{index < step ? <Check size={13} color="#fff" /> : <Text style={[styles.stepNumberText, index === step && styles.stepNumberTextActive]}>{index + 1}</Text>}</View><Text style={[styles.stepLabel, index === step && styles.stepLabelActive]}>{label}</Text></View>)}</View>
@@ -245,6 +250,7 @@ export default function CashClosingScreen() {
         <Text style={styles.label}>Cabang</Text>{branches.length ? <View style={styles.chips}>{branches.map((branch) => <Pressable key={branch.id} onPress={() => { setPreviewLoading(true); setBranchId(branch.id); }} style={[styles.chip, branchId === branch.id && styles.chipActive]}><Text style={[styles.chipText, branchId === branch.id && styles.chipTextActive]}>{branch.name}</Text></Pressable>)}</View> : <Text style={styles.branchName}>{user?.branchId ? 'Cabang saya' : 'Pilih cabang dari daftar'}</Text>}
         <View style={styles.infoRow}><CalendarDays size={17} color="#6380a4" /><Text style={styles.infoLabel}>Periode mulai</Text><Text style={styles.infoValue}>{preview?.periodStart ? formatDate(preview.periodStart) : 'Belum ada data'}</Text></View>
         <View style={styles.summaryHighlight}><Text style={styles.label}>Kas fisik diharapkan</Text><Text style={styles.expected}>{money(preview?.expectedCash)}</Text></View>
+        {openBillWarning}
         <Text style={styles.label}>Kas fisik aktual *</Text><View style={styles.amountInput}><Text style={styles.currency}>Rp</Text><TextInput accessibilityLabel="Kas fisik aktual" value={actualCash} onChangeText={(value) => setActualCash(value.replace(',', '.'))} keyboardType="decimal-pad" placeholder="0" placeholderTextColor="#8290a2" style={styles.amountTextInput} /></View>
         <Text style={styles.label}>Catatan (opsional)</Text><TextInput accessibilityLabel="Catatan penutupan" value={note} onChangeText={setNote} placeholder="Tambahkan catatan..." placeholderTextColor="#8290a2" multiline maxLength={200} style={[styles.textInput, styles.noteInput]} />
         {previewLoading ? <ActivityIndicator style={styles.loader} color="#07885b" /> : null}
@@ -260,6 +266,7 @@ export default function CashClosingScreen() {
     </ScrollView> : null}
     {step === 2 ? <ScrollView style={styles.formContent} contentContainerStyle={styles.formBody}>
       <View style={styles.card}><View style={styles.cardHeading}><ShieldCheck size={18} color="#087f5b" /><Text style={styles.cardTitle}>Ringkasan closing</Text></View><DetailRow label="Nomor closing" value="Dibuat setelah disimpan" /><DetailRow label="Cabang" value={branches.find((branch) => branch.id === branchId)?.name ?? 'Cabang saya'} /><DetailRow label="Periode mulai" value={preview?.periodStart ? formatDate(preview.periodStart) : '—'} /><DetailRow label="Dibuat pada" value={formatDate(new Date())} /><DetailRow label="Kas seharusnya" value={money(preview?.expectedCash)} /><DetailRow label="Kas fisik aktual" value={money(actualCash)} /><View style={[styles.differenceRow, difference === 0 ? styles.differenceMatch : styles.differenceWarn]}><Text style={styles.differenceLabel}>Selisih kas</Text><Text style={styles.differenceValue}>{money(difference)}</Text></View></View>
+      {openBillWarning}
       <View style={styles.card}><View style={styles.cardHeading}><Paperclip size={18} color="#6e5db5" /><Text style={styles.cardTitle}>Foto bukti (opsional)</Text></View><Text style={styles.muted}>Maksimal 5 foto, 5 MB per file.</Text><View style={styles.evidenceGrid}>{evidence.map((asset, index) => <View key={`${asset.assetId ?? asset.uri}-${index}`} style={styles.evidenceWrap}><PreviewImage uri={asset.uri} images={evidence.map((entry) => entry.uri)} index={index} style={styles.evidenceImage} /><Pressable accessibilityRole="button" accessibilityLabel={`Hapus foto ${index + 1}`} onPress={() => setEvidence((current) => current.filter((_, itemIndex) => itemIndex !== index))} style={styles.removeEvidence}><X size={13} color="#fff" /></Pressable></View>)}{evidence.length < 5 ? <View style={styles.evidenceActions}><Pressable accessibilityRole="button" onPress={() => void selectEvidence(true)} style={styles.evidenceButton}><Camera size={17} color="#087f5b" /><Text style={styles.evidenceButtonText}>Kamera</Text></Pressable><Pressable accessibilityRole="button" onPress={() => void selectEvidence(false)} style={styles.evidenceButton}><ImagePlus size={17} color="#087f5b" /><Text style={styles.evidenceButtonText}>Galeri</Text></Pressable></View> : null}</View></View>
     </ScrollView> : null}
     <View style={[styles.footer, { paddingBottom: bottomGap }]}>{step > 0 ? <Pressable accessibilityRole="button" onPress={() => setStep((value) => value - 1)} style={styles.secondaryButton}><Text style={styles.secondaryText}>Kembali</Text></Pressable> : <Pressable accessibilityRole="button" onPress={resetForm} style={styles.secondaryButton}><Text style={styles.secondaryText}>Batal</Text></Pressable>}{step < 2 ? <Pressable accessibilityRole="button" disabled={step === 0 && (!preview?.transactionCount || !actualCash.trim() || previewLoading)} onPress={() => { setError(''); setStep((value) => value + 1); }} style={[styles.primaryButton, step === 0 && (!preview?.transactionCount || !actualCash.trim() || previewLoading) && styles.disabled]}><Text style={styles.primaryText}>{step === 0 ? 'Lanjut ke rekonsiliasi' : 'Lanjut ke konfirmasi'}</Text><ChevronRight size={17} color="#fff" /></Pressable> : <Pressable accessibilityRole="button" disabled={saving} onPress={() => void submitClosing()} style={[styles.primaryButton, saving && styles.disabled]}>{saving ? <ActivityIndicator color="#fff" /> : <Text style={styles.primaryText}>Simpan closing</Text>}</Pressable>}</View>
@@ -353,6 +360,7 @@ function DetailRow({ label, value }: { label: string; value: string }) {
 function PlusIcon() { return <Banknote size={17} color="#fff" />; }
 
 const styles = StyleSheet.create({
+  openBillWarning: { marginTop: 9, padding: 11, borderWidth: 1, borderColor: '#f6d79b', borderRadius: 9, backgroundColor: '#fff8e8' }, openBillWarningText: { color: '#8a5a08', fontSize: 12, lineHeight: 17 },
   screen: { flex: 1, backgroundColor: '#f5f8f7' },
   detailActions: { flexDirection: 'row', alignItems: 'center', gap: 7 },
   printAction: { width: 34, height: 34, alignItems: 'center', justifyContent: 'center', borderRadius: 9, backgroundColor: '#e6f7ef' },
