@@ -72,6 +72,7 @@ export function customerErrorMessage(error: unknown, fallback = 'Data customer g
     if (error.code === 'PERMISSION_DENIED') return 'Akun ini belum memiliki izin memilih customer. Lanjutkan sebagai Guest.';
     if (error.code === 'BRANCH_REQUIRED') return 'Pilih cabang terlebih dahulu.';
     if (error.code === 'BRANCH_SCOPE_VIOLATION') return 'Anda tidak memiliki akses ke customer cabang lain.';
+    if (error.code === 'BRANCH_NOT_ASSIGNED') return 'Akun ini belum punya cabang. Minta admin mengatur cabang akun ini.';
     if (error.status === 403) return 'Akun ini belum memiliki izin untuk tindakan ini.';
   }
   return error instanceof Error ? error.message : fallback;

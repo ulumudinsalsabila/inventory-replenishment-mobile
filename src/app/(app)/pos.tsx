@@ -344,7 +344,8 @@ export default function PosScreen() {
   }
 
   async function checkout() {
-    if (!customer.trim()) return setError('Nama pelanggan wajib diisi.');
+    // A walk-in sale needs no name and is recorded as "Umum"; a loaded open bill already carries its customer.
+    if (!customer.trim() && openBill) return setError('Nama pelanggan wajib diisi.');
     if (total <= 0) return setError('Total pembayaran harus lebih dari Rp 0.');
     if (!branchId || !warehouseId) return setError('Pilih cabang dan gudang terlebih dahulu.');
     setSubmitting(true); setError(''); setNotice(''); setWarning('');
@@ -359,7 +360,7 @@ export default function PosScreen() {
         setPendingOrder(order);
       }
       if (!order) {
-        order = await authorizedRequest<Order>('orders', { method: 'POST', body: JSON.stringify({ branchId, warehouseId, ...(selectedCustomer ? { customerId: selectedCustomer.id } : {}), customerName: customer.trim(), serviceType, discountAmount: String(discountAmount), items: orderItems() }) });
+        order = await authorizedRequest<Order>('orders', { method: 'POST', body: JSON.stringify({ branchId, warehouseId, ...(selectedCustomer ? { customerId: selectedCustomer.id } : {}), customerName: customer.trim() || 'Umum', serviceType, discountAmount: String(discountAmount), items: orderItems() }) });
         setPendingOrder(order);
       }
       // A deposit (DP) already taken on an open bill is kept; only the remaining balance is paid now.
