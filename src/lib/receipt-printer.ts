@@ -2,6 +2,7 @@ import * as SecureStore from 'expo-secure-store';
 import { PermissionsAndroid, Platform } from 'react-native';
 import RNBluetoothClassic from 'react-native-bluetooth-classic';
 import { writeBlePrinter } from './ble-printer';
+import { cancelPrinterRelease, schedulePrinterRelease } from './printer-release';
 import { customerLabel, formatDate, formatServiceType, formatStatus, type ServiceType } from './display';
 
 /**
@@ -323,6 +324,7 @@ async function printThermalText(text: string, printer: PairedPrinter) {
   try { paired = await RNBluetoothClassic.getBondedDevices(); } catch { throw new Error('Bluetooth tidak dapat diakses. Pastikan Bluetooth menyala lalu coba lagi.'); }
   if (!paired.some((candidate) => candidate.address === printer.address)) throw new Error('Printer pilihan tidak lagi dipasangkan. Pasangkan kembali dari pengaturan Bluetooth.');
 
+  cancelPrinterRelease(printer.address);
   try {
     try { await writeClassic(printer, payload); }
     catch {
@@ -330,10 +332,13 @@ async function printThermalText(text: string, printer: PairedPrinter) {
       await disconnectClassic(printer.address);
       await writeClassic(printer, payload);
     }
-  } finally {
-    // Cheap ESC/POS printers accept one connection at a time; releasing it lets other cashier phones print too.
+  } catch (error) {
     await disconnectClassic(printer.address);
+    throw error;
   }
+  // Cheap ESC/POS printers accept one connection at a time; releasing it lets other cashier phones print too,
+  // but only once the printer has received the whole receipt.
+  schedulePrinterRelease(printer.address, payload.length, disconnectClassic);
 }
 
 async function writeClassic(printer: PairedPrinter, payload: string) {

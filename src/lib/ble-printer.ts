@@ -1,5 +1,6 @@
 import { PermissionsAndroid, Platform } from 'react-native';
 import BleManager, { type Characteristic, type Peripheral } from 'react-native-ble-manager';
+import { cancelPrinterRelease, schedulePrinterRelease } from './printer-release';
 
 /** A BLE printer found by scanning; `id` is what BleManager connects to (the MAC address on Android). */
 export type BlePrinter = { id: string; name: string; rssi: number };
@@ -113,6 +114,7 @@ async function connectedTarget(printerId: string, printerName: string) {
 /** Sends raw ESC/POS bytes to a BLE printer in MTU-sized packets. */
 export async function writeBlePrinter(printerId: string, printerName: string, bytes: number[]) {
   await ensureBleAccess();
+  cancelPrinterRelease(printerId);
   try {
     try { await writeBle(printerId, printerName, bytes); }
     catch {
@@ -120,10 +122,12 @@ export async function writeBlePrinter(printerId: string, printerName: string, by
       await disconnectBle(printerId);
       await writeBle(printerId, printerName, bytes);
     }
-  } finally {
-    // Release the printer after each job so other cashier phones can connect to it.
+  } catch (error) {
     await disconnectBle(printerId);
+    throw error;
   }
+  // Release the printer after each job so other cashier phones can connect to it, once it has received the whole receipt.
+  schedulePrinterRelease(printerId, bytes.length, disconnectBle);
 }
 
 async function writeBle(printerId: string, printerName: string, bytes: number[]) {
