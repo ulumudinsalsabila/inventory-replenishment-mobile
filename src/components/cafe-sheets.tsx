@@ -1,8 +1,9 @@
 import { useState } from 'react';
 import { ActivityIndicator, Modal, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
-import { Check, Minus, Plus, Printer, Split, X } from 'lucide-react-native';
+import { Check, Minus, Plus, Printer, Split, UserRound, X } from 'lucide-react-native';
 import { KeyboardAvoidingView } from 'react-native-keyboard-controller';
-import { isPlausiblePhone } from '../lib/customers';
+import { isPlausiblePhone, type PosCustomer } from '../lib/customers';
+import { CustomerPickerSheet } from './customer-picker';
 import { stationLabel, type PairedPrinter, type Station } from '../lib/receipt-printer';
 
 const money = (value: number) => `Rp ${Math.max(0, value).toLocaleString('id-ID', { maximumFractionDigits: 0 })}`;
@@ -22,7 +23,7 @@ export type SplitSourceLine = {
 };
 
 /** One part of POST /orders/:id/split; without customer fields the new bill keeps the original bill's customer. */
-export type SplitPart = { items: { orderItemId: string; quantity: string }[]; customerName?: string; customerPhone?: string };
+export type SplitPart = { items: { orderItemId: string; quantity: string }[]; customerId?: string; customerName?: string; customerPhone?: string };
 
 type SplitBillSheetProps = {
   orderNumber: string;
@@ -32,6 +33,10 @@ type SplitBillSheetProps = {
   saving: boolean;
   error: string;
   bottomInset: number;
+  /** Registered-customer lookup for the new bill (customer.read); without it only a typed name and phone are offered. */
+  customerPicker?: { request: <R>(path: string, init?: RequestInit) => Promise<R>; branchId: string; canCreate: boolean };
+  /** Set when the server rejected the picked customer (deactivated or deleted meanwhile), so the pick is dropped. */
+  unavailableCustomerId?: string;
   onSubmit: (part: SplitPart) => void;
   onClose: () => void;
 };
@@ -45,7 +50,17 @@ export function SplitBillSheet(props: SplitBillSheetProps) {
   const [ownCustomer, setOwnCustomer] = useState(false);
   const [name, setName] = useState('');
   const [phone, setPhone] = useState('');
+  const [picked, setPicked] = useState<PosCustomer | null>(null);
+  const [pickerVisible, setPickerVisible] = useState(false);
+  const [clearedId, setClearedId] = useState<string>();
   const [localError, setLocalError] = useState('');
+  // The server rejected the pick: drop it, keeping its name as a typed name the cashier can reuse.
+  if (props.unavailableCustomerId && props.unavailableCustomerId !== clearedId) {
+    setClearedId(props.unavailableCustomerId);
+    if (picked?.id === props.unavailableCustomerId) { setName((current) => current.trim() || picked.name); setPicked(null); }
+  }
+  // A retry clears the error, so the same customer failing again is handled again.
+  if (!props.unavailableCustomerId && clearedId) setClearedId(undefined);
   const share = (line: SplitSourceLine, quantity: number) => line.quantity > 0 ? Math.round((line.total * quantity / line.quantity) * 100) / 100 : 0;
   const billTotal = props.lines.reduce((sum, line) => sum + line.total, 0);
   const newTotal = props.lines.reduce((sum, line) => sum + share(line, moved[line.id] ?? 0), 0);
@@ -61,12 +76,14 @@ export function SplitBillSheet(props: SplitBillSheetProps) {
   const submit = () => {
     if (!movedCount) { setLocalError('Pilih minimal satu item untuk dipindah ke bill baru.'); return; }
     if (everything) { setLocalError('Sisakan minimal satu item di bill ini.'); return; }
-    if (ownCustomer && !name.trim()) { setLocalError('Nama pelanggan bill baru wajib diisi.'); return; }
-    if (ownCustomer && !isPlausiblePhone(phone)) { setLocalError('No. HP pelanggan bill baru wajib diisi dengan angka yang valid.'); return; }
+    if (ownCustomer && !picked && !name.trim()) { setLocalError('Nama pelanggan bill baru wajib diisi.'); return; }
+    if (ownCustomer && !picked && !isPlausiblePhone(phone)) { setLocalError('No. HP pelanggan bill baru wajib diisi dengan angka yang valid.'); return; }
+    if (ownCustomer && picked && phone.trim() && !isPlausiblePhone(phone)) { setLocalError('No. HP pelanggan bill baru hanya berisi angka yang valid.'); return; }
     setLocalError('');
     props.onSubmit({
       items: props.lines.filter((line) => (moved[line.id] ?? 0) > 0).map((line) => ({ orderItemId: line.id, quantity: String(moved[line.id]) })),
-      ...(ownCustomer ? { customerName: name.trim(), customerPhone: phone.trim() } : {}),
+      // A registered customer supplies its own name; its phone too, otherwise the typed one (or the original bill's).
+      ...(ownCustomer && picked ? { customerId: picked.id, ...(phone.trim() ? { customerPhone: phone.trim() } : {}) } : ownCustomer ? { customerName: name.trim(), customerPhone: phone.trim() } : {}),
     });
   };
   const error = localError || props.error;
@@ -95,8 +112,13 @@ export function SplitBillSheet(props: SplitBillSheetProps) {
             {[{ label: 'Sama dengan bill ini', value: false }, { label: 'Pelanggan lain', value: true }].map((option) => <Pressable key={option.label} accessibilityRole="button" accessibilityState={{ selected: ownCustomer === option.value }} onPress={() => setOwnCustomer(option.value)} style={[styles.choice, ownCustomer === option.value && styles.choiceActive]}><Text style={[styles.choiceText, ownCustomer === option.value && styles.choiceTextActive]}>{option.label}</Text></Pressable>)}
           </View>
           {ownCustomer ? <>
-            <TextInput accessibilityLabel="Nama pelanggan bill baru" value={name} onChangeText={setName} maxLength={100} placeholder="Nama pelanggan" placeholderTextColor="#8a97a8" style={styles.input} />
-            <TextInput accessibilityLabel="Nomor HP pelanggan bill baru" value={phone} onChangeText={setPhone} maxLength={20} keyboardType="phone-pad" placeholder="08xxxxxxxxxx" placeholderTextColor="#8a97a8" style={styles.input} />
+            {props.customerPicker ? <Pressable accessibilityRole="button" accessibilityLabel={picked ? `Ganti customer bill baru, sekarang ${picked.name}` : 'Pilih customer terdaftar untuk bill baru'} disabled={props.saving} onPress={() => setPickerVisible(true)} style={[styles.picker, picked && styles.pickerActive]}>
+              <UserRound size={17} color={picked ? '#07885b' : '#435a72'} />
+              <View style={styles.flex}><Text numberOfLines={1} style={styles.lineName}>{picked ? picked.name : 'Pilih customer terdaftar'}</Text><Text numberOfLines={1} style={styles.lineMeta}>{picked ? picked.phone || 'Tanpa No. HP' : 'Atau isi nama dan No. HP di bawah'}</Text></View>
+              {picked ? <Pressable accessibilityRole="button" accessibilityLabel="Hapus customer terpilih" disabled={props.saving} onPress={() => setPicked(null)} hitSlop={8}><X size={17} color="#435a72" /></Pressable> : <Text style={styles.smallButtonText}>Pilih</Text>}
+            </Pressable> : null}
+            {!picked ? <TextInput accessibilityLabel="Nama pelanggan bill baru" value={name} onChangeText={setName} maxLength={100} placeholder="Nama pelanggan" placeholderTextColor="#8a97a8" style={styles.input} /> : null}
+            {!picked || !picked.phone ? <TextInput accessibilityLabel="Nomor HP pelanggan bill baru" value={phone} onChangeText={setPhone} maxLength={20} keyboardType="phone-pad" placeholder={picked ? 'No. HP (opsional, default ikut bill ini)' : '08xxxxxxxxxx'} placeholderTextColor="#8a97a8" style={styles.input} /> : null}
           </> : <Text style={styles.hint}>{props.customer || 'Tanpa nama'}</Text>}
         </ScrollView>
         <View style={styles.preview}>
@@ -104,6 +126,16 @@ export function SplitBillSheet(props: SplitBillSheetProps) {
           <View style={styles.previewRow}><Text style={styles.previewLabel}>Sisa di {props.orderNumber}</Text><Text style={styles.previewValue}>{money(billTotal - newTotal)}</Text></View>
         </View>
         {error ? <Text style={styles.error}>{error}</Text> : null}
+        {pickerVisible && props.customerPicker ? <CustomerPickerSheet
+          request={props.customerPicker.request}
+          branchId={props.customerPicker.branchId}
+          selectedId={picked?.id ?? ''}
+          canCreate={props.customerPicker.canCreate}
+          bottomInset={props.bottomInset}
+          onSelect={(customer) => { setPicked(customer); setLocalError(''); }}
+          onGuest={() => setPicked(null)}
+          onClose={() => setPickerVisible(false)}
+        /> : null}
         <Pressable accessibilityRole="button" disabled={props.saving || !movedCount} onPress={submit} style={[styles.primary, (props.saving || !movedCount) && styles.disabled]}>{props.saving ? <ActivityIndicator color="#fff" /> : <><Split size={16} color="#fff" /><Text style={styles.primaryText}>Buat Bill Baru</Text></>}</Pressable>
       </View>
     </KeyboardAvoidingView>
@@ -177,6 +209,8 @@ const styles = StyleSheet.create({
   choiceActive: { backgroundColor: '#07956f' },
   choiceText: { color: '#597086', fontSize: 10, fontWeight: '800' },
   choiceTextActive: { color: '#fff' },
+  picker: { minHeight: 52, flexDirection: 'row', alignItems: 'center', gap: 9, paddingHorizontal: 11, borderWidth: 1, borderColor: '#e3eaf0', borderRadius: 10, backgroundColor: '#fff' },
+  pickerActive: { borderColor: '#07956f', backgroundColor: '#f1faf6' },
   input: { height: 44, paddingHorizontal: 11, borderWidth: 1, borderColor: '#e3eaf0', borderRadius: 10, color: '#172338', fontSize: 12, fontWeight: '700' },
   hint: { marginTop: 4, color: '#71839a', fontSize: 10, lineHeight: 15 },
   preview: { gap: 4, marginTop: 6, padding: 10, borderRadius: 11, backgroundColor: '#f6f9f8' },

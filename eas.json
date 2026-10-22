@@ -14,11 +14,17 @@
       "android": {
         "buildType": "apk"
       },
-      "node": "22.13.0"
+      "node": "22.13.0",
+      "env": {
+        "EXPO_PUBLIC_API_URL": "https://tkchandradimuka-be.vercel.app/api"
+      }
     },
     "production": {
       "autoIncrement": true,
-      "node": "22.13.0"
+      "node": "22.13.0",
+      "env": {
+        "EXPO_PUBLIC_API_URL": "https://tkchandradimuka-be.vercel.app/api"
+      }
     }
   }
 }

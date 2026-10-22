@@ -51,6 +51,21 @@ function receiptHtml(order: ReceiptOrder) {
   return `<!doctype html><html><head><meta name="viewport" content="width=device-width, initial-scale=1"><style>@page{margin:8mm}*{box-sizing:border-box}body{font:12px Arial,sans-serif;color:#18212b;max-width:360px;margin:0 auto}.center{text-align:center}.store{font-size:18px;font-weight:bold}.muted{color:#687483;font-size:10px;margin-top:4px}.rule{border-top:1px dashed #9aa4af;margin:10px 0}.row{display:flex;justify-content:space-between;gap:12px;margin:6px 0}.item{margin:10px 0}.total{font-size:16px;font-weight:bold;color:#087f5b}</style></head><body><div class="center"><div class="store">${escapeHtml(order.branch?.name ?? 'Toko')}</div><div>${escapeHtml(order.orderNumber)}</div><div class="muted">${date ? formatDate(date) : ''}</div>${order.serviceType ? `<div class="muted">${escapeHtml(formatServiceType(order.serviceType))}</div>` : ''}${order.customerName || order.customerPhone ? `<div class="muted">Pelanggan: ${escapeHtml(customerLabel(order.customerName, order.customerPhone))}</div>` : ''}</div><div class="rule"></div>${itemRows}<div class="rule"></div><div class="row"><span>Subtotal</span><span>${money(order.subtotal)}</span></div><div class="row"><span>Diskon</span><span>-${money(order.discountAmount)}</span></div>${Number(order.taxAmount ?? 0) ? `<div class="row"><span>Pajak</span><span>${money(order.taxAmount!)}</span></div>` : ''}${Number(order.serviceCharge ?? 0) ? `<div class="row"><span>Layanan</span><span>${money(order.serviceCharge!)}</span></div>` : ''}<div class="rule"></div><div class="row total"><span>TOTAL</span><span>${money(order.grandTotal)}</span></div>${paymentRows}<div class="rule"></div><div class="center">Terima kasih</div></body></html>`;
 }
 
+const cents = (value: number) => Math.round(value * 100) / 100;
+
+/** Indonesian text for the refund endpoint's error codes; anything unknown keeps the server message. */
+function refundErrorMessage(error: unknown) {
+  if (error instanceof ApiError) {
+    if (error.code === 'REFUND_VALUE_MISMATCH') return 'Nominal refund tidak sama dengan nilai item yang dikembalikan. Muat ulang pesanan lalu coba lagi.';
+    if (error.code === 'INVALID_REFUND_AMOUNT') return 'Nominal refund melebihi sisa yang bisa dikembalikan.';
+    if (error.code === 'REFUND_QUANTITY_EXCEEDED') return 'Jumlah item yang dikembalikan melebihi jumlah yang terjual.';
+    if (error.code === 'INVALID_REFUND_METHOD') return 'Refund lewat Grab/GoBiz hanya untuk pesanan yang dibayar lewat platform itu.';
+    if (error.code === 'REFUND_REASON_REQUIRED') return 'Alasan pengembalian wajib diisi.';
+    if (error.status === 403) return 'Akun ini tidak punya izin untuk refund.';
+  }
+  return error instanceof Error ? error.message : 'Pengembalian gagal diproses.';
+}
+
 export default function OrdersScreen() {
   const { authorizedRequest, user } = useAuth();
   const insets = useSafeAreaInsets();
@@ -256,11 +271,14 @@ export default function OrdersScreen() {
   const returnable = Boolean(selected && ['COMPLETED', 'PARTIALLY_REFUNDED'].includes(selected.status) && refundableAmount > 0);
   const canRefund = returnable && Boolean(user?.permissions.includes('order.refund'));
   const alreadyReturned = (lineId: string) => (selected?.refunds ?? []).filter((refund) => refund.status === 'COMPLETED').flatMap((refund) => refund.items ?? []).filter((item) => item.orderItemId === lineId).reduce((total, item) => total + Number(item.quantity), 0);
-  // Order-level discounts, tax and service are spread over the lines, so returning everything refunds the grand total.
-  const itemsTotal = (selected?.items ?? []).reduce((total, item) => total + Number(item.totalPrice), 0);
-  const priceFactor = itemsTotal > 0 ? Number(selected?.grandTotal ?? 0) / itemsTotal : 0;
-  const unitRefund = (item: OrderLine) => Number(item.quantity) > 0 ? (Number(item.totalPrice) / Number(item.quantity)) * priceFactor : 0;
-  const returnedAmount = Math.min(refundableAmount, Math.round((selected?.items ?? []).reduce((total, item) => total + unitRefund(item) * Number(returnQuantities[item.id] || 0), 0)));
+  // Mirrors the server: each returned line is worth its share of the grand total (discounts, tax and service included),
+  // rounded to cents per line; returning everything left refunds exactly what remains, so rounding never blocks it.
+  const subtotal = Number(selected?.subtotal ?? 0);
+  const unitPaid = (item: OrderLine) => subtotal > 0 && Number(item.quantity) > 0 ? (Number(selected?.grandTotal ?? 0) * Number(item.totalPrice) / subtotal) / Number(item.quantity) : 0;
+  const lineRefund = (item: OrderLine) => subtotal > 0 && Number(item.quantity) > 0 ? cents((Number(selected?.grandTotal ?? 0) * Number(item.totalPrice) / subtotal) * Number(returnQuantities[item.id] || 0) / Number(item.quantity)) : 0;
+  const serverRemaining = Number(selected?.grandTotal ?? 0) - (selected?.refunds ?? []).filter((refund) => refund.status === 'COMPLETED').reduce((total, refund) => total + Number(refund.amount), 0);
+  const returningEverything = (selected?.items ?? []).some((item) => Number(returnQuantities[item.id] || 0) > 0) && (selected?.items ?? []).every((item) => alreadyReturned(item.id) + Number(returnQuantities[item.id] || 0) === Number(item.quantity));
+  const returnedAmount = returningEverything ? cents(serverRemaining) : cents((selected?.items ?? []).reduce((total, item) => total + lineRefund(item), 0));
   // Cashiers may exchange goods (only the difference moves money); cash refunds stay with admins.
   const canExchange = returnable && Boolean(user?.permissions.includes('order.exchange') && user.permissions.includes('order.create'));
   const canVoidExchange = Boolean(user?.permissions.includes('order.refund'));
@@ -319,7 +337,7 @@ export default function OrdersScreen() {
       setRefundAmount(''); setRefundReason(''); setReturnToStock(false); setReturnQuantities({}); setRefundEvidence([]); setRefundVisible(false);
       setSelected(await authorizedRequest<Order>(`orders/${selected.id}`));
       await list.reload();
-    } catch (e) { setRefundError(e instanceof Error ? e.message : 'Pengembalian gagal diproses.'); }
+    } catch (e) { setRefundError(refundErrorMessage(e)); }
     finally { setRefunding(false); }
   }
 
@@ -379,7 +397,7 @@ export default function OrdersScreen() {
       <Text style={styles.fieldLabel}>Metode pengembalian</Text><View style={styles.methodRow}>{refundMethodsFor(selected.payments).map((method) => <Pressable key={method} onPress={() => setRefundMethod(method)} style={[styles.method, refundMethod === method && styles.methodSelected]}><Text style={[styles.methodText, refundMethod === method && styles.methodTextSelected]}>{formatStatus(method)}</Text></Pressable>)}</View>
       <Text style={styles.fieldLabel}>Alasan *</Text><TextInput accessibilityLabel="Alasan pengembalian" style={[styles.input, styles.multiline]} value={refundReason} onChangeText={setRefundReason} placeholder="Wajib diisi, contoh: barang rusak" placeholderTextColor="#87948c" multiline />
       <Pressable accessibilityRole="checkbox" accessibilityState={{ checked: returnToStock }} onPress={() => { setReturnToStock((value) => !value); setRefundError(''); }} style={styles.checkRow}><View style={[styles.checkbox, returnToStock && styles.checkboxChecked]}><Text style={styles.checkMark}>{returnToStock ? '✓' : ''}</Text></View><Text style={styles.value}>Kembalikan item ke stok</Text></Pressable>
-      {returnToStock ? (selected.items ?? []).map((item) => { const max = Math.max(0, Number(item.quantity) - alreadyReturned(item.id)); return <View key={item.id} style={styles.returnLine}><View style={styles.flex}><Text style={styles.value}>{item.productNameSnapshot} (sisa {max})</Text><Text style={styles.muted}>{money(String(Math.round(unitRefund(item))))} / item</Text></View><TextInput accessibilityLabel={`Jumlah retur ${item.productNameSnapshot}`} keyboardType="decimal-pad" style={styles.quantityInput} value={returnQuantities[item.id] ?? ''} onChangeText={(value) => setReturnQuantities((current) => ({ ...current, [item.id]: value }))} placeholder="0" placeholderTextColor="#87948c" /></View>; }) : null}
+      {returnToStock ? (selected.items ?? []).map((item) => { const max = Math.max(0, Number(item.quantity) - alreadyReturned(item.id)); return <View key={item.id} style={styles.returnLine}><View style={styles.flex}><Text style={styles.value}>{item.productNameSnapshot} (sisa {max})</Text><Text style={styles.muted}>{money(String(Math.round(unitPaid(item))))} / item</Text></View><TextInput accessibilityLabel={`Jumlah retur ${item.productNameSnapshot}`} keyboardType="decimal-pad" style={styles.quantityInput} value={returnQuantities[item.id] ?? ''} onChangeText={(value) => setReturnQuantities((current) => ({ ...current, [item.id]: value }))} placeholder="0" placeholderTextColor="#87948c" /></View>; }) : null}
       <Text style={styles.fieldLabel}>Nominal *</Text><MoneyInput accessibilityLabel="Nominal pengembalian" editable={!returnToStock} style={[styles.input, returnToStock && styles.inputReadonly]} value={returnToStock ? String(returnedAmount) : refundAmount} onChangeText={setRefundAmount} placeholder={String(refundableAmount)} placeholderTextColor="#87948c" />
       {returnToStock ? <Text style={styles.muted}>Dihitung otomatis dari jumlah item yang dikembalikan.</Text> : null}
       <Text style={styles.fieldLabel}>Bukti refund *</Text><Text style={styles.muted}>Minimal 1 dan maksimal 8 foto.</Text><View style={styles.evidenceActions}><Pressable onPress={() => void selectRefundEvidence(true)} style={styles.evidenceButton}><Text style={styles.evidenceButtonText}>Ambil foto</Text></Pressable><Pressable onPress={() => void selectRefundEvidence(false)} style={styles.evidenceButton}><Text style={styles.evidenceButtonText}>Pilih galeri</Text></Pressable></View>

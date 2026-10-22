@@ -98,7 +98,7 @@ export default function OpnamesScreen() {
     </> : creating ? <>
       <Pressable onPress={() => setCreating(false)} style={styles.back}><Text style={styles.backText}>‹  Daftar opname</Text></Pressable>
       <Text style={styles.sectionTitle}>Gudang</Text>
-      <View style={styles.warehouseRow}>{warehouses.map((warehouse) => <Pressable key={warehouse.id} onPress={() => setWarehouseId(warehouse.id)} style={[styles.warehouse, warehouseId === warehouse.id && styles.warehouseSelected]}><Text style={[styles.warehouseText, warehouseId === warehouse.id && styles.warehouseTextSelected]}>{warehouse.name}</Text></Pressable>)}</View>
+      <View style={styles.warehouseRow}>{warehouses.map((warehouse) => <Pressable key={warehouse.id} onPress={() => { if (warehouse.id !== warehouseId) { setWarehouseId(warehouse.id); setCounts({}); } }} style={[styles.warehouse, warehouseId === warehouse.id && styles.warehouseSelected]}><Text style={[styles.warehouseText, warehouseId === warehouse.id && styles.warehouseTextSelected]}>{warehouse.name}</Text></Pressable>)}</View>
       <Text style={styles.sectionTitle}>Hitung barang</Text><TextInput accessibilityLabel="Cari produk atau SKU" value={search} onChangeText={setSearch} placeholder="Cari produk atau SKU" placeholderTextColor="#87948c" style={styles.search} />
       {inventoryList.error && !inventory.length ? <View style={styles.errorCard}><Text style={styles.errorText}>{inventoryList.error}</Text><Pressable accessibilityRole="button" onPress={() => void inventoryList.reload()}><Text style={styles.retry}>Coba lagi</Text></Pressable></View> : null}
       {inventoryList.loading && !inventory.length ? <ActivityIndicator style={styles.loader} color="#087f5b" /> : null}

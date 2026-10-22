@@ -74,7 +74,7 @@ export default function AdjustmentsScreen() {
     {error ? <View style={styles.error}><Text style={styles.errorText}>{error}</Text></View> : null}
     {loading && allowed ? <ActivityIndicator style={styles.loader} color="#087f5b" /> : null}
     {allowed ? <>
-      <View style={styles.card}><Text style={styles.section}>Buat adjustment</Text><Text style={styles.label}>Gudang</Text><View style={styles.chips}>{warehouses.map((item) => <Pressable key={item.id} onPress={() => setWarehouseId(item.id)} style={[styles.chip, warehouseId === item.id && styles.chipActive]}><Text style={[styles.chipText, warehouseId === item.id && styles.chipTextActive]}>{item.name}</Text></Pressable>)}</View>
+      <View style={styles.card}><Text style={styles.section}>Buat adjustment</Text><Text style={styles.label}>Gudang</Text><View style={styles.chips}>{warehouses.map((item) => <Pressable key={item.id} onPress={() => { if (item.id !== warehouseId) { setWarehouseId(item.id); setDeltas({}); } }} style={[styles.chip, warehouseId === item.id && styles.chipActive]}><Text style={[styles.chipText, warehouseId === item.id && styles.chipTextActive]}>{item.name}</Text></Pressable>)}</View>
       <Text style={styles.label}>Jenis</Text><View style={styles.chips}>{reasons.map((item) => <Pressable key={item} onPress={() => setReason(item)} style={[styles.chip, reason === item && styles.chipActive]}><Text style={[styles.chipText, reason === item && styles.chipTextActive]}>{labels[item]}</Text></Pressable>)}</View>
       <TextInput accessibilityLabel="Catatan adjustment" value={note} onChangeText={setNote} placeholder="Alasan dan catatan wajib" style={styles.input} multiline />
       <Text style={styles.label}>Perubahan per produk (negatif untuk pengurangan)</Text>

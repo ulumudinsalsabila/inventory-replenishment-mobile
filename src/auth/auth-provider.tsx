@@ -1,10 +1,20 @@
 import * as SecureStore from 'expo-secure-store';
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
-import { ApiError, apiFileRequest, apiRequest, currentUserRequest, loginRequest, refreshAccessToken, type ApiFile, type ApiUser } from '../lib/api';
+import { ApiError, apiFileRequest, apiRequest, currentUserRequest, loginRequest, refreshSession, type ApiFile, type ApiUser } from '../lib/api';
 
 const ACCESS_TOKEN_KEY = 'inventory.access-token';
 const REFRESH_TOKEN_KEY = 'inventory.refresh-token';
 const PUSH_TOKEN_KEY = 'inventory.expo-push-token';
+
+/** Refreshes the session and stores the rotated tokens (both of them), returning the new access token. */
+async function refreshAndStore(refreshToken: string) {
+  const tokens = await refreshSession(refreshToken);
+  await Promise.all([
+    SecureStore.setItemAsync(ACCESS_TOKEN_KEY, tokens.accessToken),
+    ...(tokens.refreshToken ? [SecureStore.setItemAsync(REFRESH_TOKEN_KEY, tokens.refreshToken)] : []),
+  ]);
+  return tokens.accessToken;
+}
 
 type AuthState = {
   user: ApiUser | null;
@@ -45,8 +55,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           currentUser = await currentUserRequest(nextAccessToken);
         } catch (error) {
           if (!(error instanceof ApiError) || error.status !== 401 || !savedRefreshToken) throw error;
-          nextAccessToken = await refreshAccessToken(savedRefreshToken);
-          await SecureStore.setItemAsync(ACCESS_TOKEN_KEY, nextAccessToken);
+          nextAccessToken = await refreshAndStore(savedRefreshToken);
           currentUser = await currentUserRequest(nextAccessToken);
         }
         if (active) {
@@ -80,22 +89,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setUser(result.user);
   }, []);
 
-  const signOut = useCallback(async () => {
-    const pushToken = await SecureStore.getItemAsync(PUSH_TOKEN_KEY);
-    const currentAccessToken = accessTokenRef.current;
-    if (pushToken && currentAccessToken) {
-      try { await apiRequest('notifications/devices', currentAccessToken, { method: 'DELETE', body: JSON.stringify({ token: pushToken }) }); } catch { /* Keep logout available if the API cannot be reached. */ }
-    }
-    await Promise.all([
-      SecureStore.deleteItemAsync(ACCESS_TOKEN_KEY),
-      SecureStore.deleteItemAsync(REFRESH_TOKEN_KEY),
-      SecureStore.deleteItemAsync(PUSH_TOKEN_KEY),
-    ]);
-    accessTokenRef.current = null;
-    setAccessToken(null);
-    setUser(null);
-  }, []);
-
   const authorizedRequest = useCallback(async <T,>(path: string, init?: RequestInit) => {
     const requestToken = accessTokenRef.current;
     if (!requestToken) throw new ApiError('Sesi login sudah berakhir. Silakan masuk kembali.', 401);
@@ -114,8 +107,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           refreshPromise.current = (async () => {
             const savedRefreshToken = await SecureStore.getItemAsync(REFRESH_TOKEN_KEY);
             if (!savedRefreshToken) throw new ApiError('Sesi login sudah berakhir. Silakan masuk kembali.', 401);
-            const nextAccessToken = await refreshAccessToken(savedRefreshToken);
-            await SecureStore.setItemAsync(ACCESS_TOKEN_KEY, nextAccessToken);
+            const nextAccessToken = await refreshAndStore(savedRefreshToken);
             accessTokenRef.current = nextAccessToken;
             setAccessToken(nextAccessToken);
             return nextAccessToken;
@@ -140,6 +132,23 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
   }, []);
 
+  const signOut = useCallback(async () => {
+    const pushToken = await SecureStore.getItemAsync(PUSH_TOKEN_KEY);
+    if (pushToken && accessTokenRef.current) {
+      // Through authorizedRequest so an expired access token is refreshed first; otherwise the server keeps sending
+      // this user's notifications to a shared device after logout.
+      try { await authorizedRequest('notifications/devices', { method: 'DELETE', body: JSON.stringify({ token: pushToken }) }); } catch { /* Keep logout available if the API cannot be reached. */ }
+    }
+    await Promise.all([
+      SecureStore.deleteItemAsync(ACCESS_TOKEN_KEY),
+      SecureStore.deleteItemAsync(REFRESH_TOKEN_KEY),
+      SecureStore.deleteItemAsync(PUSH_TOKEN_KEY),
+    ]);
+    accessTokenRef.current = null;
+    setAccessToken(null);
+    setUser(null);
+  }, [authorizedRequest]);
+
   const authorizedFileRequest = useCallback(async (path: string) => {
     const requestToken = accessTokenRef.current;
     if (!requestToken) throw new ApiError('Sesi login sudah berakhir. Silakan masuk kembali.', 401);
@@ -154,8 +163,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           refreshPromise.current = (async () => {
             const savedRefreshToken = await SecureStore.getItemAsync(REFRESH_TOKEN_KEY);
             if (!savedRefreshToken) throw new ApiError('Sesi login sudah berakhir. Silakan masuk kembali.', 401);
-            const nextAccessToken = await refreshAccessToken(savedRefreshToken);
-            await SecureStore.setItemAsync(ACCESS_TOKEN_KEY, nextAccessToken);
+            const nextAccessToken = await refreshAndStore(savedRefreshToken);
             accessTokenRef.current = nextAccessToken;
             setAccessToken(nextAccessToken);
             return nextAccessToken;
