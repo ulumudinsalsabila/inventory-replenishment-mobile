@@ -15,9 +15,7 @@ type Feature = { section: string; title: string; description: string; destinatio
 const adminFeatures: Feature[] = [
   { section: 'Stok & Gudang', title: 'Stok', description: 'Ketersediaan produk per gudang', destination: '/(app)/inventory', permission: 'inventory.read', icon: 'PackageSearch' },
   { section: 'Stok & Gudang', title: 'Pergerakan stok', description: 'Riwayat barang masuk dan keluar', destination: '/(app)/movements', permission: 'inventory.read', icon: 'ClipboardList' },
-  { section: 'Stok & Gudang', title: 'Transfer gudang', description: 'Kirim dan terima barang antar gudang', destination: '/(app)/transfers', permission: 'inventory.read', icon: 'ArrowLeftRight' },
   { section: 'Stok & Gudang', title: 'Stock opname', description: 'Hitung fisik stok lalu sesuaikan selisihnya', destination: '/(app)/opnames', permission: 'inventory.opname', icon: 'ClipboardList' },
-  { section: 'Stok & Gudang', title: 'Penyesuaian stok', description: 'Koreksi stok rusak, hilang, atau salah catat', destination: '/(app)/adjustments', permission: 'inventory.adjust', icon: 'FileText' },
   { section: 'Penjualan', title: 'Display toko', description: 'Kelola stok yang tampil di area penjualan', destination: '/(app)/(tabs)/display', permission: 'display.read', icon: 'MonitorSmartphone' },
   { section: 'Penjualan', title: 'Customer', description: 'Data customer dan riwayat belanja per cabang', destination: '/(app)/customers', permission: 'customer.read', icon: 'Users' },
   { section: 'Kas', title: 'Cash Closing', description: 'Tutup kas dan rekonsiliasi operasional', destination: '/(app)/(tabs)/cash', permission: 'cash_closing.read', icon: 'Banknote' },
@@ -28,9 +26,7 @@ const adminFeatures: Feature[] = [
 const employeeFeatures: Feature[] = [
   { section: 'Stok & Gudang', title: 'Stok', description: 'Ketersediaan produk di gudang', destination: '/(app)/inventory', permission: 'inventory.read', icon: 'PackageSearch' },
   { section: 'Stok & Gudang', title: 'Pergerakan stok', description: 'Riwayat barang masuk dan keluar', destination: '/(app)/movements', permission: 'inventory.read', icon: 'ClipboardList' },
-  { section: 'Stok & Gudang', title: 'Transfer gudang', description: 'Kirim dan terima barang antar gudang', destination: '/(app)/transfers', permission: 'inventory.read', icon: 'ArrowLeftRight' },
   { section: 'Stok & Gudang', title: 'Stock opname', description: 'Hitung fisik stok lalu sesuaikan selisihnya', destination: '/(app)/opnames', permission: 'inventory.opname', icon: 'ClipboardList' },
-  { section: 'Stok & Gudang', title: 'Penyesuaian stok', description: 'Koreksi stok rusak, hilang, atau salah catat', destination: '/(app)/adjustments', permission: 'inventory.adjust', icon: 'FileText' },
   { section: 'Operasional', title: 'Display toko', description: 'Kelola stok yang tampil di area penjualan', destination: '/(app)/(tabs)/display', permission: 'display.read', icon: 'MonitorSmartphone' },
   { section: 'Operasional', title: 'Customer', description: 'Cari, tambah, dan lihat riwayat belanja customer', destination: '/(app)/customers', permission: 'customer.read', icon: 'Users' },
   { section: 'Kas', title: 'Cash in/out', description: 'Catat kas masuk atau keluar', destination: '/(app)/(tabs)/cash-in-out', permission: 'cash_transaction.create', icon: 'ArrowLeftRight' },
