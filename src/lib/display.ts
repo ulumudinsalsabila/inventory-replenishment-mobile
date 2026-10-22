@@ -8,15 +8,43 @@ export function refundMethodsFor(payments: { method: string; status: string }[] 
   return refundPaymentMethods.filter((method) => !platformMethods.includes(method) || paid.has(method));
 }
 
+const movementLabels: Record<string, string> = {
+  PURCHASE_IN: 'Pembelian masuk', PURCHASE: 'Pembelian', PURCHASE_BONUS: 'Bonus pembelian', TRANSFER_IN: 'Transfer masuk', TRANSFER_OUT: 'Transfer keluar',
+  SALE: 'Penjualan', SALE_REVERSAL: 'Pembatalan penjualan', RETURN: 'Retur', WASTE: 'Barang rusak', ADJUSTMENT: 'Adjustment', STOCK_OPNAME: 'Stock opname',
+};
+
+/** Indonesian name of a stock movement type. */
+export function formatMovementType(type: string) {
+  return movementLabels[type] ?? type.replaceAll('_', ' ');
+}
+
+/**
+ * Indonesian labels for the API's status, payment-method and reason codes. One code can belong to several enums
+ * (COMPLETED is an order, payment and refund status), so each label reads right in all of them.
+ */
+const statusLabels: Record<string, string> = {
+  // Orders, payments, refunds
+  DRAFT: 'Draft', OPEN: 'Open Bill', PENDING_PAYMENT: 'Menunggu bayar', PENDING: 'Menunggu', PAID: 'Lunas', COMPLETED: 'Selesai',
+  CANCELLED: 'Dibatalkan', REFUNDED: 'Dikembalikan', PARTIALLY_REFUNDED: 'Refund sebagian', FAILED: 'Gagal', VOIDED: 'Dibatalkan',
+  FORFEITED: 'Hangus', FULL: 'Penuh', PARTIAL: 'Sebagian', DEPOSIT: 'DP',
+  // Payment methods
+  CASH: 'Cash', QRIS: 'QRIS', TRANSFER: 'Transfer', GRAB: 'Grab', GOBIZ: 'GoBiz', DEBIT_CARD: 'Kartu debit', CREDIT_CARD: 'Kartu kredit', EXCHANGE: 'Kredit tukar', OTHER: 'Lainnya',
+  // Stock requests, transfers, opnames, purchases
+  SUBMITTED: 'Diajukan', UNDER_REVIEW: 'Ditinjau', APPROVED: 'Disetujui', PARTIAL_APPROVED: 'Disetujui sebagian', REJECTED: 'Ditolak',
+  PROCESSING: 'Diproses', PREPARING: 'Disiapkan', READY: 'Siap dikirim', IN_TRANSIT: 'Dalam pengiriman', RECEIVED: 'Diterima',
+  PARTIALLY_RECEIVED: 'Diterima sebagian', FULFILLED: 'Terpenuhi',
+  // Cash
+  MATCH: 'Sesuai', SHORTAGE: 'Kurang', OVERAGE: 'Lebih', CASH_IN: 'Kas masuk', CASH_OUT: 'Kas keluar',
+  // Reasons
+  MISSING: 'Hilang', DAMAGED: 'Rusak', WRONG_ITEM: 'Salah barang', QUANTITY_ERROR: 'Jumlah salah', WASTE: 'Terbuang', LOST: 'Hilang',
+  INTERNAL_USE: 'Pemakaian internal', CORRECTION: 'Koreksi',
+  // Service and display
+  DINE_IN: 'Dine in', TAKEAWAY: 'Takeaway', DISPLAY_IN: 'Masuk display', DISPLAY_RETURN: 'Kembali ke gudang', DISPLAY_SALE: 'Terjual dari display', DISPLAY_ADJUSTMENT: 'Penyesuaian display',
+};
+
 export function formatStatus(status: string | null | undefined) {
   if (!status) return '-';
-  if (status === 'OPEN') return 'Open Bill';
-  if (status === 'GOBIZ') return 'GoBiz';
-  if (status === 'EXCHANGE') return 'Kredit tukar';
-  if (status === 'DEBIT_CARD') return 'Kartu debit';
-  if (status === 'CREDIT_CARD') return 'Kartu kredit';
-  if (status === 'OTHER') return 'Lainnya';
-  return status.replaceAll('_', ' ');
+  return statusLabels[status] ?? movementLabels[status] ?? status.replaceAll('_', ' ');
 }
 
 /**

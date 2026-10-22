@@ -7,9 +7,10 @@ import * as ImagePicker from 'expo-image-picker';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Banknote, Bluetooth, CalendarDays, Camera, Check, ChevronLeft, ChevronRight, ImagePlus, Paperclip, Printer, Search, ShieldCheck, X } from 'lucide-react-native';
 import { useAuth } from '../../auth/auth-provider';
+import { useBranchFilter } from '../../auth/branch-filter';
 import { ApiError } from '../../lib/api';
 import { getRange, rangeLabel, rangeOptions, type RangePreset } from '../../lib/date-range';
-import { formatDate, formatStatus } from '../../lib/display';
+import { formatDateTime, formatStatus } from '../../lib/display';
 import { useDebouncedValue, useInfiniteList, useLoadMoreOnScroll } from '../../lib/infinite-list';
 import { useBottomGap } from '../../lib/responsive';
 import { LoadMoreFooter } from '../../components/load-more-footer';
@@ -76,7 +77,8 @@ export default function CashClosingScreen() {
   const canCreate = user?.permissions.includes('cash_closing.create') ?? false;
   const assignedBranchId = user?.branchId ?? null;
   const [branches, setBranches] = useState<Branch[]>([]);
-  const [branchId, setBranchId] = useState(assignedBranchId ?? '');
+  const { selectedBranchId: listBranchId, setSelectedBranchId: setListBranchId } = useBranchFilter();
+  const [branchId, setBranchId] = useState(assignedBranchId ?? listBranchId);
   const [preview, setPreview] = useState<Preview | null>(null);
   const [previewLoading, setPreviewLoading] = useState(canCreate && Boolean(assignedBranchId));
   const [saving, setSaving] = useState(false);
@@ -107,6 +109,7 @@ export default function CashClosingScreen() {
   const params = new URLSearchParams({ sortBy: 'closedAt', sortOrder: 'desc', from, to });
   if (search) params.set('search', search);
   if (filter !== 'ALL') params.set('status', filter);
+  if (listBranchId && !assignedBranchId) params.set('branchId', listBranchId);
   const list = useInfiniteList<CashClosing>(authorizedRequest, canRead ? `cash-closings?${params.toString()}` : null);
   const scrollProps = useLoadMoreOnScroll(list.loadMore);
 
@@ -123,8 +126,8 @@ export default function CashClosingScreen() {
     if (!canCreate || !branchId) return;
     let active = true;
     void authorizedRequest<Preview>(`cash-closing/preview?branchId=${encodeURIComponent(branchId)}`)
-      .then((result) => { if (active) setPreview(result); })
-      .catch((cause: unknown) => { if (active) setError(cause instanceof ApiError ? cause.message : 'Ringkasan kas belum dapat dimuat.'); })
+      .then((result) => { if (active) { setPreview(result); setError(''); } })
+      .catch((cause: unknown) => { if (active) { setPreview(null); setError(cause instanceof ApiError ? cause.message : 'Ringkasan kas belum dapat dimuat.'); } })
       .finally(() => { if (active) setPreviewLoading(false); });
     return () => { active = false; };
   }, [authorizedRequest, branchId, canCreate, reload]);
@@ -249,8 +252,8 @@ export default function CashClosingScreen() {
     {error ? <Text style={styles.error}>{error}</Text> : null}
     {step === 0 ? <KeyboardAwareScrollView bottomOffset={24} style={styles.formContent} contentContainerStyle={styles.formBody} keyboardShouldPersistTaps="handled">
       <View style={styles.card}><View style={styles.cardHeading}><Banknote size={18} color="#087f5b" /><Text style={styles.cardTitle}>Informasi closing</Text></View>
-        <Text style={styles.label}>Cabang</Text>{branches.length ? <View style={styles.chips}>{branches.map((branch) => <Pressable key={branch.id} onPress={() => { setPreviewLoading(true); setBranchId(branch.id); }} style={[styles.chip, branchId === branch.id && styles.chipActive]}><Text style={[styles.chipText, branchId === branch.id && styles.chipTextActive]}>{branch.name}</Text></Pressable>)}</View> : <Text style={styles.branchName}>{user?.branchId ? 'Cabang saya' : 'Pilih cabang dari daftar'}</Text>}
-        <View style={styles.infoRow}><CalendarDays size={17} color="#6380a4" /><Text style={styles.infoLabel}>Periode mulai</Text><Text style={styles.infoValue}>{preview?.periodStart ? formatDate(preview.periodStart) : 'Belum ada data'}</Text></View>
+        <Text style={styles.label}>Cabang</Text>{branches.length ? <View style={styles.chips}>{branches.map((branch) => <Pressable key={branch.id} onPress={() => { if (branch.id === branchId) return; setPreview(null); setError(''); setPreviewLoading(true); setBranchId(branch.id); }} style={[styles.chip, branchId === branch.id && styles.chipActive]}><Text style={[styles.chipText, branchId === branch.id && styles.chipTextActive]}>{branch.name}</Text></Pressable>)}</View> : <Text style={styles.branchName}>{user?.branchId ? 'Cabang saya' : 'Pilih cabang dari daftar'}</Text>}
+        <View style={styles.infoRow}><CalendarDays size={17} color="#6380a4" /><Text style={styles.infoLabel}>Periode mulai</Text><Text style={styles.infoValue}>{preview?.periodStart ? formatDateTime(preview.periodStart) : 'Belum ada data'}</Text></View>
         <View style={styles.summaryHighlight}><Text style={styles.label}>Kas fisik diharapkan</Text><Text style={styles.expected}>{money(preview?.expectedCash)}</Text></View>
         {openBillWarning}
         <Text style={styles.label}>Kas fisik aktual *</Text><View style={styles.amountInput}><Text style={styles.currency}>Rp</Text><MoneyInput accessibilityLabel="Kas fisik aktual" value={actualCash} onChangeText={setActualCash} placeholder="0" placeholderTextColor="#8290a2" style={styles.amountTextInput} /></View>
@@ -267,7 +270,7 @@ export default function CashClosingScreen() {
       </> : <Text style={styles.empty}>Pilih cabang dan tunggu ringkasan dimuat.</Text>}
     </ScrollView> : null}
     {step === 2 ? <ScrollView style={styles.formContent} contentContainerStyle={styles.formBody}>
-      <View style={styles.card}><View style={styles.cardHeading}><ShieldCheck size={18} color="#087f5b" /><Text style={styles.cardTitle}>Ringkasan closing</Text></View><DetailRow label="Nomor closing" value="Dibuat setelah disimpan" /><DetailRow label="Cabang" value={branches.find((branch) => branch.id === branchId)?.name ?? 'Cabang saya'} /><DetailRow label="Periode mulai" value={preview?.periodStart ? formatDate(preview.periodStart) : '—'} /><DetailRow label="Dibuat pada" value={formatDate(new Date())} /><DetailRow label="Kas seharusnya" value={money(preview?.expectedCash)} /><DetailRow label="Kas fisik aktual" value={money(actualCash)} /><View style={[styles.differenceRow, difference === 0 ? styles.differenceMatch : styles.differenceWarn]}><Text style={styles.differenceLabel}>Selisih kas</Text><Text style={styles.differenceValue}>{money(difference)}</Text></View></View>
+      <View style={styles.card}><View style={styles.cardHeading}><ShieldCheck size={18} color="#087f5b" /><Text style={styles.cardTitle}>Ringkasan closing</Text></View><DetailRow label="Nomor closing" value="Dibuat setelah disimpan" /><DetailRow label="Cabang" value={branches.find((branch) => branch.id === branchId)?.name ?? 'Cabang saya'} /><DetailRow label="Periode mulai" value={preview?.periodStart ? formatDateTime(preview.periodStart) : '—'} /><DetailRow label="Dibuat pada" value={formatDateTime(new Date())} /><DetailRow label="Kas seharusnya" value={money(preview?.expectedCash)} /><DetailRow label="Kas fisik aktual" value={money(actualCash)} /><View style={[styles.differenceRow, difference === 0 ? styles.differenceMatch : styles.differenceWarn]}><Text style={styles.differenceLabel}>Selisih kas</Text><Text style={styles.differenceValue}>{money(difference)}</Text></View></View>
       {openBillWarning}
       <View style={styles.card}><View style={styles.cardHeading}><Paperclip size={18} color="#6e5db5" /><Text style={styles.cardTitle}>Foto bukti (opsional)</Text></View><Text style={styles.muted}>Maksimal 5 foto, 5 MB per file.</Text><View style={styles.evidenceGrid}>{evidence.map((asset, index) => <View key={`${asset.assetId ?? asset.uri}-${index}`} style={styles.evidenceWrap}><PreviewImage uri={asset.uri} images={evidence.map((entry) => entry.uri)} index={index} style={styles.evidenceImage} /><Pressable accessibilityRole="button" accessibilityLabel={`Hapus foto ${index + 1}`} onPress={() => setEvidence((current) => current.filter((_, itemIndex) => itemIndex !== index))} style={styles.removeEvidence}><X size={13} color="#fff" /></Pressable></View>)}{evidence.length < 5 ? <View style={styles.evidenceActions}><Pressable accessibilityRole="button" onPress={() => void selectEvidence(true)} style={styles.evidenceButton}><Camera size={17} color="#087f5b" /><Text style={styles.evidenceButtonText}>Kamera</Text></Pressable><Pressable accessibilityRole="button" onPress={() => void selectEvidence(false)} style={styles.evidenceButton}><ImagePlus size={17} color="#087f5b" /><Text style={styles.evidenceButtonText}>Galeri</Text></Pressable></View> : null}</View></View>
     </ScrollView> : null}
@@ -279,11 +282,11 @@ export default function CashClosingScreen() {
     <Text style={styles.subtitle}>Daftar closing kas dan hasil rekonsiliasi.</Text>
     <View style={styles.rangeControl}>{rangeOptions.map((item) => <Pressable key={item.id} accessibilityRole="button" accessibilityState={{ selected: rangePreset === item.id }} onPress={() => setRangePreset(item.id)} style={[styles.rangeButton, rangePreset === item.id && styles.rangeButtonActive]}><Text style={[styles.rangeText, rangePreset === item.id && styles.rangeTextActive]}>{item.label}</Text></Pressable>)}</View>
     <View style={styles.searchField}><Search size={17} color="#71839a" /><TextInput accessibilityLabel="Cari cash closing" value={searchInput} onChangeText={setSearchInput} placeholder="Cari nomor closing atau cabang..." placeholderTextColor="#90a0ad" style={styles.searchInput} returnKeyType="search" /></View>
-    {branches.length ? <View style={styles.branchPicker}><Text style={styles.label}>Cabang</Text><ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.chips}>{branches.map((branch) => <Pressable key={branch.id} onPress={() => { setPreviewLoading(true); setBranchId(branch.id); }} style={[styles.chip, branchId === branch.id && styles.chipActive]}><Text style={[styles.chipText, branchId === branch.id && styles.chipTextActive]}>{branch.name} ({branch.code})</Text></Pressable>)}</ScrollView></View> : null}
+    {branches.length ? <View style={styles.branchPicker}><Text style={styles.label}>Cabang</Text><ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.chips}>{[{ id: '', name: 'Semua cabang', code: '' }, ...branches].map((branch) => <Pressable key={branch.id || 'all'} onPress={() => { if (branch.id === listBranchId) return; setListBranchId(branch.id); if (branch.id && branch.id !== branchId) { setPreview(null); setError(''); setPreviewLoading(true); setBranchId(branch.id); } }} style={[styles.chip, listBranchId === branch.id && styles.chipActive]}><Text style={[styles.chipText, listBranchId === branch.id && styles.chipTextActive]}>{branch.code ? `${branch.name} (${branch.code})` : branch.name}</Text></Pressable>)}</ScrollView></View> : null}
     <View style={styles.filters}>{[{ id: 'ALL', label: 'Semua' }, { id: 'MATCH', label: 'Sesuai' }, { id: 'DIFFERENCE', label: 'Selisih' }].map((item) => <Pressable key={item.id} onPress={() => setFilter(item.id as typeof filter)} style={[styles.filter, filter === item.id && styles.filterActive]}><Text style={[styles.filterText, filter === item.id && styles.filterTextActive]}>{item.label}</Text></Pressable>)}</View>
     {error || listError ? <Text style={styles.error}>{error || listError}</Text> : null}
     {list.loading ? <ActivityIndicator style={styles.loader} color="#07885b" /> : null}
-    {canRead ? filteredRows.map((row) => <Pressable key={row.id} accessibilityRole="button" onPress={() => void openDetail(row)} style={styles.closingCard}><View style={styles.closingTop}><View style={styles.closingIcon}><CalendarDays size={18} color="#3f79bf" /></View><View style={styles.closingLabels}><Text numberOfLines={1} style={styles.closingNumber}>{row.closingNumber}</Text><Text style={styles.muted}>{formatDate(row.closedAt ?? row.periodEnd ?? row.periodStart ?? '')}</Text></View><View style={[styles.statusBadge, row.status === 'MATCH' ? styles.statusMatch : styles.statusDifference]}><Text style={[styles.statusText, row.status === 'MATCH' ? styles.statusMatchText : styles.statusDifferenceText]}>{row.status === 'MATCH' ? 'SESUAI' : formatStatus(row.status)}</Text></View><ChevronRight size={17} color="#8a9aab" /></View><View style={styles.closingAmounts}><View><Text style={styles.amountLabel}>Penjualan</Text><Text style={styles.amountValue}>{money(row.totalSales)}</Text></View><View style={styles.amountEnd}><Text style={styles.amountLabel}>Selisih</Text><Text style={[styles.amountValue, Number(row.difference) === 0 ? styles.positive : styles.negative]}>{money(row.difference)}</Text></View></View></Pressable>) : <View style={styles.card}><Text style={styles.cardTitle}>Akses tidak tersedia</Text><Text style={styles.muted}>Akun ini belum memiliki izin membaca cash closing.</Text></View>}
+    {canRead ? filteredRows.map((row) => <Pressable key={row.id} accessibilityRole="button" onPress={() => void openDetail(row)} style={styles.closingCard}><View style={styles.closingTop}><View style={styles.closingIcon}><CalendarDays size={18} color="#3f79bf" /></View><View style={styles.closingLabels}><Text numberOfLines={1} style={styles.closingNumber}>{row.closingNumber}</Text><Text style={styles.muted}>{formatDateTime(row.closedAt ?? row.periodEnd ?? row.periodStart ?? '')}</Text></View><View style={[styles.statusBadge, row.status === 'MATCH' ? styles.statusMatch : styles.statusDifference]}><Text style={[styles.statusText, row.status === 'MATCH' ? styles.statusMatchText : styles.statusDifferenceText]}>{row.status === 'MATCH' ? 'SESUAI' : formatStatus(row.status)}</Text></View><ChevronRight size={17} color="#8a9aab" /></View><View style={styles.closingAmounts}><View><Text style={styles.amountLabel}>Penjualan</Text><Text style={styles.amountValue}>{money(row.totalSales)}</Text></View><View style={styles.amountEnd}><Text style={styles.amountLabel}>Selisih</Text><Text style={[styles.amountValue, Number(row.difference) === 0 ? styles.positive : styles.negative]}>{money(row.difference)}</Text></View></View></Pressable>) : <View style={styles.card}><Text style={styles.cardTitle}>Akses tidak tersedia</Text><Text style={styles.muted}>Akun ini belum memiliki izin membaca cash closing.</Text></View>}
     {canRead ? <LoadMoreFooter loadingMore={list.loadingMore} hasMore={list.hasMore} count={filteredRows.length} error={list.error} onRetry={list.loadMore} /> : null}
     {!list.loading && !listError && canRead && !filteredRows.length ? <Text style={styles.empty}>Belum ada closing untuk periode {rangeLabel(rangePreset).toLowerCase()}.</Text> : null}
   </ScrollView>
@@ -303,7 +306,7 @@ export default function CashClosingScreen() {
         </View>
         {printError ? <Text style={styles.printError}>{printError}</Text> : null}
         {detailLoading ? <ActivityIndicator style={styles.loader} color="#07885b" /> : selected ? <ScrollView style={styles.detailContent}>
-          <View style={styles.detailBanner}><Banknote size={19} color="#07885b" /><View style={styles.closingLabels}><Text style={styles.cardTitle}>Total penjualan</Text><Text style={styles.muted}>{selected.closedAt ? formatDate(selected.closedAt) : '—'}</Text></View><Text style={styles.bannerAmount}>{money(selected.totalSales)}</Text></View>
+          <View style={styles.detailBanner}><Banknote size={19} color="#07885b" /><View style={styles.closingLabels}><Text style={styles.cardTitle}>Total penjualan</Text><Text style={styles.muted}>{selected.closedAt ? formatDateTime(selected.closedAt) : '—'}</Text></View><Text style={styles.bannerAmount}>{money(selected.totalSales)}</Text></View>
           <Text style={styles.sectionTitle}>Rincian pemasukan per metode</Text>
           <DetailRow label="Cash" value={money(selected.cashSales)} />
           <DetailRow label="QRIS" value={money(selected.qrisSales)} />
@@ -314,7 +317,7 @@ export default function CashClosingScreen() {
           <DetailRow label="Lainnya" value={money(selected.otherSales)} />
           <View style={[styles.differenceRow, styles.differenceMatch]}><Text style={styles.differenceLabel}>Total penjualan</Text><Text style={styles.differenceValue}>{money(selected.totalSales)}</Text></View>
           <DetailRow label="Cabang" value={selected.branch?.name ?? '—'} />
-          <DetailRow label="Periode" value={`${selected.periodStart ? formatDate(selected.periodStart) : '—'} - ${selected.periodEnd ? formatDate(selected.periodEnd) : '—'}`} />
+          <DetailRow label="Periode" value={`${selected.periodStart ? formatDateTime(selected.periodStart) : '—'} - ${selected.periodEnd ? formatDateTime(selected.periodEnd) : '—'}`} />
           <DetailRow label="Total refund" value={money(selected.totalRefund)} />
           <Text style={styles.sectionTitle}>Pergerakan kas</Text>
           <DetailRow label="Kas masuk" value={money(selected.cashIn)} />

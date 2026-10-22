@@ -3,7 +3,7 @@ import { ActivityIndicator, Pressable, RefreshControl, StyleSheet, Text, TextInp
 import { ArrowDownLeft, ArrowLeftRight, ArrowUpRight, Search, X } from 'lucide-react-native';
 import { LoadMoreFooter } from '../../components/load-more-footer';
 import { useAuth } from '../../auth/auth-provider';
-import { formatDate, formatStatus } from '../../lib/display';
+import { formatDate, formatMovementType } from '../../lib/display';
 import { useDebouncedValue, useInfiniteList, useLoadMoreOnScroll } from '../../lib/infinite-list';
 import { KeyboardAwareScrollView } from 'react-native-keyboard-controller';
 type Movement = {
@@ -22,8 +22,8 @@ type Movement = {
 };
 
 const quantity = (value: string | number) => Number(value).toLocaleString('id-ID', { maximumFractionDigits: 3 });
-const isInbound = (type: string) => ['PURCHASE_IN', 'TRANSFER_IN', 'RETURN_IN', 'ADJUSTMENT_IN', 'OPNAME_IN'].includes(type);
-const isOutbound = (type: string) => ['SALE', 'TRANSFER_OUT', 'PURCHASE_RETURN', 'ADJUSTMENT_OUT', 'OPNAME_OUT'].includes(type);
+// Direction comes from the stock itself: adjustments and opnames go either way, and the stored quantity is already signed.
+const stockChange = (row: Pick<Movement, 'beforeStock' | 'afterStock'>) => Number(row.afterStock) - Number(row.beforeStock);
 
 export default function StockMovementsScreen() {
   const { user, authorizedRequest } = useAuth();
@@ -43,14 +43,15 @@ export default function StockMovementsScreen() {
       {list.loading && !rows.length ? <ActivityIndicator style={styles.loader} color="#07885b" /> : null}
       {!list.loading && !list.error && !rows.length ? <View style={styles.empty}><ArrowLeftRight size={22} color="#8091a4" /><Text style={styles.emptyTitle}>{search ? 'Pergerakan stok tidak ditemukan' : 'Belum ada pergerakan stok'}</Text><Text style={styles.emptyText}>{search ? 'Coba kata pencarian lain.' : 'Perubahan stok akan tercatat di sini.'}</Text></View> : null}
       {rows.map((row) => {
-        const inbound = isInbound(row.type);
-        const outbound = isOutbound(row.type);
+        const change = stockChange(row);
+        const inbound = change > 0;
+        const outbound = change < 0;
         const Icon = inbound ? ArrowDownLeft : outbound ? ArrowUpRight : ArrowLeftRight;
         const tint = inbound ? '#07885b' : outbound ? '#c23a36' : '#54758c';
         const sign = inbound ? '+' : outbound ? '−' : '';
         return <View key={row.id} style={styles.row}>
           <View style={[styles.typeIcon, { backgroundColor: inbound ? '#e3f7ee' : outbound ? '#fff0ee' : '#edf3f6' }]}><Icon size={19} color={tint} /></View>
-          <View style={styles.rowBody}><View style={styles.rowHeader}><Text numberOfLines={1} style={styles.productName}>{row.product.name}</Text><Text style={[styles.delta, { color: tint }]}>{sign}{quantity(row.quantity)}</Text></View><Text style={styles.productSku}>{row.product.sku} · {formatStatus(row.type)}</Text><Text numberOfLines={1} style={styles.meta}>{row.warehouse.name} · {formatDate(row.createdAt)}</Text>{row.note ? <Text numberOfLines={1} style={styles.note}>{row.note}</Text> : null}<Text numberOfLines={1} style={styles.stockLine}>Stok {quantity(row.beforeStock)} → {quantity(row.afterStock)}{row.referenceNumber ? ` · ${row.referenceNumber}` : ''}</Text></View>
+          <View style={styles.rowBody}><View style={styles.rowHeader}><Text numberOfLines={1} style={styles.productName}>{row.product.name}</Text><Text style={[styles.delta, { color: tint }]}>{sign}{quantity(Math.abs(change))}</Text></View><Text style={styles.productSku}>{row.product.sku} · {formatMovementType(row.type)}</Text><Text numberOfLines={1} style={styles.meta}>{row.warehouse.name} · {formatDate(row.createdAt)}</Text>{row.note ? <Text numberOfLines={1} style={styles.note}>{row.note}</Text> : null}<Text numberOfLines={1} style={styles.stockLine}>Stok {quantity(row.beforeStock)} → {quantity(row.afterStock)}{row.referenceNumber ? ` · ${row.referenceNumber}` : ''}</Text></View>
         </View>;
       })}
       <LoadMoreFooter loadingMore={list.loadingMore} hasMore={list.hasMore} count={rows.length} error={list.error} onRetry={list.loadMore} />

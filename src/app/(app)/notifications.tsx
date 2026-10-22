@@ -5,7 +5,7 @@ import { Bell, CheckCheck, ChevronRight } from 'lucide-react-native';
 import { LoadMoreFooter } from '../../components/load-more-footer';
 import { useAuth } from '../../auth/auth-provider';
 import { useNotifications } from '../../notifications/notifications-provider';
-import { formatDate } from '../../lib/display';
+import { formatDateTime } from '../../lib/display';
 import { useInfiniteList, useLoadMoreOnScroll } from '../../lib/infinite-list';
 
 type NotificationItem = { id: string; title: string; body: string; url: string | null; readAt: string | null; createdAt: string };
@@ -58,7 +58,7 @@ export default function NotificationsScreen() {
     {!list.loading && !list.error && !items.length ? <View style={styles.empty}><Bell size={30} color="#91a098" /><Text style={styles.emptyTitle}>Belum ada notifikasi</Text><Text style={styles.emptyText}>Perubahan permintaan stok dan aktivitas penting akan tampil di sini.</Text></View> : null}
     <View style={styles.list}>{items.map((item) => <Pressable key={item.id} accessibilityRole="button" onPress={() => void openNotification(item)} style={({ pressed }) => [styles.card, !item.readAt && styles.cardUnread, pressed && styles.pressed]}>
       <View style={[styles.icon, !item.readAt && styles.iconUnread]}><Bell size={18} color={!item.readAt ? '#07885b' : '#7b8995'} /></View>
-      <View style={styles.content}><View style={styles.titleRow}><Text numberOfLines={1} style={[styles.itemTitle, !item.readAt && styles.itemTitleUnread]}>{item.title}</Text>{!item.readAt ? <View style={styles.unreadDot} /> : null}</View><Text style={styles.body}>{item.body}</Text><Text style={styles.time}>{formatDate(item.createdAt)}</Text></View>
+      <View style={styles.content}><View style={styles.titleRow}><Text numberOfLines={1} style={[styles.itemTitle, !item.readAt && styles.itemTitleUnread]}>{item.title}</Text>{!item.readAt ? <View style={styles.unreadDot} /> : null}</View><Text style={styles.body}>{item.body}</Text><Text style={styles.time}>{formatDateTime(item.createdAt)}</Text></View>
       {item.url ? <ChevronRight size={17} color="#86958d" /> : null}
     </Pressable>)}</View>
     <LoadMoreFooter loadingMore={list.loadingMore} hasMore={list.hasMore} count={items.length} error={list.error} onRetry={list.loadMore} />

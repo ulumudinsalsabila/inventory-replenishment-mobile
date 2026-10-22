@@ -4,14 +4,15 @@ import { LoadMoreFooter } from '../../components/load-more-footer';
 import { useAuth } from '../../auth/auth-provider';
 import { ApiError } from '../../lib/api';
 import { formatDate, formatStatus } from '../../lib/display';
-import { useInfiniteList, useLoadMoreOnScroll } from '../../lib/infinite-list';
+import { useDebouncedValue, useInfiniteList, useLoadMoreOnScroll } from '../../lib/infinite-list';
 import { KeyboardAwareScrollView } from 'react-native-keyboard-controller';
 
 type Warehouse = { id: string; name: string; code: string };
 type Product = { id: string; sku: string; name: string; unit: { code: string } };
 type Stock = { id: string; onHand: string; product: Product; warehouse: Warehouse };
 type Adjustment = { id: string; adjustmentNumber: string; reason: string; note: string; createdAt: string; warehouse: Warehouse; items: { id: string; quantityDelta: string; product: Product }[] };
-type Page<T> = { data: T[]; meta: { page: number; totalPages: number } };
+type Page<T> = { data: T[]; meta: { page: number; totalPages: number; total?: number } };
+const STOCK_PAGE_SIZE = 100;
 const reasons = ['CORRECTION', 'WASTE', 'DAMAGED', 'LOST', 'INTERNAL_USE', 'OTHER'];
 const labels: Record<string, string> = { CORRECTION: 'Koreksi', WASTE: 'Terbuang', DAMAGED: 'Rusak', LOST: 'Hilang', INTERNAL_USE: 'Pemakaian internal', OTHER: 'Lainnya' };
 const qty = (value: string) => Number(value).toLocaleString('id-ID', { maximumFractionDigits: 4 });
@@ -24,6 +25,9 @@ export default function AdjustmentsScreen() {
   const rows = list.items;
   const [warehouses, setWarehouses] = useState<Warehouse[]>([]);
   const [stock, setStock] = useState<Stock[]>([]);
+  const [stockTotal, setStockTotal] = useState(0);
+  const [productSearch, setProductSearch] = useState('');
+  const debouncedProductSearch = useDebouncedValue(productSearch.trim());
   const [warehouseId, setWarehouseId] = useState('');
   const [reason, setReason] = useState('CORRECTION');
   const [note, setNote] = useState('');
@@ -49,11 +53,15 @@ export default function AdjustmentsScreen() {
   useEffect(() => {
     if (!warehouseId || !allowed) return;
     let active = true;
-    void authorizedRequest<Page<Stock>>(`inventory?page=1&perPage=100&warehouseId=${encodeURIComponent(warehouseId)}&sortBy=updatedAt&sortOrder=desc`)
-      .then((result) => { if (active) setStock(result.data); })
+    // Searched on the server, so every product of the warehouse is reachable, not only the first page.
+    const params = new URLSearchParams({ page: '1', perPage: String(STOCK_PAGE_SIZE), warehouseId, sortBy: 'updatedAt', sortOrder: 'desc' });
+    if (debouncedProductSearch) params.set('search', debouncedProductSearch);
+    void authorizedRequest<Page<Stock>>(`inventory?${params.toString()}`)
+      .then((result) => { if (active) { setStock(result.data); setStockTotal(result.meta.total ?? result.data.length); } })
       .catch((cause: unknown) => { if (active) setError(cause instanceof ApiError ? cause.message : 'Stok gudang belum dapat dimuat.'); });
     return () => { active = false; };
-  }, [authorizedRequest, allowed, warehouseId, reload]);
+  }, [authorizedRequest, allowed, warehouseId, reload, debouncedProductSearch]);
+  const changedCount = Object.values(deltas).filter((value) => value.trim()).length;
 
   async function submit() {
     const items = Object.entries(deltas).filter(([, value]) => value.trim()).map(([productId, quantityDelta]) => ({ productId, quantityDelta: quantityDelta.replace(',', '.') }));
@@ -70,16 +78,19 @@ export default function AdjustmentsScreen() {
 
   return <View style={styles.screen}><KeyboardAwareScrollView {...scrollProps} bottomOffset={24} keyboardShouldPersistTaps="handled" contentContainerStyle={styles.page} refreshControl={<RefreshControl refreshing={list.refreshing} onRefresh={() => { setReload((value) => value + 1); void list.refresh(); }} tintColor="#087f5b" />}>
     <Text style={styles.subtitle}>Catat koreksi stok dengan jejak perubahan dan alasan.</Text>
-    {!allowed ? <View style={styles.card}><Text style={styles.section}>Akses tidak tersedia</Text><Text style={styles.muted}>Fitur ini memerlukan permission inventory.adjust.</Text></View> : null}
+    {!allowed ? <View style={styles.card}><Text style={styles.section}>Akses tidak tersedia</Text><Text style={styles.muted}>Akun ini belum punya akses penyesuaian stok. Minta admin untuk mengaturnya.</Text></View> : null}
     {error ? <View style={styles.error}><Text style={styles.errorText}>{error}</Text></View> : null}
     {loading && allowed ? <ActivityIndicator style={styles.loader} color="#087f5b" /> : null}
     {allowed ? <>
-      <View style={styles.card}><Text style={styles.section}>Buat adjustment</Text><Text style={styles.label}>Gudang</Text><View style={styles.chips}>{warehouses.map((item) => <Pressable key={item.id} onPress={() => { if (item.id !== warehouseId) { setWarehouseId(item.id); setDeltas({}); } }} style={[styles.chip, warehouseId === item.id && styles.chipActive]}><Text style={[styles.chipText, warehouseId === item.id && styles.chipTextActive]}>{item.name}</Text></Pressable>)}</View>
+      <View style={styles.card}><Text style={styles.section}>Buat adjustment</Text><Text style={styles.label}>Gudang</Text><View style={styles.chips}>{warehouses.map((item) => <Pressable key={item.id} onPress={() => { if (item.id !== warehouseId) { setWarehouseId(item.id); setDeltas({}); setProductSearch(''); } }} style={[styles.chip, warehouseId === item.id && styles.chipActive]}><Text style={[styles.chipText, warehouseId === item.id && styles.chipTextActive]}>{item.name}</Text></Pressable>)}</View>
       <Text style={styles.label}>Jenis</Text><View style={styles.chips}>{reasons.map((item) => <Pressable key={item} onPress={() => setReason(item)} style={[styles.chip, reason === item && styles.chipActive]}><Text style={[styles.chipText, reason === item && styles.chipTextActive]}>{labels[item]}</Text></Pressable>)}</View>
       <TextInput accessibilityLabel="Catatan adjustment" value={note} onChangeText={setNote} placeholder="Alasan dan catatan wajib" style={styles.input} multiline />
       <Text style={styles.label}>Perubahan per produk (negatif untuk pengurangan)</Text>
+      <TextInput accessibilityLabel="Cari produk untuk adjustment" value={productSearch} onChangeText={setProductSearch} placeholder="Cari nama atau SKU produk" autoCapitalize="none" autoCorrect={false} returnKeyType="search" style={styles.searchInput} />
+      {stockTotal > stock.length ? <Text style={styles.muted}>Menampilkan {stock.length} dari {stockTotal} produk. Cari nama atau SKU untuk menemukan produk lain.</Text> : null}
+      {debouncedProductSearch && !stock.length ? <Text style={styles.muted}>Produk tidak ditemukan di gudang ini.</Text> : null}
       {stock.map((item) => <View key={item.product.id} style={styles.productRow}><View style={styles.productInfo}><Text style={styles.productName}>{item.product.name}</Text><Text style={styles.muted}>{item.product.sku} · Stok {qty(item.onHand)} {item.product.unit.code}</Text></View><TextInput accessibilityLabel={`Perubahan stok ${item.product.name}`} value={deltas[item.product.id] ?? ''} onChangeText={(value) => setDeltas((current) => ({ ...current, [item.product.id]: value }))} keyboardType="numbers-and-punctuation" placeholder="± jumlah" style={styles.qtyInput} /></View>)}
-      <Pressable disabled={saving} onPress={() => void submit()} style={[styles.primary, saving && styles.dim]}>{saving ? <ActivityIndicator color="#fff" /> : <Text style={styles.primaryText}>Simpan adjustment</Text>}</Pressable></View>
+      <Pressable disabled={saving} onPress={() => void submit()} style={[styles.primary, saving && styles.dim]}>{saving ? <ActivityIndicator color="#fff" /> : <Text style={styles.primaryText}>{changedCount ? `Simpan adjustment (${changedCount} produk)` : 'Simpan adjustment'}</Text>}</Pressable></View>
       <Text style={styles.sectionTitle}>Riwayat adjustment</Text>
       {rows.map((row) => <View key={row.id} style={styles.card}><Text style={styles.adjustmentNo}>{row.adjustmentNumber}</Text><Text style={styles.muted}>{labels[row.reason] ?? formatStatus(row.reason)} · {row.warehouse.name} · {formatDate(row.createdAt)}</Text><Text style={styles.muted}>{row.items.map((item) => `${item.product.name}: ${Number(item.quantityDelta) > 0 ? '+' : ''}${qty(item.quantityDelta)}`).join('  ·  ')}</Text><Text style={styles.muted}>{row.note}</Text></View>)}
       {list.error && !rows.length ? <View style={styles.error}><Text style={styles.errorText}>{list.error}</Text><Pressable accessibilityRole="button" onPress={() => void list.reload()}><Text style={styles.retry}>Coba lagi</Text></Pressable></View> : null}
@@ -90,4 +101,4 @@ export default function AdjustmentsScreen() {
   </KeyboardAwareScrollView></View>;
 }
 
-const styles = StyleSheet.create({ screen: { flex: 1, backgroundColor: '#f5f7f6' }, page: { padding: 20, paddingTop: 18, paddingBottom: 36 }, back: { alignSelf: 'flex-start', marginBottom: 20 }, backText: { color: '#087f5b', fontSize: 12, fontWeight: '800' }, eyebrow: { color: '#087f5b', fontSize: 10, fontWeight: '800', letterSpacing: 1.2 }, title: { marginTop: 6, color: '#172820', fontSize: 25, fontWeight: '800' }, subtitle: { marginTop: 5, color: '#718078', fontSize: 12 }, card: { marginTop: 14, padding: 15, borderWidth: 1, borderColor: '#e6ece8', borderRadius: 16, backgroundColor: '#fff', gap: 8 }, section: { color: '#26372e', fontSize: 15, fontWeight: '900' }, sectionTitle: { marginTop: 23, color: '#26372e', fontSize: 15, fontWeight: '900' }, label: { marginTop: 8, color: '#718078', fontSize: 11, fontWeight: '800' }, chips: { flexDirection: 'row', flexWrap: 'wrap', gap: 7 }, chip: { paddingHorizontal: 10, paddingVertical: 8, borderRadius: 10, backgroundColor: '#f1f4f2' }, chipActive: { backgroundColor: '#e7f5ee' }, chipText: { color: '#68766e', fontSize: 10, fontWeight: '800' }, chipTextActive: { color: '#087f5b' }, input: { minHeight: 48, padding: 11, borderWidth: 1, borderColor: '#dce4df', borderRadius: 11, color: '#26372e', textAlignVertical: 'top' }, productRow: { minHeight: 56, flexDirection: 'row', alignItems: 'center', gap: 8, borderTopWidth: 1, borderTopColor: '#edf1ee' }, productInfo: { flex: 1 }, productName: { color: '#26372e', fontSize: 12, fontWeight: '800' }, muted: { marginTop: 4, color: '#84918b', fontSize: 10, lineHeight: 15 }, qtyInput: { width: 90, height: 42, paddingHorizontal: 7, borderWidth: 1, borderColor: '#dce4df', borderRadius: 9, textAlign: 'center', color: '#26372e' }, primary: { minHeight: 46, alignItems: 'center', justifyContent: 'center', marginTop: 10, borderRadius: 12, backgroundColor: '#087f5b' }, primaryText: { color: '#fff', fontSize: 12, fontWeight: '900' }, dim: { opacity: 0.5 }, adjustmentNo: { color: '#087f5b', fontSize: 12, fontWeight: '900' }, error: { marginTop: 12, padding: 12, borderRadius: 12, backgroundColor: '#fff1ef' }, errorText: { color: '#a3332a', fontSize: 11 }, retry: { marginTop: 7, color: '#087f5b', fontSize: 11, fontWeight: '900' }, loader: { padding: 16 }, empty: { marginTop: 8, padding: 15, borderRadius: 12, backgroundColor: '#fff', color: '#84918b', fontSize: 11 } });
+const styles = StyleSheet.create({ screen: { flex: 1, backgroundColor: '#f5f7f6' }, page: { padding: 20, paddingTop: 18, paddingBottom: 36 }, back: { alignSelf: 'flex-start', marginBottom: 20 }, backText: { color: '#087f5b', fontSize: 12, fontWeight: '800' }, eyebrow: { color: '#087f5b', fontSize: 10, fontWeight: '800', letterSpacing: 1.2 }, title: { marginTop: 6, color: '#172820', fontSize: 25, fontWeight: '800' }, subtitle: { marginTop: 5, color: '#718078', fontSize: 12 }, card: { marginTop: 14, padding: 15, borderWidth: 1, borderColor: '#e6ece8', borderRadius: 16, backgroundColor: '#fff', gap: 8 }, section: { color: '#26372e', fontSize: 15, fontWeight: '900' }, sectionTitle: { marginTop: 23, color: '#26372e', fontSize: 15, fontWeight: '900' }, label: { marginTop: 8, color: '#718078', fontSize: 11, fontWeight: '800' }, chips: { flexDirection: 'row', flexWrap: 'wrap', gap: 7 }, chip: { paddingHorizontal: 10, paddingVertical: 8, borderRadius: 10, backgroundColor: '#f1f4f2' }, chipActive: { backgroundColor: '#e7f5ee' }, chipText: { color: '#68766e', fontSize: 10, fontWeight: '800' }, chipTextActive: { color: '#087f5b' }, input: { minHeight: 48, padding: 11, borderWidth: 1, borderColor: '#dce4df', borderRadius: 11, color: '#26372e', textAlignVertical: 'top' }, productRow: { minHeight: 56, flexDirection: 'row', alignItems: 'center', gap: 8, borderTopWidth: 1, borderTopColor: '#edf1ee' }, productInfo: { flex: 1 }, productName: { color: '#26372e', fontSize: 12, fontWeight: '800' }, muted: { marginTop: 4, color: '#84918b', fontSize: 10, lineHeight: 15 }, searchInput: { height: 44, paddingHorizontal: 11, borderWidth: 1, borderColor: '#dce4df', borderRadius: 11, color: '#26372e' }, qtyInput: { width: 90, height: 42, paddingHorizontal: 7, borderWidth: 1, borderColor: '#dce4df', borderRadius: 9, textAlign: 'center', color: '#26372e' }, primary: { minHeight: 46, alignItems: 'center', justifyContent: 'center', marginTop: 10, borderRadius: 12, backgroundColor: '#087f5b' }, primaryText: { color: '#fff', fontSize: 12, fontWeight: '900' }, dim: { opacity: 0.5 }, adjustmentNo: { color: '#087f5b', fontSize: 12, fontWeight: '900' }, error: { marginTop: 12, padding: 12, borderRadius: 12, backgroundColor: '#fff1ef' }, errorText: { color: '#a3332a', fontSize: 11 }, retry: { marginTop: 7, color: '#087f5b', fontSize: 11, fontWeight: '900' }, loader: { padding: 16 }, empty: { marginTop: 8, padding: 15, borderRadius: 12, backgroundColor: '#fff', color: '#84918b', fontSize: 11 } });

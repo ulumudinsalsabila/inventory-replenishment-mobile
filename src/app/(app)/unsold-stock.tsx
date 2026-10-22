@@ -4,6 +4,7 @@ import { router, Stack } from 'expo-router';
 import * as Print from 'expo-print';
 import { ChevronDown, ChevronRight, CircleDollarSign, Download, Layers, Package, Save, Search, SlidersHorizontal, Store } from 'lucide-react-native';
 import { useAuth } from '../../auth/auth-provider';
+import { useBranchFilter } from '../../auth/branch-filter';
 import { ApiError } from '../../lib/api';
 import { LoadMoreFooter } from '../../components/load-more-footer';
 import { OptionSheet } from '../../components/option-sheet';
@@ -26,7 +27,8 @@ export default function UnsoldStockScreen() {
   const { user, accessToken, authorizedRequest } = useAuth();
   const [searchInput, setSearchInput] = useState('');
   const search = useDebouncedValue(searchInput.trim());
-  const [branchId, setBranchId] = useState('');
+  const { selectedBranchId } = useBranchFilter();
+  const [branchId, setBranchId] = useState(selectedBranchId);
   const [categoryId, setCategoryId] = useState('');
   const [sort, setSort] = useState<Sort>('name');
   const [tab, setTab] = useState<Tab>('all');

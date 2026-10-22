@@ -7,6 +7,16 @@ export const LIST_PAGE_SIZE = 10;
 type PageResult<T> = { data: T[]; meta?: { total?: number; totalPages?: number } };
 
 /**
+ * Pages are fetched by offset, so rows created meanwhile shift the next page and repeat rows already shown;
+ * those repeats are dropped by id (rows without an id are kept as they come).
+ */
+function appendUnique<T>(current: T[], next: T[]) {
+  const idOf = (row: T) => (row as { id?: unknown }).id;
+  const seen = new Set(current.map(idOf).filter((id) => id !== undefined));
+  return [...current, ...next.filter((row) => { const id = idOf(row); return id === undefined || !seen.has(id); })];
+}
+
+/**
  * Loads a paginated list endpoint `pageSize` rows at a time and appends the next page on demand.
  * `path` is the endpoint with its filters but without `page`/`perPage`; changing it restarts from
  * the first page, and `null` clears the list (for example while a required filter is missing).
@@ -38,7 +48,7 @@ export function useInfiniteList<T>(request: <R>(path: string) => Promise<R>, pat
       if (generation !== state.current.generation) return;
       state.current.page = page;
       setLoadedPath(path);
-      setItems((current) => page === 1 ? result.data : [...current, ...result.data]);
+      setItems((current) => page === 1 ? result.data : appendUnique(current, result.data));
       setTotal(result.meta?.total ?? (page - 1) * pageSize + result.data.length);
       setHasMore(result.meta?.totalPages !== undefined ? page < result.meta.totalPages : result.data.length === pageSize);
       setError('');

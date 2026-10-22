@@ -5,7 +5,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { ArrowDownLeft, ArrowLeft, ArrowUpRight, Paperclip } from 'lucide-react-native';
 import { useAuth } from '../../auth/auth-provider';
 import { ApiError } from '../../lib/api';
-import { formatDate } from '../../lib/display';
+import { formatDateTime } from '../../lib/display';
 import { PreviewImage } from '../../components/image-viewer';
 
 type Branch = { id: string; name: string; code: string };
@@ -40,7 +40,7 @@ export default function CashInOutDetailScreen() {
     {loading ? <ActivityIndicator style={styles.loader} color="#07885b" size="large" /> : error ? <Text style={styles.error}>{error}</Text> : detail ? <ScrollView contentContainerStyle={styles.content}>
       <View style={styles.banner}>
         <View style={[styles.bannerIcon, detail.type === 'CASH_IN' ? styles.inIcon : styles.outIcon]}>{detail.type === 'CASH_IN' ? <ArrowDownLeft size={20} color="#07885b" /> : <ArrowUpRight size={20} color="#c23a36" />}</View>
-        <View style={styles.bannerText}><Text style={styles.bannerTitle}>{detail.type === 'CASH_IN' ? 'Kas masuk' : 'Kas keluar'}</Text><Text style={styles.date}>{formatDate(detail.createdAt)}</Text></View>
+        <View style={styles.bannerText}><Text style={styles.bannerTitle}>{detail.type === 'CASH_IN' ? 'Kas masuk' : 'Kas keluar'}</Text><Text style={styles.date}>{formatDateTime(detail.createdAt)}</Text></View>
         <Text style={[styles.amount, detail.type === 'CASH_IN' ? styles.inAmount : styles.outAmount]}>{detail.type === 'CASH_IN' ? '+' : '-'}{money(detail.amount)}</Text>
       </View>
       <View style={styles.card}>

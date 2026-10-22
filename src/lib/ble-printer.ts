@@ -40,7 +40,7 @@ async function ensureBleAccess() {
   if (permissions.some((permission) => results[permission] !== PermissionsAndroid.RESULTS.GRANTED)) {
     throw new Error(Number(Platform.Version) >= 31 ? 'Izin Bluetooth belum diberikan.' : 'Izin lokasi diperlukan Android untuk mencari printer BLE.');
   }
-  started ??= BleManager.start({ showAlert: false }).catch((error: unknown) => { started = null; throw error; });
+  started ??= BleManager.start({ showAlert: false }).catch(() => { started = null; throw new Error('Bluetooth tidak dapat dimulai. Tutup lalu buka lagi aplikasinya.'); });
   await started;
   if ((await BleManager.checkState()) !== 'on') {
     try { await BleManager.enableBluetooth(); } catch { throw new Error('Aktifkan Bluetooth untuk mencetak nota.'); }
@@ -68,10 +68,10 @@ export async function scanBlePrinters(onFound: (printers: BlePrinter[]) => void,
       stop.remove();
       resolve(sorted());
     });
-    BleManager.scan({ seconds }).catch((error: unknown) => {
+    BleManager.scan({ seconds }).catch(() => {
       discover.remove();
       stop.remove();
-      reject(error instanceof Error ? error : new Error('Gagal mencari printer BLE.'));
+      reject(new Error('Gagal mencari printer BLE. Pastikan Bluetooth dan lokasi menyala lalu coba lagi.'));
     });
   });
 }
@@ -113,6 +113,20 @@ async function connectedTarget(printerId: string, printerName: string) {
 /** Sends raw ESC/POS bytes to a BLE printer in MTU-sized packets. */
 export async function writeBlePrinter(printerId: string, printerName: string, bytes: number[]) {
   await ensureBleAccess();
+  try {
+    try { await writeBle(printerId, printerName, bytes); }
+    catch {
+      // A power-cycled printer can leave a stale connection behind: drop it and try once on a fresh one.
+      await disconnectBle(printerId);
+      await writeBle(printerId, printerName, bytes);
+    }
+  } finally {
+    // Release the printer after each job so other cashier phones can connect to it.
+    await disconnectBle(printerId);
+  }
+}
+
+async function writeBle(printerId: string, printerName: string, bytes: number[]) {
   const target = await connectedTarget(printerId, printerName);
   try {
     // Without-response writes are fast but can overrun a small printer buffer; the short pause between packets prevents that.
@@ -122,4 +136,9 @@ export async function writeBlePrinter(printerId: string, printerName: string, by
     writeTargets.delete(printerId);
     throw new Error('Printer tidak menerima nota lewat BLE. Periksa koneksi lalu coba lagi.');
   }
+}
+
+async function disconnectBle(printerId: string) {
+  writeTargets.delete(printerId);
+  try { if (await BleManager.isPeripheralConnected(printerId)) await BleManager.disconnect(printerId); } catch { /* Already gone. */ }
 }

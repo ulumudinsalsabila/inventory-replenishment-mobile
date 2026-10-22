@@ -319,16 +319,38 @@ async function printThermalText(text: string, printer: PairedPrinter) {
   // safeText keeps receipts plain ASCII, so every character is exactly one ESC/POS byte.
   if (printer.transport === 'ble') { await writeBlePrinter(printer.address, printer.name, Array.from(payload, (char) => char.charCodeAt(0) & 0xff)); return; }
   await ensureAndroidBluetoothAccess();
-  const paired = await RNBluetoothClassic.getBondedDevices();
-  const device = paired.find((candidate) => candidate.address === printer.address);
-  if (!device) throw new Error('Printer pilihan tidak lagi dipasangkan. Pasangkan kembali dari pengaturan Bluetooth.');
+  let paired: Awaited<ReturnType<typeof RNBluetoothClassic.getBondedDevices>>;
+  try { paired = await RNBluetoothClassic.getBondedDevices(); } catch { throw new Error('Bluetooth tidak dapat diakses. Pastikan Bluetooth menyala lalu coba lagi.'); }
+  if (!paired.some((candidate) => candidate.address === printer.address)) throw new Error('Printer pilihan tidak lagi dipasangkan. Pasangkan kembali dari pengaturan Bluetooth.');
 
-  const connected = (await RNBluetoothClassic.isDeviceConnected(printer.address))
-    ? await RNBluetoothClassic.getConnectedDevice(printer.address)
-    : await RNBluetoothClassic.connectToDevice(printer.address);
-  if (!(await connected.isConnected())) throw new Error(`Gagal tersambung ke ${printer.name}. Pastikan printer menyala.`);
+  try {
+    try { await writeClassic(printer, payload); }
+    catch {
+      // A printer that was switched off and on still looks connected, but writes to that dead socket fail: reconnect once.
+      await disconnectClassic(printer.address);
+      await writeClassic(printer, payload);
+    }
+  } finally {
+    // Cheap ESC/POS printers accept one connection at a time; releasing it lets other cashier phones print too.
+    await disconnectClassic(printer.address);
+  }
+}
 
-  if (!(await connected.write(payload, 'ascii'))) throw new Error('Printer tidak menerima nota. Periksa koneksi dan dukungan ESC/POS.');
+async function writeClassic(printer: PairedPrinter, payload: string) {
+  let connected;
+  try {
+    connected = (await RNBluetoothClassic.isDeviceConnected(printer.address))
+      ? await RNBluetoothClassic.getConnectedDevice(printer.address)
+      : await RNBluetoothClassic.connectToDevice(printer.address);
+  } catch { throw new Error(`Gagal tersambung ke ${printer.name}. Pastikan printer menyala dan dekat.`); }
+  if (!(await connected.isConnected())) throw new Error(`Gagal tersambung ke ${printer.name}. Pastikan printer menyala dan dekat.`);
+  let written = false;
+  try { written = await connected.write(payload, 'ascii'); } catch { written = false; }
+  if (!written) throw new Error('Printer tidak menerima nota. Periksa koneksi lalu coba lagi.');
+}
+
+async function disconnectClassic(address: string) {
+  try { if (await RNBluetoothClassic.isDeviceConnected(address)) await RNBluetoothClassic.disconnectFromDevice(address); } catch { /* Already gone. */ }
 }
 
 /** Characters per line on 58 mm thermal paper; previews use the same width as the printer. */

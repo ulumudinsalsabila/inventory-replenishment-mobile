@@ -4,6 +4,7 @@ import { useLocalSearchParams } from 'expo-router';
 import { CalendarDays, ChevronDown, ChevronRight, Coins, Store, TrendingUp, Warehouse, X } from 'lucide-react-native';
 import Svg, { G, Line, Rect, Text as SvgText } from 'react-native-svg';
 import { useAuth } from '../../auth/auth-provider';
+import { useBranchFilter } from '../../auth/branch-filter';
 import { ApiError } from '../../lib/api';
 import { OptionSheet } from '../../components/option-sheet';
 import { compactMoney, jakartaToday, money, monthLabel, monthRange, percent, recentMonths, shortDateLabel } from '../../lib/report';
@@ -67,7 +68,8 @@ export default function BranchProfitScreen() {
   const { accessToken, authorizedRequest } = useAuth();
   const [month, setMonth] = useState(params.month && /^\d{4}-\d{2}$/.test(params.month) ? params.month : jakartaToday().slice(0, 7));
   const [granularity, setGranularity] = useState<Granularity>('day');
-  const [branchId, setBranchId] = useState('');
+  const { selectedBranchId } = useBranchFilter();
+  const [branchId, setBranchId] = useState(selectedBranchId);
   const [all, setAll] = useState<BranchProfit | null>(null);
   const [selected, setSelected] = useState<BranchProfit | null>(null);
   const [loading, setLoading] = useState(true);

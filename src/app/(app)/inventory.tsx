@@ -60,7 +60,7 @@ export default function InventoryScreen() {
               </View>
               <View style={styles.stockLine}>
                 <View><Text style={styles.stockLabel}>Tersedia</Text><Text style={[styles.stockValue, low && styles.stockLow]}>{quantity(available)} <Text style={styles.unit}>{row.product.unit.code}</Text></Text></View>
-                <View style={styles.stockRight}><Text style={styles.stockLabel}>Dipesan  {quantity(row.reserved)}</Text><Text style={styles.minimum}>Reorder point  {quantity(row.reorderPoint)}</Text></View>
+                <View style={styles.stockRight}><Text style={styles.stockLabel}>Dipesan  {quantity(row.reserved)}</Text><Text style={styles.minimum}>Batas pesan ulang  {quantity(row.reorderPoint)}</Text></View>
               </View>
             </View>
           );

@@ -5,6 +5,16 @@ import { ApiError, apiFileRequest, apiRequest, currentUserRequest, loginRequest,
 const ACCESS_TOKEN_KEY = 'inventory.access-token';
 const REFRESH_TOKEN_KEY = 'inventory.refresh-token';
 const PUSH_TOKEN_KEY = 'inventory.expo-push-token';
+/** Last known user, so the app can open with a saved session while the server is unreachable. */
+const USER_KEY = 'inventory.user';
+
+const rememberUser = (user: ApiUser) => SecureStore.setItemAsync(USER_KEY, JSON.stringify(user)).catch(() => undefined);
+async function rememberedUser() {
+  try {
+    const saved = await SecureStore.getItemAsync(USER_KEY);
+    return saved ? JSON.parse(saved) as ApiUser : null;
+  } catch { return null; }
+}
 
 /** Refreshes the session and stores the rotated tokens (both of them), returning the new access token. */
 async function refreshAndStore(refreshToken: string) {
@@ -58,6 +68,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           nextAccessToken = await refreshAndStore(savedRefreshToken);
           currentUser = await currentUserRequest(nextAccessToken);
         }
+        void rememberUser(currentUser);
         if (active) {
           accessTokenRef.current = nextAccessToken;
           setAccessToken(nextAccessToken);
@@ -68,7 +79,17 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           await Promise.all([
             SecureStore.deleteItemAsync(ACCESS_TOKEN_KEY),
             SecureStore.deleteItemAsync(REFRESH_TOKEN_KEY),
+            SecureStore.deleteItemAsync(USER_KEY),
           ]);
+          return;
+        }
+        // Offline or server down: the saved session is still valid, so open the app with it instead of the login
+        // screen. Requests refresh the token as usual once the server answers again.
+        const [savedAccessToken, savedUser] = await Promise.all([SecureStore.getItemAsync(ACCESS_TOKEN_KEY), rememberedUser()]);
+        if (active && savedAccessToken && savedUser) {
+          accessTokenRef.current = savedAccessToken;
+          setAccessToken(savedAccessToken);
+          setUser(savedUser);
         }
       } finally {
         if (active) setLoading(false);
@@ -84,6 +105,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       SecureStore.setItemAsync(ACCESS_TOKEN_KEY, result.accessToken),
       SecureStore.setItemAsync(REFRESH_TOKEN_KEY, result.refreshToken),
     ]);
+    void rememberUser(result.user);
     accessTokenRef.current = result.accessToken;
     setAccessToken(result.accessToken);
     setUser(result.user);
@@ -120,6 +142,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           await Promise.all([
             SecureStore.deleteItemAsync(ACCESS_TOKEN_KEY),
             SecureStore.deleteItemAsync(REFRESH_TOKEN_KEY),
+            SecureStore.deleteItemAsync(USER_KEY),
           ]);
           accessTokenRef.current = null;
           setAccessToken(null);
@@ -133,16 +156,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const signOut = useCallback(async () => {
-    const pushToken = await SecureStore.getItemAsync(PUSH_TOKEN_KEY);
-    if (pushToken && accessTokenRef.current) {
-      // Through authorizedRequest so an expired access token is refreshed first; otherwise the server keeps sending
-      // this user's notifications to a shared device after logout.
-      try { await authorizedRequest('notifications/devices', { method: 'DELETE', body: JSON.stringify({ token: pushToken }) }); } catch { /* Keep logout available if the API cannot be reached. */ }
+    if (accessTokenRef.current) {
+      // Ends the session on the server for every device and drops this user's push tokens, so a shared phone stops
+      // getting their notifications. Through authorizedRequest so an expired access token is refreshed first.
+      try { await authorizedRequest('auth/logout', { method: 'POST' }); } catch { /* Keep logout available if the API cannot be reached. */ }
     }
     await Promise.all([
       SecureStore.deleteItemAsync(ACCESS_TOKEN_KEY),
       SecureStore.deleteItemAsync(REFRESH_TOKEN_KEY),
       SecureStore.deleteItemAsync(PUSH_TOKEN_KEY),
+      SecureStore.deleteItemAsync(USER_KEY),
     ]);
     accessTokenRef.current = null;
     setAccessToken(null);
@@ -172,7 +195,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         return await apiFileRequest(path, await refreshPromise.current);
       } catch (refreshError) {
         if (refreshError instanceof ApiError && refreshError.status === 401) {
-          await Promise.all([SecureStore.deleteItemAsync(ACCESS_TOKEN_KEY), SecureStore.deleteItemAsync(REFRESH_TOKEN_KEY)]);
+          await Promise.all([SecureStore.deleteItemAsync(ACCESS_TOKEN_KEY), SecureStore.deleteItemAsync(REFRESH_TOKEN_KEY), SecureStore.deleteItemAsync(USER_KEY)]);
           accessTokenRef.current = null;
           setAccessToken(null);
           setUser(null);

@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { ActivityIndicator, Modal, Platform, Pressable, RefreshControl, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
+import { ActivityIndicator, Alert, Modal, Platform, Pressable, RefreshControl, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { File } from 'expo-file-system';
 import * as ImagePicker from 'expo-image-picker';
 import { Minus, Plus, RefreshCw, Search, X } from 'lucide-react-native';
@@ -160,7 +160,7 @@ export default function TransfersScreen() {
         </View>
         {error && !selected ? <View style={styles.errorCard}><Text style={styles.errorText}>{error}</Text></View> : null}
         {list.error && !rows.length ? <View style={styles.errorCard}><Text style={styles.errorText}>{list.error}</Text><Pressable accessibilityRole="button" onPress={() => void list.reload()}><Text style={styles.retry}>Coba lagi</Text></Pressable></View> : null}
-        {!canRead ? <View style={styles.empty}><Text style={styles.emptyTitle}>Akses transfer tidak tersedia</Text><Text style={styles.emptyText}>Akun ini perlu permission inventory.read untuk melihat transfer.</Text></View> : null}
+        {!canRead ? <View style={styles.empty}><Text style={styles.emptyTitle}>Akses transfer tidak tersedia</Text><Text style={styles.emptyText}>Akun ini belum punya akses melihat stok, jadi daftar transfer tidak bisa dibuka.</Text></View> : null}
         {list.loading && rows.length === 0 ? <ActivityIndicator style={styles.loader} color="#087f5b" size="large" /> : null}
         {canRead && !list.loading && !list.error && !rows.length ? <View style={styles.empty}><Text style={styles.emptyTitle}>Belum ada transfer</Text><Text style={styles.emptyText}>Transfer yang masuk ke cabang atau dibuat pusat akan tampil di sini.</Text></View> : null}
         {rows.map((row) => <Pressable accessibilityRole="button" key={row.id} onPress={() => void openTransfer(row.id)} style={({ pressed }) => [styles.card, pressed && styles.pressed]}>
@@ -196,7 +196,9 @@ export default function TransfersScreen() {
             </View>; })}
             {error ? <View style={styles.errorCard}><Text style={styles.errorText}>{error}</Text></View> : null}
             {selected.availableActions.includes('RECEIVE') ? <Pressable accessibilityRole="button" disabled={receiving} onPress={() => void receiveTransfer()} style={[styles.primaryAction, receiving && styles.disabled]}>{receiving ? <ActivityIndicator color="#fff" /> : <Text style={styles.primaryActionText}>Konfirmasi penerimaan</Text>}</Pressable> : null}
-            {selected.availableActions.filter((action) => action !== 'RECEIVE').map((action) => <Pressable key={action} accessibilityRole="button" disabled={actionLoading} onPress={() => void transition(action)} style={[action === 'CANCEL' ? styles.secondaryAction : styles.primaryAction, actionLoading && styles.disabled]}>{actionLoading ? <ActivityIndicator color={action === 'CANCEL' ? '#087f5b' : '#fff'} /> : <Text style={action === 'CANCEL' ? styles.secondaryActionText : styles.primaryActionText}>{action === 'PREPARE' ? 'Mulai siapkan' : action === 'READY' ? 'Tandai siap dikirim' : action === 'SEND' ? 'Kirim transfer' : 'Batalkan transfer'}</Text>}</Pressable>)}
+            {selected.availableActions.filter((action) => action !== 'RECEIVE').map((action) => <Pressable key={action} accessibilityRole="button" disabled={actionLoading} onPress={() => action === 'CANCEL'
+              ? Alert.alert('Batalkan transfer?', 'Transfer ini dibatalkan dan barang tidak jadi dikirim.', [{ text: 'Kembali', style: 'cancel' }, { text: 'Batalkan transfer', style: 'destructive', onPress: () => void transition(action) }])
+              : void transition(action)} style={[action === 'CANCEL' ? styles.secondaryAction : styles.primaryAction, actionLoading && styles.disabled]}>{actionLoading ? <ActivityIndicator color={action === 'CANCEL' ? '#087f5b' : '#fff'} /> : <Text style={action === 'CANCEL' ? styles.secondaryActionText : styles.primaryActionText}>{action === 'PREPARE' ? 'Mulai siapkan' : action === 'READY' ? 'Tandai siap dikirim' : action === 'SEND' ? 'Kirim transfer' : 'Batalkan transfer'}</Text>}</Pressable>)}
           </KeyboardAwareScrollView> : null}
         </View>
       </Modal>

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import { ActivityIndicator, Pressable, RefreshControl, StyleSheet, Text, TextInput, View } from 'react-native';
+import { ActivityIndicator, Alert, Pressable, RefreshControl, StyleSheet, Text, TextInput, View } from 'react-native';
 import { LoadMoreFooter } from '../../components/load-more-footer';
 import { useAuth } from '../../auth/auth-provider';
 import { ApiError } from '../../lib/api';
@@ -74,6 +74,18 @@ export default function OpnamesScreen() {
     finally { setSaving(false); }
   }
 
+  /** Completing changes stock and cancelling discards the count, so both ask first; submitting can still be reviewed. */
+  function confirmAction(action: 'complete' | 'cancel') {
+    if (!selected) return;
+    const [title, message, label] = action === 'complete'
+      ? ['Selesaikan opname?', `Stok ${selected.warehouse?.name ?? 'gudang'} akan disesuaikan dengan hasil hitung. Tindakan ini tidak bisa dibatalkan.`, 'Selesaikan']
+      : ['Batalkan opname?', 'Hasil hitung di opname ini tidak akan dipakai dan stok tidak berubah.', 'Batalkan opname'];
+    Alert.alert(title, message, [
+      { text: 'Kembali', style: 'cancel' },
+      { text: label, style: action === 'cancel' ? 'destructive' : 'default', onPress: () => void runAction(action) },
+    ]);
+  }
+
   async function runAction(action: 'submit' | 'complete' | 'cancel') {
     if (!selected) return;
     setSaving(true); setError('');
@@ -93,8 +105,8 @@ export default function OpnamesScreen() {
       <View style={styles.summary}><Text style={styles.number}>{selected.opnameNumber}</Text><Text style={styles.status}>{statusLabels[selected.status] ?? formatStatus(selected.status)}</Text><Text style={styles.muted}>{selected.warehouse.name} · {formatDate(selected.createdAt)}</Text></View>
       <Text style={styles.sectionTitle}>Hasil hitung</Text>
       {selected.items.map((item) => <View key={item.id} style={styles.itemCard}><Text style={styles.product}>{item.product.name}</Text><Text style={styles.muted}>{item.product.sku}{item.product.unit?.code ? ` · ${item.product.unit.code}` : ''}</Text><View style={styles.qtyRow}><Text style={styles.muted}>Sistem {qty(item.systemQtySnapshot)} · Fisik {qty(item.physicalQty)}</Text><Text style={[styles.diff, Number(item.differenceQty) !== 0 && styles.diffChanged]}>{Number(item.differenceQty) > 0 ? '+' : ''}{qty(item.differenceQty)}</Text></View></View>)}
-      {canCreate && selected.status === 'DRAFT' ? <><Pressable disabled={saving} onPress={() => void runAction('submit')} style={[styles.primary, saving && styles.disabled]}>{saving ? <ActivityIndicator color="#fff" /> : <Text style={styles.primaryText}>Ajukan opname</Text>}</Pressable><Pressable disabled={saving} onPress={() => void runAction('cancel')} style={styles.secondary}><Text style={styles.secondaryText}>Batalkan draft</Text></Pressable></> : null}
-      {canCreate && selected.status === 'SUBMITTED' ? <><Pressable disabled={saving} onPress={() => void runAction('complete')} style={[styles.primary, saving && styles.disabled]}>{saving ? <ActivityIndicator color="#fff" /> : <Text style={styles.primaryText}>Selesaikan dan sesuaikan stok</Text>}</Pressable><Pressable disabled={saving} onPress={() => void runAction('cancel')} style={styles.secondary}><Text style={styles.secondaryText}>Batalkan opname</Text></Pressable></> : null}
+      {canCreate && selected.status === 'DRAFT' ? <><Pressable disabled={saving} onPress={() => void runAction('submit')} style={[styles.primary, saving && styles.disabled]}>{saving ? <ActivityIndicator color="#fff" /> : <Text style={styles.primaryText}>Ajukan opname</Text>}</Pressable><Pressable disabled={saving} onPress={() => confirmAction('cancel')} style={styles.secondary}><Text style={styles.secondaryText}>Batalkan draft</Text></Pressable></> : null}
+      {canCreate && selected.status === 'SUBMITTED' ? <><Pressable disabled={saving} onPress={() => confirmAction('complete')} style={[styles.primary, saving && styles.disabled]}>{saving ? <ActivityIndicator color="#fff" /> : <Text style={styles.primaryText}>Selesaikan dan sesuaikan stok</Text>}</Pressable><Pressable disabled={saving} onPress={() => confirmAction('cancel')} style={styles.secondary}><Text style={styles.secondaryText}>Batalkan opname</Text></Pressable></> : null}
     </> : creating ? <>
       <Pressable onPress={() => setCreating(false)} style={styles.back}><Text style={styles.backText}>‹  Daftar opname</Text></Pressable>
       <Text style={styles.sectionTitle}>Gudang</Text>

@@ -30,7 +30,7 @@ export function NotificationsProvider({ children }: { children: ReactNode }) {
     const [nextSummary, todayOrderCount] = await Promise.all([
       authorizedRequest<Omit<NotificationSummary, 'todayOrderCount'>>('notifications/summary').catch(() => null),
       user.permissions.includes('order.read')
-        ? authorizedRequest<{ meta: { total: number } }>(`orders?page=1&perPage=1&from=${from}&to=${to}`).then((result) => result.meta.total).catch(() => null)
+        ? authorizedRequest<{ meta: { total: number } }>(`orders?page=1&perPage=10&from=${from}&to=${to}`).then((result) => result.meta.total).catch(() => null)
         : Promise.resolve(0),
     ]);
     // Badges are supplementary: keep the last known values when a request fails.

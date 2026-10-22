@@ -149,7 +149,7 @@ export default function OrdersScreen() {
     let active = true;
     const timer = setTimeout(() => void Promise.all(orderRangeOptions.map(async (item) => {
       const { from, to } = getRange(item.id);
-      const params = new URLSearchParams({ page: '1', perPage: '1', from, to });
+      const params = new URLSearchParams({ page: '1', perPage: '10', from, to });
       if (search) params.set('search', search);
       const total = await authorizedRequest<CountResult>(`orders?${params.toString()}`).then((response) => response.meta.total).catch(() => undefined);
       return [item.id, total] as const;

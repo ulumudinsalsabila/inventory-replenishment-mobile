@@ -5,6 +5,7 @@ import { ArrowDownLeft, ArrowUpRight, Boxes, ChevronRight, Coins, House, Package
 import { useAuth } from '../../auth/auth-provider';
 import { LoadMoreFooter } from '../../components/load-more-footer';
 import { ApiError } from '../../lib/api';
+import { formatMovementType } from '../../lib/display';
 import { useInfiniteList, useLoadMoreOnScroll } from '../../lib/infinite-list';
 import { money, quantity } from '../../lib/report';
 import { PreviewImage } from '../../components/image-viewer';
@@ -19,10 +20,6 @@ type Movement = { id: string; type: string; quantity: string | number; beforeSto
 type Tab = 'branch' | 'history';
 
 const houseTones = [{ bg: '#ffeceb', fg: '#d6455a' }, { bg: '#e7f8ef', fg: '#07956f' }, { bg: '#eaf0ff', fg: '#3f6fe0' }, { bg: '#fff3e3', fg: '#e07d12' }, { bg: '#f1ebff', fg: '#7c4fe0' }];
-const movementLabels: Record<string, string> = {
-  PURCHASE_IN: 'Pembelian masuk', PURCHASE: 'Pembelian', PURCHASE_BONUS: 'Bonus pembelian', TRANSFER_IN: 'Transfer masuk', TRANSFER_OUT: 'Transfer keluar',
-  SALE: 'Penjualan', SALE_REVERSAL: 'Pembatalan penjualan', RETURN: 'Retur', WASTE: 'Barang rusak', ADJUSTMENT: 'Adjustment', STOCK_OPNAME: 'Stock opname',
-};
 const dateTime = new Intl.DateTimeFormat('id-ID', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Jakarta' });
 
 export default function StockDetailScreen() {
@@ -104,7 +101,7 @@ export default function StockDetailScreen() {
         return <View key={row.id} style={styles.movementCard}>
           <View style={[styles.movementIcon, { backgroundColor: inbound ? '#e7f8ef' : '#ffeceb' }]}>{inbound ? <ArrowDownLeft size={18} color="#07956f" /> : <ArrowUpRight size={18} color="#d6455a" />}</View>
           <View style={styles.locationInfo}>
-            <Text style={styles.locationName}>{movementLabels[row.type] ?? row.type.replaceAll('_', ' ')}</Text>
+            <Text style={styles.locationName}>{formatMovementType(row.type)}</Text>
             <Text numberOfLines={1} style={styles.movementMeta}>{row.warehouse.name}{row.referenceNumber ? ` · ${row.referenceNumber}` : ''}</Text>
             <Text style={styles.movementMeta}>{dateTime.format(new Date(row.createdAt))}</Text>
           </View>

@@ -182,7 +182,7 @@ export default function DisplayScreen() {
 
   const visibleProducts = catalog.filter((product) => `${product.name} ${product.sku}`.toLowerCase().includes(productSearch.trim().toLowerCase()) && (movementType === 'DISPLAY_IN' ? Number(product.warehouseAvailable) > Number(product.displayQuantity) : Number(product.displayQuantity) > 0));
 
-  if (!canRead) return <View style={styles.center}><Text style={styles.emptyTitle}>Akses Display Toko tidak tersedia</Text><Text style={styles.muted}>Minta admin memeriksa permission display.read.</Text></View>;
+  if (!canRead) return <View style={styles.center}><Text style={styles.emptyTitle}>Akses Display Toko tidak tersedia</Text><Text style={styles.muted}>Minta admin memberi akses Display Toko untuk akun ini.</Text></View>;
 
   return <View style={styles.screen}>
     <KeyboardAwareScrollView {...scrollProps} bottomOffset={24} contentContainerStyle={styles.page} keyboardShouldPersistTaps="handled" refreshControl={<RefreshControl refreshing={stockList.refreshing || movementList.refreshing} onRefresh={() => { void stockList.refresh(); void movementList.refresh(); }} tintColor="#07885b" />}>

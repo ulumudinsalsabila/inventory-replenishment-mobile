@@ -5,9 +5,10 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { ArrowDownLeft, ArrowUpRight, Check, ChevronDown, ChevronRight, Plus, Search, X } from 'lucide-react-native';
 import { LoadMoreFooter } from '../../components/load-more-footer';
 import { useAuth } from '../../auth/auth-provider';
+import { useBranchFilter } from '../../auth/branch-filter';
 import { ApiError } from '../../lib/api';
 import { getRange, rangeLabel, rangeOptions, type RangePreset } from '../../lib/date-range';
-import { formatDate } from '../../lib/display';
+import { formatDateTime } from '../../lib/display';
 import { useDebouncedValue, useInfiniteList, useLoadMoreOnScroll } from '../../lib/infinite-list';
 import { useBottomGap } from '../../lib/responsive';
 import { KeyboardAwareScrollView } from 'react-native-keyboard-controller';
@@ -25,7 +26,7 @@ export default function CashInOutScreen() {
   const canCreate = user?.permissions.includes('cash_transaction.create') ?? false;
   const assignedBranchId = user?.branchId ?? null;
   const [branches, setBranches] = useState<Branch[]>([]);
-  const [branchId, setBranchId] = useState(assignedBranchId ?? '');
+  const { selectedBranchId: branchId, setSelectedBranchId: setBranchId } = useBranchFilter();
   const [searchInput, setSearchInput] = useState('');
   const search = useDebouncedValue(searchInput.trim());
   const [typeFilter, setTypeFilter] = useState<'ALL' | 'CASH_IN' | 'CASH_OUT'>('ALL');
@@ -51,7 +52,7 @@ export default function CashInOutScreen() {
     if (assignedBranchId) return;
     let active = true;
     void authorizedRequest<Page<Branch>>('catalog/branches?page=1&perPage=100&sortBy=name&sortOrder=asc')
-      .then((result) => { if (!active) return; setBranches(result.data); setBranchId((current) => current || result.data[0]?.id || ''); setError(''); })
+      .then((result) => { if (!active) return; setBranches(result.data); setError(''); })
       .catch((cause: unknown) => { if (active) setError(cause instanceof ApiError ? cause.message : 'Data kas belum dapat dimuat.'); });
     return () => { active = false; };
   }, [assignedBranchId, authorizedRequest]));
@@ -71,7 +72,7 @@ export default function CashInOutScreen() {
       {list.loading ? <ActivityIndicator style={styles.loader} color="#07885b" size="large" /> : null}
       {canRead ? visibleTransactions.map((row) => <Pressable key={row.id} accessibilityRole="button" onPress={() => router.push({ pathname: '/(app)/cash-in-out-detail', params: { id: row.id } })} style={styles.transactionCard}>
         <View style={[styles.transactionIcon, row.type === 'CASH_IN' ? styles.inIcon : styles.outIcon]}>{row.type === 'CASH_IN' ? <ArrowDownLeft size={18} color="#07885b" /> : <ArrowUpRight size={18} color="#c23a36" />}</View>
-        <View style={styles.transactionText}><Text numberOfLines={1} style={styles.transactionTitle}>{row.reason}</Text><Text numberOfLines={1} style={styles.transactionMeta}>{row.type === 'CASH_IN' ? 'Kas masuk' : 'Kas keluar'} · {row.category}</Text><Text numberOfLines={1} style={styles.transactionDate}>{formatDate(row.createdAt ?? '')}{row.branch?.name ? ` · ${row.branch.name}` : ''}</Text></View>
+        <View style={styles.transactionText}><Text numberOfLines={1} style={styles.transactionTitle}>{row.reason}</Text><Text numberOfLines={1} style={styles.transactionMeta}>{row.type === 'CASH_IN' ? 'Kas masuk' : 'Kas keluar'} · {row.category}</Text><Text numberOfLines={1} style={styles.transactionDate}>{formatDateTime(row.createdAt ?? '')}{row.branch?.name ? ` · ${row.branch.name}` : ''}</Text></View>
         <Text style={[styles.amount, row.type === 'CASH_IN' ? styles.inAmount : styles.outAmount]}>{row.type === 'CASH_IN' ? '+' : '-'}{money(row.amount)}</Text><ChevronRight size={16} color="#95a2ad" />
       </Pressable>) : null}
       {canRead ? <LoadMoreFooter loadingMore={list.loadingMore} hasMore={list.hasMore} count={visibleTransactions.length} error={list.error} onRetry={list.loadMore} /> : null}
