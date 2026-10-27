@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { LayoutChangeEvent, NativeScrollEvent, NativeSyntheticEvent } from 'react-native';
+import { useOnRefocus } from './use-refocus';
 
 /** Rows per request for lazily loaded mobile lists. */
 export const LIST_PAGE_SIZE = 10;
@@ -34,14 +35,14 @@ export function useInfiniteList<T>(request: <R>(path: string) => Promise<R>, pat
   // `generation` discards responses that belong to a previous path or an older reload.
   const state = useRef({ page: 0, busy: false, generation: 0 });
 
-  const fetchPage = useCallback(async (page: number, mode: 'reset' | 'more' | 'refresh') => {
+  const fetchPage = useCallback(async (page: number, mode: 'reset' | 'more' | 'refresh' | 'silent') => {
     if (!path) return;
     const generation = mode === 'more' ? state.current.generation : state.current.generation + 1;
     state.current.generation = generation;
     state.current.busy = true;
     if (mode === 'reset') setLoading(true);
     else if (mode === 'more') setLoadingMore(true);
-    else setRefreshing(true);
+    else if (mode === 'refresh') setRefreshing(true);
     try {
       const separator = path.includes('?') ? '&' : '?';
       const result = await request<PageResult<T>>(`${path}${separator}page=${page}&perPage=${pageSize}`);
@@ -88,6 +89,9 @@ export function useInfiniteList<T>(request: <R>(path: string) => Promise<R>, pat
   const refresh = useCallback(() => fetchPage(1, 'refresh'), [fetchPage]);
   /** Reloads the first page with the full-screen loader, for example after saving a record. */
   const reload = useCallback(() => fetchPage(1, 'reset'), [fetchPage]);
+
+  // Coming back to the screen (tab switch or returning from a detail route) quietly reloads the first page.
+  useOnRefocus(() => { if (path && loadedPath === path) void fetchPage(1, 'silent'); });
 
   // Report loading as soon as the filters change, so screens never flash an empty state in between.
   const pending = path !== null && loadedPath !== path;

@@ -5,6 +5,7 @@ import { ArrowDownLeft, ArrowUpRight, Boxes, ChevronRight, Coins, House, Package
 import { useAuth } from '../../auth/auth-provider';
 import { LoadMoreFooter } from '../../components/load-more-footer';
 import { ApiError } from '../../lib/api';
+import { useOnRefocus } from '../../lib/use-refocus';
 import { formatMovementType } from '../../lib/display';
 import { useInfiniteList, useLoadMoreOnScroll } from '../../lib/infinite-list';
 import { money, quantity } from '../../lib/report';
@@ -32,6 +33,7 @@ export default function StockDetailScreen() {
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState('');
   const [reloadKey, setReloadKey] = useState(0);
+  useOnRefocus(() => setReloadKey((value) => value + 1));
   const canReadMovements = user?.permissions.includes('inventory.read') ?? false;
 
   useEffect(() => {

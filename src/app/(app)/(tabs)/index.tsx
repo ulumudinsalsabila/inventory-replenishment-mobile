@@ -6,7 +6,10 @@ import Svg, { Circle, Defs, G, LinearGradient, Rect, Stop } from 'react-native-s
 import { formatStatus } from '../../../lib/display';
 import { useAuth } from '../../../auth/auth-provider';
 import { ApiError } from '../../../lib/api';
-import { getRange, rangeOptions, type RangePreset } from '../../../lib/date-range';
+import { customRangeLabel, getRange, jakartaDate, rangeOptions, type CustomRange, type RangePreset } from '../../../lib/date-range';
+import { DateRangeSheet } from '../../../components/date-range-sheet';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { useOnRefocus } from '../../../lib/use-refocus';
 import { AdminDashboard } from '../../../components/admin-dashboard';
 import { OpenBillCard, type DashboardOpenBills } from '../../../components/open-bill-card';
 
@@ -37,12 +40,19 @@ const orderStatusLabel: Record<string, string> = { COMPLETED: 'SELESAI', PARTIAL
 
 function PaymentChart({ methods }: { methods: Dashboard['salesByMethod'] }) {
   const rows = useMemo(() => {
+    // The five POS methods; anything else (older card/other sales) is grouped under Lainnya and only shown when present.
     const categories = [
       { label: 'Cash', methods: ['CASH'], color: '#27c993' }, { label: 'QRIS', methods: ['QRIS'], color: '#3987f5' },
-      { label: 'E-Wallet', methods: ['GRAB', 'GOBIZ', 'E_WALLET'], color: '#a94ee8' }, { label: 'Transfer', methods: ['TRANSFER', 'BANK_TRANSFER'], color: '#ee55aa' },
-      { label: 'Kartu', methods: ['DEBIT_CARD', 'CREDIT_CARD', 'CARD'], color: '#ff9418' }, { label: 'Lainnya', methods: ['OTHER'], color: '#a7b0bd' },
+      { label: 'Transfer', methods: ['TRANSFER', 'BANK_TRANSFER'], color: '#ee55aa' }, { label: 'Grab', methods: ['GRAB'], color: '#a94ee8' },
+      { label: 'GoBiz', methods: ['GOBIZ'], color: '#ff9418' },
     ];
-    return categories.map((category) => ({ ...category, amount: methods.filter((item) => category.methods.includes(item.method)).reduce((sum, item) => sum + Number(item.amount), 0) }));
+    const known = categories.flatMap((category) => category.methods);
+    const sum = (items: Dashboard['salesByMethod']) => items.reduce((total, item) => total + Number(item.amount), 0);
+    const other = sum(methods.filter((item) => !known.includes(item.method)));
+    return [
+      ...categories.map((category) => ({ ...category, amount: sum(methods.filter((item) => category.methods.includes(item.method))) })),
+      ...(other ? [{ label: 'Lainnya', methods: [], color: '#a7b0bd', amount: other }] : []),
+    ];
   }, [methods]);
   const total = rows.reduce((sum, row) => sum + row.amount, 0);
   const circumference = 2 * Math.PI * 43;
@@ -73,16 +83,21 @@ function EmployeeDashboard() {
   const [data, setData] = useState<Dashboard | null>(null);
   const [branches, setBranches] = useState<Branch[]>([]);
   const [selectedBranchId, setSelectedBranchId] = useState(user?.branchId ?? '');
-  const [rangePreset, setRangePreset] = useState<RangePreset>('today');
+  const [rangePreset, setRangePreset] = useState<RangePreset | 'custom'>('today');
+  // Picked with the Custom chip; only used while rangePreset is 'custom'.
+  const [customRange, setCustomRange] = useState<CustomRange>(() => ({ from: jakartaDate(), to: jakartaDate() }));
+  const [rangeSheetVisible, setRangeSheetVisible] = useState(false);
+  const insets = useSafeAreaInsets();
   const [branchPickerVisible, setBranchPickerVisible] = useState(false);
   const [loading, setLoading] = useState(user?.permissions.includes('report.read') ?? false);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState('');
   const [reloadKey, setReloadKey] = useState(0);
+  useOnRefocus(() => setReloadKey((value) => value + 1));
   const canReadReports = user?.permissions.includes('report.read') ?? false;
   const canCloseCash = user?.permissions.includes('cash_closing.create') ?? false;
-  const { from, to } = getRange(rangePreset);
-  const rangeLabel = rangeOptions.find((item) => item.id === rangePreset)?.label ?? 'Hari ini';
+  const { from, to } = rangePreset === 'custom' ? customRange : getRange(rangePreset);
+  const rangeLabel = rangePreset === 'custom' ? customRangeLabel(customRange) : rangeOptions.find((item) => item.id === rangePreset)?.label ?? 'Hari ini';
   const selectedBranch = branches.find((item) => item.id === selectedBranchId);
   const completedOrders = data?.orderStatuses.find((item) => item.status === 'COMPLETED')?.count ?? 0;
 
@@ -111,7 +126,7 @@ function EmployeeDashboard() {
   return <>
     <ScrollView style={styles.screen} contentContainerStyle={styles.page} refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => { setRefreshing(true); setReloadKey((value) => value + 1); }} tintColor="#07956f" />}>
       <View style={styles.filters}>
-        <View style={styles.rangeControl}>{rangeOptions.map((item) => <Pressable key={item.id} accessibilityRole="button" accessibilityState={{ selected: rangePreset === item.id }} onPress={() => { setLoading(true); setRangePreset(item.id); }} style={[styles.rangeButton, rangePreset === item.id && styles.rangeButtonActive]}><Text style={[styles.rangeText, rangePreset === item.id && styles.rangeTextActive]}>{item.label}</Text></Pressable>)}</View>
+        <View style={styles.rangeControl}>{rangeOptions.map((item) => <Pressable key={item.id} accessibilityRole="button" accessibilityState={{ selected: rangePreset === item.id }} onPress={() => { setLoading(true); setRangePreset(item.id); }} style={[styles.rangeButton, rangePreset === item.id && styles.rangeButtonActive]}><Text style={[styles.rangeText, rangePreset === item.id && styles.rangeTextActive]}>{item.label}</Text></Pressable>)}<Pressable accessibilityRole="button" accessibilityLabel={rangePreset === 'custom' ? `Custom, ${rangeLabel}` : 'Pilih rentang tanggal'} accessibilityState={{ selected: rangePreset === 'custom' }} onPress={() => setRangeSheetVisible(true)} style={[styles.rangeButton, rangePreset === 'custom' && styles.rangeButtonActive]}><Text style={[styles.rangeText, rangePreset === 'custom' && styles.rangeTextActive]}>Custom</Text></Pressable></View>
         {!user?.branchId ? <Pressable accessibilityRole="button" onPress={() => setBranchPickerVisible(true)} style={styles.branchFilter}><Text numberOfLines={1} style={styles.branchFilterText}>{selectedBranch?.name ?? 'Semua cabang'}</Text><ChevronDown size={15} color="#5f7188" /></Pressable> : null}
       </View>
 
@@ -147,6 +162,7 @@ function EmployeeDashboard() {
     </ScrollView>
 
     <Modal visible={branchPickerVisible} transparent animationType="fade" onRequestClose={() => setBranchPickerVisible(false)}><Pressable style={styles.modalBackdrop} onPress={() => setBranchPickerVisible(false)}><Pressable style={styles.modalCard} onPress={(event) => event.stopPropagation()}><View style={styles.modalHeader}><Text style={styles.modalTitle}>Pilih cabang</Text><Pressable accessibilityRole="button" accessibilityLabel="Tutup" onPress={() => setBranchPickerVisible(false)} style={styles.modalClose}><X size={19} color="#52657d" /></Pressable></View><Pressable accessibilityRole="button" onPress={() => { setSelectedBranchId(''); setLoading(true); setBranchPickerVisible(false); }} style={[styles.branchOption, !selectedBranchId && styles.branchOptionActive]}><Text style={[styles.branchOptionText, !selectedBranchId && styles.branchOptionTextActive]}>Semua cabang</Text></Pressable>{branches.map((branch) => <Pressable key={branch.id} accessibilityRole="button" onPress={() => { setSelectedBranchId(branch.id); setLoading(true); setBranchPickerVisible(false); }} style={[styles.branchOption, selectedBranchId === branch.id && styles.branchOptionActive]}><Text style={[styles.branchOptionText, selectedBranchId === branch.id && styles.branchOptionTextActive]}>{branch.name}</Text><Text style={styles.branchCode}>{branch.code}</Text></Pressable>)}</Pressable></Pressable></Modal>
+    {rangeSheetVisible ? <DateRangeSheet initial={customRange} bottomInset={insets.bottom} onApply={(range) => { setLoading(true); setCustomRange(range); setRangePreset('custom'); setRangeSheetVisible(false); }} onClose={() => setRangeSheetVisible(false)} /> : null}
   </>;
 }
 

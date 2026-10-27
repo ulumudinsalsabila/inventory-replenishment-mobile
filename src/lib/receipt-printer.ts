@@ -254,7 +254,7 @@ const center = (value: unknown, width: number) => {
 
 export function formatCashClosingReceipt(closing: CashClosingReceipt, width = 32) {
   const rule = '-'.repeat(width);
-  const sales: [string, unknown][] = [
+  const sales = ([
     ['Cash Sales', closing.cashSales],
     ['QRIS Sales', closing.qrisSales],
     ['Transfer Sales', closing.transferSales],
@@ -262,15 +262,17 @@ export function formatCashClosingReceipt(closing: CashClosingReceipt, width = 32
     ['GoBiz Sales', closing.gobizSales],
     ['Card Sales', closing.cardSales],
     ['Other Sales', closing.otherSales],
-  ];
-  const refunds: [string, unknown][] = [
+    // Same methods as the POS; card and other only print when older data still has an amount on them.
+  ] as [string, unknown][]).filter(([label, value]) => !['Card Sales', 'Other Sales'].includes(label) || Number(value ?? 0) !== 0);
+  const refunds = ([
     ['Cash Refund', closing.cashRefund],
     ['QRIS Refund', closing.qrisRefund],
     ['Transfer Refund', closing.transferRefund],
-    ['E-Wallet Refund', Number(closing.grabRefund ?? 0) + Number(closing.gobizRefund ?? 0)],
+    ['Grab Refund', closing.grabRefund],
+    ['GoBiz Refund', closing.gobizRefund],
     ['Card Refund', closing.cardRefund],
     ['Other Refund', closing.otherRefund],
-  ];
+  ] as [string, unknown][]).filter(([label, value]) => !['Card Refund', 'Other Refund'].includes(label) || Number(value ?? 0) !== 0);
   // dd-mm-yyyy on the closing report header.
   const dashed = (value: string) => value.replace(/\//g, '-');
   const lines = [

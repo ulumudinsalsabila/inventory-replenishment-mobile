@@ -15,7 +15,7 @@ type Feature = { section: string; title: string; description: string; destinatio
 const adminFeatures: Feature[] = [
   { section: 'Stok & Gudang', title: 'Stok', description: 'Ketersediaan produk per gudang', destination: '/(app)/inventory', permission: 'inventory.read', icon: 'PackageSearch' },
   { section: 'Stok & Gudang', title: 'Pergerakan stok', description: 'Riwayat barang masuk dan keluar', destination: '/(app)/movements', permission: 'inventory.read', icon: 'ClipboardList' },
-  { section: 'Stok & Gudang', title: 'Stock opname', description: 'Hitung fisik stok lalu sesuaikan selisihnya', destination: '/(app)/opnames', permission: 'inventory.opname', icon: 'ClipboardList' },
+  { section: 'Stok & Gudang', title: 'Stok opname', description: 'Hitung fisik stok lalu sesuaikan selisihnya', destination: '/(app)/opnames', permission: 'inventory.opname', icon: 'ClipboardList' },
   { section: 'Penjualan', title: 'Display toko', description: 'Kelola stok yang tampil di area penjualan', destination: '/(app)/(tabs)/display', permission: 'display.read', icon: 'MonitorSmartphone' },
   { section: 'Penjualan', title: 'Customer', description: 'Data customer dan riwayat belanja per cabang', destination: '/(app)/customers', permission: 'customer.read', icon: 'Users' },
   { section: 'Kas', title: 'Cash Closing', description: 'Tutup kas dan rekonsiliasi operasional', destination: '/(app)/(tabs)/cash', permission: 'cash_closing.read', icon: 'Banknote' },
@@ -26,8 +26,8 @@ const adminFeatures: Feature[] = [
 const employeeFeatures: Feature[] = [
   { section: 'Stok & Gudang', title: 'Stok', description: 'Ketersediaan produk di gudang', destination: '/(app)/inventory', permission: 'inventory.read', icon: 'PackageSearch' },
   { section: 'Stok & Gudang', title: 'Pergerakan stok', description: 'Riwayat barang masuk dan keluar', destination: '/(app)/movements', permission: 'inventory.read', icon: 'ClipboardList' },
-  { section: 'Stok & Gudang', title: 'Stock opname', description: 'Hitung fisik stok lalu sesuaikan selisihnya', destination: '/(app)/opnames', permission: 'inventory.opname', icon: 'ClipboardList' },
-  { section: 'Operasional', title: 'Display toko', description: 'Kelola stok yang tampil di area penjualan', destination: '/(app)/(tabs)/display', permission: 'display.read', icon: 'MonitorSmartphone' },
+  { section: 'Stok & Gudang', title: 'Stok opname', description: 'Hitung fisik stok lalu sesuaikan selisihnya', destination: '/(app)/opnames', permission: 'inventory.opname', icon: 'ClipboardList' },
+  { section: 'Operasional', title: 'Pengajuan Stok', description: 'Ajukan dan pantau pengajuan stok ke gudang pusat', destination: '/(app)/(tabs)/requests', permission: 'inventory.read', icon: 'ClipboardList' },
   { section: 'Operasional', title: 'Customer', description: 'Cari, tambah, dan lihat riwayat belanja customer', destination: '/(app)/customers', permission: 'customer.read', icon: 'Users' },
   { section: 'Kas', title: 'Cash in/out', description: 'Catat kas masuk atau keluar', destination: '/(app)/(tabs)/cash-in-out', permission: 'cash_transaction.create', icon: 'ArrowLeftRight' },
   { section: 'Kas', title: 'Cash Closing', description: 'Tutup kas dan rekonsiliasi harian', destination: '/(app)/(tabs)/cash', permission: 'cash_closing.read', icon: 'Banknote' },
@@ -41,7 +41,7 @@ export default function OperationsScreen() {
   const features = isEmployee ? employeeFeatures : adminFeatures;
   const visibleFeatures = features.filter(({ permission, title }) =>
     !permission || user?.permissions.includes(permission) ||
-    (title === 'Permintaan stok' && (user?.permissions.includes('stock_request.create') || user?.permissions.includes('stock_request.review'))),
+    (title === 'Pengajuan Stok' && (user?.permissions.includes('stock_request.create') || user?.permissions.includes('stock_request.review'))),
   );
   const sections = [...new Set(visibleFeatures.map((feature) => feature.section))];
   return (
@@ -52,7 +52,7 @@ export default function OperationsScreen() {
         if (!sectionFeatures.length) return null;
         return <View key={section} style={styles.section}>
           <Text style={styles.sectionTitle}>{section}</Text>
-          <View style={styles.list}>{sectionFeatures.map((feature) => { const badge = feature.title === 'Pesanan' ? pendingOrderCount : feature.title === 'Permintaan stok' ? pendingRequestCount : feature.title === 'Laporan Open Bill' ? openBillCount : 0; return <Pressable accessibilityRole="button" onPress={() => router.push(feature.destination)} key={feature.title} style={({ pressed }) => [styles.card, pressed && styles.cardPressed]}>
+          <View style={styles.list}>{sectionFeatures.map((feature) => { const badge = feature.title === 'Pesanan' ? pendingOrderCount : feature.title === 'Pengajuan Stok' ? pendingRequestCount : feature.title === 'Laporan Open Bill' ? openBillCount : 0; return <Pressable accessibilityRole="button" onPress={() => router.push(feature.destination)} key={feature.title} style={({ pressed }) => [styles.card, pressed && styles.cardPressed]}>
             <View style={styles.icon}><FeatureIcon name={feature.icon as FeatureIconName} /></View>
             <View style={styles.content}><Text style={styles.cardTitle}>{feature.title}</Text><Text style={styles.cardDescription}>{feature.description}</Text></View>
             {badge ? <View style={styles.countBadge}><Text style={styles.countBadgeText}>{badge > 99 ? '99+' : badge}</Text></View> : null}

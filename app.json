@@ -42,7 +42,8 @@
           "neverForLocation": true,
           "bluetoothAlwaysPermission": "Izinkan Inventory Replenishment terhubung ke printer struk Bluetooth."
         }
-      ]
+      ],
+      "expo-sharing"
     ],
     "experiments": {
       "typedRoutes": true,

@@ -1,5 +1,5 @@
-import { Tabs } from 'expo-router';
-import { ClipboardList, LayoutDashboard, MoreHorizontal, ReceiptText, ShoppingCart, Truck } from 'lucide-react-native';
+import { router, Tabs } from 'expo-router';
+import { ClipboardList, LayoutDashboard, MonitorSmartphone, MoreHorizontal, ReceiptText, ShoppingCart, Truck } from 'lucide-react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useAuth } from '../../../auth/auth-provider';
 import { AppShellHeader } from '../../../components/app-shell-header';
@@ -17,10 +17,14 @@ export default function TabsLayout() {
   const can = (permission: string) => user?.permissions.includes(permission) ?? false;
   const showPurchases = isAdmin && can('purchase.read');
   const showOrders = can('order.read');
-  const showRequests = can('inventory.read') || can('stock_request.create') || can('stock_request.review');
+  // Employees work the display daily, so Display takes the tab slot and stock requests move to "Lainnya".
+  const showRequests = !isEmployee && (can('inventory.read') || can('stock_request.create') || can('stock_request.review'));
+  const showDisplayTab = isEmployee && can('display.read');
   const badgeStyle = { backgroundColor: '#d92d2d', color: '#fff', fontSize: 9, fontWeight: '900' as const };
+  // Hidden tabs opened from another screen (Lainnya, a dashboard card) get a back button; tab history makes it return there.
+  const headerWithBack = (title: string) => isTablet ? () => <AppShellHeader compact title={title} onBack={() => router.back()} /> : () => <AppShellHeader onBack={() => router.back()} />;
   return (
-    <Tabs tabBar={isTablet ? (props) => <SideNav {...(props as unknown as SideNavProps)} /> : undefined} screenOptions={{
+    <Tabs backBehavior="history" tabBar={isTablet ? (props) => <SideNav {...(props as unknown as SideNavProps)} /> : undefined} screenOptions={{
       headerShown: true,
       // On tablets the sidebar carries the store identity, so the header only shows the screen title and actions.
       header: isTablet ? ({ options }) => <AppShellHeader compact title={typeof options.tabBarLabel === 'string' ? options.tabBarLabel : options.title} /> : () => <AppShellHeader />,
@@ -36,17 +40,19 @@ export default function TabsLayout() {
       <Tabs.Screen name="kasir" options={isEmployee
         ? { title: 'POS', headerShown: false, tabBarAccessibilityLabel: 'Kasir POS', tabBarIcon: ({ color, size }) => <ShoppingCart color={color} size={size} /> }
         : { href: null }} />
-      <Tabs.Screen name="requests" options={showRequests ? { title: 'Permintaan', tabBarAccessibilityLabel: `Permintaan stok${pendingRequestCount ? `, ${pendingRequestCount} belum selesai` : ''}`, tabBarBadge: pendingRequestCount || undefined, tabBarBadgeStyle: badgeStyle, tabBarIcon: ({ color, size }) => <ClipboardList color={color} size={size} /> } : { href: null }} />
+      <Tabs.Screen name="requests" options={showRequests ? { title: 'Pengajuan', tabBarAccessibilityLabel: `Pengajuan stok${pendingRequestCount ? `, ${pendingRequestCount} belum selesai` : ''}`, tabBarBadge: pendingRequestCount || undefined, tabBarBadgeStyle: badgeStyle, tabBarIcon: ({ color, size }) => <ClipboardList color={color} size={size} /> } : { href: null }} />
+      <Tabs.Screen name="display" options={showDisplayTab
+        ? { title: 'Display', tabBarAccessibilityLabel: 'Display toko', tabBarIcon: ({ color, size }) => <MonitorSmartphone color={color} size={size} /> }
+        : { href: null, title: 'Display toko', header: headerWithBack('Display toko') }} />
       <Tabs.Screen name="purchases" options={showPurchases
         ? { tabBarLabel: 'Pembelian', tabBarAccessibilityLabel: 'Pembelian distributor', tabBarIcon: ({ color, size }) => <Truck color={color} size={size} /> }
         : { href: null }} />
       <Tabs.Screen name="operations" options={{ title: 'Lainnya', tabBarAccessibilityLabel: 'Menu lainnya', tabBarIcon: ({ color, size }) => <MoreHorizontal color={color} size={size} /> }} />
-      <Tabs.Screen name="display" options={{ href: null }} />
-      <Tabs.Screen name="cash-in-out" options={{ href: null }} />
-      <Tabs.Screen name="cash" options={{ href: null }} />
-      <Tabs.Screen name="inventory" options={{ href: null }} />
+      <Tabs.Screen name="cash-in-out" options={{ href: null, title: 'Cash in/out', header: headerWithBack('Cash in/out') }} />
+      <Tabs.Screen name="cash" options={{ href: null, title: 'Cash Closing', header: headerWithBack('Cash Closing') }} />
+      <Tabs.Screen name="inventory" options={{ href: null, title: 'Stok', header: headerWithBack('Stok') }} />
       <Tabs.Screen name="warehouse-transfers" options={{ href: null }} />
-      <Tabs.Screen name="account" options={{ href: null, title: 'Akun / Profil' }} />
+      <Tabs.Screen name="account" options={{ href: null, title: 'Akun / Profil', header: headerWithBack('Akun / Profil') }} />
     </Tabs>
   );
 }

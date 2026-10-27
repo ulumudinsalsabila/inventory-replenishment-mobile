@@ -10,6 +10,7 @@ import { LoadMoreFooter } from '../../components/load-more-footer';
 import { customerErrorMessage, type Customer, type CustomerTransaction } from '../../lib/customers';
 import { formatDate, formatStatus } from '../../lib/display';
 import { useInfiniteList, useLoadMoreOnScroll } from '../../lib/infinite-list';
+import { useOnRefocus } from '../../lib/use-refocus';
 import { money } from '../../lib/report';
 
 type IconType = ComponentType<{ size?: number; color?: string }>;
@@ -28,6 +29,7 @@ export default function CustomerDetailScreen() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [reloadKey, setReloadKey] = useState(0);
+  useOnRefocus(() => setReloadKey((value) => value + 1));
   const [busy, setBusy] = useState(false);
   const [formVisible, setFormVisible] = useState(false);
 

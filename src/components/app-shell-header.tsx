@@ -1,7 +1,7 @@
 import { useState, type ReactNode } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { router } from 'expo-router';
-import { Bell, ChevronDown, CircleUserRound, Store } from 'lucide-react-native';
+import { Bell, ChevronDown, ChevronLeft, CircleUserRound, Store } from 'lucide-react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useBranchFilter } from '../auth/branch-filter';
 import { OptionSheet } from './option-sheet';
@@ -22,9 +22,11 @@ type HeaderProps = {
   leading?: ReactNode;
   /** Extra actions after notifications and profile (for example a scan button). */
   trailing?: ReactNode;
+  /** Shows a back button first, for tab screens opened from another screen (e.g. Stok from "Lainnya"). */
+  onBack?: () => void;
 };
 
-export function AppShellHeader({ compact = false, title, leading, trailing }: HeaderProps = {}) {
+export function AppShellHeader({ compact = false, title, leading, trailing, onBack }: HeaderProps = {}) {
   const insets = useSafeAreaInsets();
   const { branches, selectedBranchId, setSelectedBranchId, locked } = useBranchFilter();
   const [pickerVisible, setPickerVisible] = useState(false);
@@ -35,6 +37,9 @@ export function AppShellHeader({ compact = false, title, leading, trailing }: He
   return (
     <View style={[styles.safeArea, { paddingTop: insets.top }]}>
       <View style={[styles.header, compact && styles.headerCompact]}>
+        {onBack ? <Pressable accessibilityRole="button" accessibilityLabel="Kembali" hitSlop={6} onPress={onBack} style={({ pressed }) => [styles.back, pressed && styles.pressed]}>
+          <ChevronLeft size={22} color="#172338" />
+        </Pressable> : null}
         {compact ? <View style={styles.compactLeading}>{leading ?? <Text numberOfLines={1} style={styles.title}>{title}</Text>}</View> : <Pressable
           accessibilityRole={locked ? undefined : 'button'}
           accessibilityLabel={locked ? undefined : `Filter cabang: ${branchName}`}
@@ -75,6 +80,7 @@ export function AppShellHeader({ compact = false, title, leading, trailing }: He
 const styles = StyleSheet.create({
   safeArea: { backgroundColor: '#fff', borderBottomWidth: 1, borderBottomColor: '#e8eeeb' },
   header: { minHeight: 64, flexDirection: 'row', alignItems: 'center', paddingHorizontal: 14, paddingVertical: 9 },
+  back: { width: 36, height: 38, alignItems: 'center', justifyContent: 'center', marginRight: 4, marginLeft: -6, borderRadius: 12 },
   storeIcon: { width: 42, height: 42, alignItems: 'center', justifyContent: 'center', borderRadius: 13, backgroundColor: '#ddf7ed' },
   headerCompact: { minHeight: 68, paddingHorizontal: 18, gap: 4 },
   compactLeading: { flex: 1, minWidth: 0, marginRight: 8 },

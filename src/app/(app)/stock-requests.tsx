@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { AdminOnly } from '../../auth/admin-only';
 import { ActivityIndicator, Modal, Platform, Pressable, RefreshControl, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { File } from 'expo-file-system';
 import * as ImagePicker from 'expo-image-picker';
@@ -8,6 +9,7 @@ import { router, useLocalSearchParams } from 'expo-router';
 import { LoadMoreFooter } from '../../components/load-more-footer';
 import { useAuth } from '../../auth/auth-provider';
 import { ApiError } from '../../lib/api';
+import { useOnRefocus } from '../../lib/use-refocus';
 import { formatDate, formatStatus } from '../../lib/display';
 import { useInfiniteList, useLoadMoreOnScroll } from '../../lib/infinite-list';
 import { KeyboardAvoidingView, KeyboardAwareScrollView } from 'react-native-keyboard-controller';
@@ -34,11 +36,11 @@ type RequestItem = { productId: string; unitId?: string; requestedQty: string; n
 type Selector = 'branch' | 'source' | 'destination' | 'product' | null;
 
 const WORKFLOW = ['SUBMITTED', 'PROCESSING', 'IN_TRANSIT', 'RECEIVED'] as const;
-const STATUS_LABEL: Record<string, string> = { SUBMITTED: 'Permintaan masuk', PROCESSING: 'Diproses', IN_TRANSIT: 'Dikirim', RECEIVED: 'Diterima' };
+const STATUS_LABEL: Record<string, string> = { SUBMITTED: 'Pengajuan masuk', PROCESSING: 'Diproses', IN_TRANSIT: 'Dikirim', RECEIVED: 'Diterima' };
 // READY is the step name recorded for requests created before the four-step workflow.
-const HISTORY_LABEL: Record<string, string> = { SUBMITTED: 'Permintaan masuk', READY: 'Permintaan masuk', PROCESSED: 'Diproses', SENT: 'Dikirim', RECEIVED: 'Diterima' };
+const HISTORY_LABEL: Record<string, string> = { SUBMITTED: 'Pengajuan masuk', READY: 'Pengajuan masuk', PROCESSED: 'Diproses', SENT: 'Dikirim', RECEIVED: 'Diterima' };
 const ACTION_COPY: Record<RequestAction, { button: string; done: string }> = {
-  PROCESS: { button: 'Proses permintaan', done: 'Permintaan diproses. Cabang sudah diberi tahu.' },
+  PROCESS: { button: 'Proses pengajuan', done: 'Pengajuan diproses. Cabang sudah diberi tahu.' },
   SEND: { button: 'Kirim barang', done: 'Barang dikirim. Stok gudang pusat sudah dikurangi.' },
   RECEIVE: { button: 'Konfirmasi diterima', done: 'Penerimaan barang tersimpan.' },
 };
@@ -59,6 +61,7 @@ export default function StockRequestsScreen() {
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
   const [reloadKey, setReloadKey] = useState(0);
+  useOnRefocus(() => setReloadKey((key) => key + 1));
   const [formVisible, setFormVisible] = useState(false);
   const [selector, setSelector] = useState<Selector>(null);
   const [branchId, setBranchId] = useState(userBranchId);
@@ -93,7 +96,7 @@ export default function StockRequestsScreen() {
         setSourceWarehouseId((current) => current || result.sourceWarehouses[0]?.id || '');
         setDestinationWarehouseId((current) => current || result.destinationWarehouses.find((warehouse) => !userBranchId || warehouse.branchId === userBranchId)?.id || result.destinationWarehouses[0]?.id || '');
       })
-      .catch((cause: unknown) => { if (active) setError(cause instanceof ApiError ? cause.message : 'Pilihan permintaan stok belum dapat dimuat.'); });
+      .catch((cause: unknown) => { if (active) setError(cause instanceof ApiError ? cause.message : 'Pilihan pengajuan stok belum dapat dimuat.'); });
     return () => { active = false; };
   }, [authorizedRequest, canCreate, userBranchId, reloadKey]);
 
@@ -164,9 +167,9 @@ export default function StockRequestsScreen() {
     setSaving(true); setError('');
     try {
       await authorizedRequest<StockRequest>('stock-requests', { method: 'POST', body: JSON.stringify({ branchId, sourceWarehouseId, destinationWarehouseId, note: note.trim() || undefined, items }) });
-      setFormVisible(false); setNotice('Permintaan terkirim dan menunggu diproses gudang pusat.'); setReloadKey((key) => key + 1); void list.reload();
+      setFormVisible(false); setNotice('Pengajuan terkirim dan menunggu diproses gudang pusat.'); setReloadKey((key) => key + 1); void list.reload();
     } catch (cause) {
-      setError(cause instanceof ApiError ? cause.message : 'Permintaan belum dapat dibuat.');
+      setError(cause instanceof ApiError ? cause.message : 'Pengajuan belum dapat dibuat.');
     } finally { setSaving(false); }
   }
 
@@ -174,7 +177,7 @@ export default function StockRequestsScreen() {
     setDetailId(id); setDetail(null); setReceiveValues({}); setPhotos([]); setActionError(''); setDetailLoading(true);
     try {
       setDetail(await authorizedRequest<RequestDetail>(`stock-requests/${id}`));
-    } catch (cause) { setError(cause instanceof ApiError ? cause.message : 'Detail permintaan tidak dapat dimuat.'); setDetailId(null); }
+    } catch (cause) { setError(cause instanceof ApiError ? cause.message : 'Detail pengajuan tidak dapat dimuat.'); setDetailId(null); }
     finally { setDetailLoading(false); }
   }
 
@@ -190,14 +193,14 @@ export default function StockRequestsScreen() {
     let active = true;
     void authorizedRequest<RequestDetail>(`stock-requests/${encodeURIComponent(requestId)}`)
       .then((result) => { if (active) { setDetailId(result.id); setDetail(result); setReceiveValues({}); setPhotos([]); setActionError(''); } })
-      .catch((cause: unknown) => { if (active) setError(cause instanceof ApiError ? cause.message : 'Permintaan dari notifikasi tidak ditemukan.'); })
+      .catch((cause: unknown) => { if (active) setError(cause instanceof ApiError ? cause.message : 'Pengajuan dari notifikasi tidak ditemukan.'); })
       .finally(() => router.setParams({ requestId: undefined }));
     return () => { active = false; };
   }, [authorizedRequest, requestId]);
 
   async function pickPhotos(useCamera: boolean) {
     const remaining = MAX_PHOTOS - (detail?.evidenceImages?.length ?? 0) - photos.length;
-    if (remaining <= 0) { setActionError(`Maksimal ${MAX_PHOTOS} foto untuk satu permintaan.`); return; }
+    if (remaining <= 0) { setActionError(`Maksimal ${MAX_PHOTOS} foto untuk satu pengajuan.`); return; }
     const permission = useCamera ? await ImagePicker.requestCameraPermissionsAsync() : await ImagePicker.requestMediaLibraryPermissionsAsync();
     if (!permission.granted) { setActionError(useCamera ? 'Izin kamera diperlukan untuk mengambil foto.' : 'Izin galeri diperlukan untuk memilih foto.'); return; }
     const result = useCamera
@@ -236,7 +239,7 @@ export default function StockRequestsScreen() {
         items: lines.map(({ item, expected, receivedQty }) => ({
           itemId: item.transferItemId,
           receivedQty,
-          ...(Number(receivedQty) !== Number(expected) ? { discrepancyReason: 'QUANTITY_ERROR', discrepancyNote: 'Selisih dicatat saat penerimaan permintaan stok.' } : {}),
+          ...(Number(receivedQty) !== Number(expected) ? { discrepancyReason: 'QUANTITY_ERROR', discrepancyNote: 'Selisih dicatat saat penerimaan pengajuan stok.' } : {}),
         })),
       });
     }
@@ -267,13 +270,13 @@ export default function StockRequestsScreen() {
   return (
     <View style={styles.screen}>
       <ScrollView {...scrollProps} contentContainerStyle={styles.page} refreshControl={<RefreshControl refreshing={list.refreshing} onRefresh={() => { setReloadKey((key) => key + 1); void list.refresh(); }} tintColor="#c70d17" />}>
-        <View style={styles.headingRow}><View style={styles.heading}><Text style={styles.subtitle}>{canProcess ? 'Proses, kirim, dan pantau permintaan stok dari cabang.' : 'Ajukan kebutuhan stok ke gudang pusat dan pantau prosesnya.'}</Text></View>{canCreate ? <Pressable accessibilityRole="button" onPress={openCreateForm} style={styles.createButton}><Text style={styles.createButtonText}>＋ Buat</Text></Pressable> : null}</View>
-        <View style={styles.flowHint}><Text style={styles.flowHintTitle}>Alur permintaan stok</Text><Text style={styles.flowHintText}>Permintaan masuk → Diproses → Dikirim → Diterima. {canProcess ? 'Buka permintaan untuk memproses atau mengirim, dan lampirkan foto bila perlu.' : 'Konfirmasi penerimaan saat barang tiba di cabang.'}</Text></View>
+        <View style={styles.headingRow}><View style={styles.heading}><Text style={styles.subtitle}>{canProcess ? 'Proses, kirim, dan pantau pengajuan stok dari cabang.' : 'Ajukan kebutuhan stok ke gudang pusat dan pantau prosesnya.'}</Text></View>{canCreate ? <Pressable accessibilityRole="button" onPress={openCreateForm} style={styles.createButton}><Text style={styles.createButtonText}>＋ Buat</Text></Pressable> : null}</View>
+        <View style={styles.flowHint}><Text style={styles.flowHintTitle}>Alur pengajuan stok</Text><Text style={styles.flowHintText}>Pengajuan masuk → Diproses → Dikirim → Diterima. {canProcess ? 'Buka pengajuan untuk memproses atau mengirim, dan lampirkan foto bila perlu.' : 'Konfirmasi penerimaan saat barang tiba di cabang.'}</Text></View>
         {notice ? <View style={styles.notice}><Text style={styles.noticeText}>{notice}</Text></View> : null}
         {pageError ? <View style={styles.errorCard}><Text style={styles.errorText}>{pageError}</Text><Pressable accessibilityRole="button" onPress={() => { setError(''); setReloadKey((key) => key + 1); void list.reload(); }}><Text style={styles.retry}>Coba lagi</Text></Pressable></View> : null}
-        {!canRead ? <View style={styles.empty}><Text style={styles.emptyTitle}>Akses daftar tidak tersedia</Text><Text style={styles.emptyText}>Akun ini bisa membuat pengajuan, tetapi belum punya akses melihat stok untuk membuka daftar permintaan.</Text></View> : null}
+        {!canRead ? <View style={styles.empty}><Text style={styles.emptyTitle}>Akses daftar tidak tersedia</Text><Text style={styles.emptyText}>Akun ini bisa membuat pengajuan, tetapi belum punya akses melihat stok untuk membuka daftar pengajuan.</Text></View> : null}
         {list.loading && requests.length === 0 ? <ActivityIndicator style={styles.loader} color="#c70d17" size="large" /> : null}
-        {canRead && !list.loading && !pageError && requests.length === 0 ? <View style={styles.empty}><Text style={styles.emptyTitle}>Belum ada permintaan</Text><Text style={styles.emptyText}>{canCreate ? 'Buat pengajuan pertama untuk mengisi ulang stok cabang.' : 'Permintaan stok akan tampil di sini.'}</Text></View> : null}
+        {canRead && !list.loading && !pageError && requests.length === 0 ? <View style={styles.empty}><Text style={styles.emptyTitle}>Belum ada pengajuan</Text><Text style={styles.emptyText}>{canCreate ? 'Buat pengajuan pertama untuk mengisi ulang stok cabang.' : 'Pengajuan stok akan tampil di sini.'}</Text></View> : null}
         {requests.map((request) => <View key={request.id} style={styles.requestCard}>
           <View style={styles.requestTop}><View style={styles.requestTitle}><Text style={styles.requestNumber}>{request.requestNumber}</Text><Text style={styles.requestDate}>{formatDate(request.createdAt)} · {request._count.items} produk</Text></View><Text style={[styles.status, request.status === 'RECEIVED' ? styles.statusSuccess : request.status === 'SUBMITTED' ? styles.statusPending : styles.statusActive]}>{STATUS_LABEL[request.status] ?? formatStatus(request.status)}</Text></View>
           <Text style={styles.route}>{request.branch.name} · {request.sourceWarehouse.name} → {request.destinationWarehouse.name}</Text>
@@ -319,15 +322,15 @@ export default function StockRequestsScreen() {
             })}</View>
             {!filteredProducts.length ? <Text style={styles.noItems}>{productSearch ? 'Barang tidak ditemukan.' : 'Tidak ada barang yang tersedia.'}</Text> : null}
             <View style={styles.noteCard}><Text style={styles.fieldLabel}>Catatan (opsional)</Text><TextInput multiline value={note} onChangeText={setNote} placeholder="Alasan atau informasi tambahan" placeholderTextColor="#8a968f" style={styles.noteInput} /></View>
-            <Text style={styles.formHint}>Permintaan langsung masuk ke gudang pusat dengan status Permintaan masuk.</Text>
+            <Text style={styles.formHint}>Pengajuan langsung masuk ke gudang pusat dengan status Pengajuan masuk.</Text>
             {error ? <Text accessibilityRole="alert" style={styles.errorText}>{error}</Text> : null}
-          </KeyboardAwareScrollView><View style={[styles.formFooter, { paddingBottom: Math.max(14, insets.bottom + 8) }]}><View style={styles.requestCartBar}><ShoppingBagIcon /><View style={styles.requestCartCopy}><Text style={styles.requestCartTitle}>{items.reduce((sum, item) => sum + (Number(item.requestedQty) || 0), 0)} barang diminta</Text><Text style={styles.requestCartSubtitle}>{items.length} jenis produk</Text></View><Text style={styles.requestCartCount}>{items.length}</Text></View><Pressable accessibilityRole="button" disabled={saving || !options || !items.length} onPress={() => void createRequest()} style={[styles.submitButton, (saving || !options || !items.length) && styles.disabled]}>{saving ? <ActivityIndicator color="#fff" /> : <Text style={styles.submitText}>Kirim permintaan</Text>}</Pressable></View>
+          </KeyboardAwareScrollView><View style={[styles.formFooter, { paddingBottom: Math.max(14, insets.bottom + 8) }]}><View style={styles.requestCartBar}><ShoppingBagIcon /><View style={styles.requestCartCopy}><Text style={styles.requestCartTitle}>{items.reduce((sum, item) => sum + (Number(item.requestedQty) || 0), 0)} barang diminta</Text><Text style={styles.requestCartSubtitle}>{items.length} jenis produk</Text></View><Text style={styles.requestCartCount}>{items.length}</Text></View><Pressable accessibilityRole="button" disabled={saving || !options || !items.length} onPress={() => void createRequest()} style={[styles.submitButton, (saving || !options || !items.length) && styles.disabled]}>{saving ? <ActivityIndicator color="#fff" /> : <Text style={styles.submitText}>Kirim pengajuan</Text>}</Pressable></View>
         </View>
       </Modal>
 
       <Modal animationType="slide" visible={Boolean(detailId)} onRequestClose={closeDetail}>
         <View style={styles.modalScreen}>
-          <View style={[styles.modalHeader, { paddingTop: insets.top + 8, minHeight: 66 + insets.top }]}><Pressable accessibilityRole="button" disabled={actionSaving} onPress={closeDetail} style={styles.headerAction}><X size={19} color="#c70d17" /><Text style={styles.backText}>Tutup</Text></Pressable><Text style={styles.modalTitle}>Detail permintaan</Text><View style={{ width: 46 }} /></View>
+          <View style={[styles.modalHeader, { paddingTop: insets.top + 8, minHeight: 66 + insets.top }]}><Pressable accessibilityRole="button" disabled={actionSaving} onPress={closeDetail} style={styles.headerAction}><X size={19} color="#c70d17" /><Text style={styles.backText}>Tutup</Text></Pressable><Text style={styles.modalTitle}>Detail pengajuan</Text><View style={{ width: 46 }} /></View>
           {detailLoading || !detail ? <ActivityIndicator style={styles.loader} color="#c70d17" size="large" /> : (() => {
             const currentStep = WORKFLOW.indexOf(detail.status as (typeof WORKFLOW)[number]);
             const nextAction = (['PROCESS', 'SEND', 'RECEIVE'] as const).find((name) => detail.availableActions.includes(name));
@@ -367,7 +370,7 @@ export default function StockRequestsScreen() {
                 </ScrollView> : <Text style={styles.noItems}>{nextAction ? 'Belum ada foto. Lampirkan bila perlu.' : 'Belum ada foto bukti.'}</Text>}
                 {canAddPhoto ? <View style={styles.photoButtons}>
                   <Pressable accessibilityRole="button" disabled={actionSaving} onPress={() => void pickPhotos(true)} style={styles.photoButton}><Camera size={17} color="#087f5b" /><Text style={styles.photoButtonText}>Kamera</Text></Pressable>
-                  <Pressable accessibilityRole="button" disabled={actionSaving} onPress={() => void pickPhotos(false)} style={styles.photoButton}><ImagePlus size={17} color="#087f5b" /><Text style={styles.photoButtonText}>Galeri</Text></Pressable>
+                  <AdminOnly><Pressable accessibilityRole="button" disabled={actionSaving} onPress={() => void pickPhotos(false)} style={styles.photoButton}><ImagePlus size={17} color="#087f5b" /><Text style={styles.photoButtonText}>Galeri</Text></Pressable></AdminOnly>
                 </View> : null}
                 {nextAction && photos.length ? <Text style={styles.formHint}>Foto disimpan sebagai bukti tahap {STATUS_LABEL[WORKFLOW[currentStep + 1] ?? detail.status]}.</Text> : null}
 

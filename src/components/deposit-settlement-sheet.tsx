@@ -3,7 +3,7 @@ import { ActivityIndicator, Modal, Pressable, StyleSheet, Text, TextInput, View 
 import { X } from 'lucide-react-native';
 import { KeyboardAvoidingView, KeyboardAwareScrollView } from 'react-native-keyboard-controller';
 import { ApiError } from '../lib/api';
-import { formatStatus } from '../lib/display';
+import { formatStatus, openBillStockActions, type OpenBillStockAction } from '../lib/display';
 
 export type DepositSettlement = 'REFUNDED' | 'FORFEITED';
 /** A payment from GET /orders/:id; `cashClosingId` is set once a cash closing counted it. */
@@ -56,7 +56,7 @@ type DepositSettlementSheetProps = {
   saving: boolean;
   error: string;
   bottomInset: number;
-  onSubmit: (settlement: DepositSettlement, reason: string) => void;
+  onSubmit: (settlement: DepositSettlement, reason: string, stockAction: OpenBillStockAction) => void;
   onClose: () => void;
 };
 
@@ -67,16 +67,19 @@ type DepositSettlementSheetProps = {
 export function DepositSettlementSheet(props: DepositSettlementSheetProps) {
   const [settlement, setSettlement] = useState<DepositSettlement | null>(null);
   const [reason, setReason] = useState('');
+  // The bill's goods already left stock: one choice for all of them, back to stock (unopened) or wasted (opened).
+  const [stockAction, setStockAction] = useState<OpenBillStockAction | null>(null);
   const [localError, setLocalError] = useState('');
   const paid = completed(props.payments);
   const closed = paid.filter((payment) => payment.cashClosingId);
   const open = paid.filter((payment) => !payment.cashClosingId);
-  const blocked = props.saving || !props.canSettle || !settlement || !reason.trim();
+  const blocked = props.saving || !props.canSettle || !settlement || !stockAction || !reason.trim();
   const submit = () => {
     if (!settlement) { setLocalError('Pilih Kembalikan DP atau DP Hangus.'); return; }
+    if (!stockAction) { setLocalError('Pilih barang dikembalikan ke stok atau terbuang.'); return; }
     if (!reason.trim()) { setLocalError('Alasan wajib diisi.'); return; }
     setLocalError('');
-    props.onSubmit(settlement, reason.trim());
+    props.onSubmit(settlement, reason.trim(), stockAction);
   };
   const error = localError || props.error;
   const close = () => { if (!props.saving) props.onClose(); };
@@ -96,6 +99,11 @@ export function DepositSettlementSheet(props: DepositSettlementSheetProps) {
             <Text style={[styles.choiceTitle, settlement === 'FORFEITED' && styles.choiceTitleSelected]}>DP Hangus</Text>
             <Text style={styles.choiceHint}>DP {money(sum(paid))} tidak dikembalikan dan dicatat sebagai pendapatan toko.</Text>
           </Pressable>
+          <Text style={styles.label}>Barang di bill *</Text>
+          {openBillStockActions.map((option) => <Pressable key={option.value} accessibilityRole="radio" accessibilityState={{ selected: stockAction === option.value }} disabled={props.saving} onPress={() => { setStockAction(option.value); setLocalError(''); }} style={[styles.choice, stockAction === option.value && styles.choiceSelected]}>
+            <Text style={[styles.choiceTitle, stockAction === option.value && styles.choiceTitleSelected]}>{option.label}</Text>
+            <Text style={styles.choiceHint}>{option.hint}</Text>
+          </Pressable>)}
           <Text style={styles.label}>Alasan *</Text>
           <TextInput accessibilityLabel="Alasan pembatalan bill dengan DP" editable={!props.saving} value={reason} onChangeText={setReason} maxLength={300} multiline placeholder="Wajib diisi, contoh: pelanggan membatalkan acara" placeholderTextColor="#87948c" style={styles.input} />
           {!props.canSettle ? <Text style={styles.approval}>{DEPOSIT_APPROVAL_MESSAGE}</Text> : null}

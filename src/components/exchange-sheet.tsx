@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
+import { AdminOnly } from '../auth/admin-only';
 import { ActivityIndicator, Modal, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { MoneyInput } from './money-input';
 import { File } from 'expo-file-system';
@@ -7,7 +8,7 @@ import { Minus, Plus, Trash2, X } from 'lucide-react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { KeyboardAwareScrollView } from 'react-native-keyboard-controller';
 import { useAuth } from '../auth/auth-provider';
-import { formatStatus, refundMethodsFor, refundPaymentMethods } from '../lib/display';
+import { defaultRefundMethod, formatStatus, refundMethodsFor, refundPaymentMethods } from '../lib/display';
 import type { PosProduct } from './pos-flow';
 import { PreviewImage } from './image-viewer';
 
@@ -39,7 +40,7 @@ export function ExchangeSheet({ visible, order, onClose, onDone }: { visible: bo
   const [received, setReceived] = useState('');
   const [discount, setDiscount] = useState('');
   // Defaults to how the customer originally paid; any method can be chosen.
-  const [refundMethod, setRefundMethod] = useState(order.payments?.find((payment) => payment.status === 'COMPLETED' && payment.method !== 'EXCHANGE')?.method ?? 'CASH');
+  const [refundMethod, setRefundMethod] = useState(defaultRefundMethod(order.payments));
   const [reason, setReason] = useState('');
   const [evidence, setEvidence] = useState<ImagePicker.ImagePickerAsset[]>([]);
   const [submitting, setSubmitting] = useState(false);
@@ -176,7 +177,7 @@ export function ExchangeSheet({ visible, order, onClose, onDone }: { visible: bo
 
       <Text style={styles.fieldLabel}>Alasan *</Text><TextInput accessibilityLabel="Alasan tukar barang" style={[styles.input, styles.multiline]} value={reason} onChangeText={setReason} placeholder="Wajib diisi, contoh: salah ukuran" placeholderTextColor="#87948c" multiline />
       <Text style={styles.fieldLabel}>Bukti barang dikembalikan *</Text><Text style={styles.muted}>Minimal 1 dan maksimal 8 foto.</Text>
-      <View style={styles.evidenceActions}><Pressable onPress={() => void pickEvidence(true)} style={styles.evidenceButton}><Text style={styles.evidenceButtonText}>Ambil foto</Text></Pressable><Pressable onPress={() => void pickEvidence(false)} style={styles.evidenceButton}><Text style={styles.evidenceButtonText}>Pilih galeri</Text></Pressable></View>
+      <View style={styles.evidenceActions}><Pressable onPress={() => void pickEvidence(true)} style={styles.evidenceButton}><Text style={styles.evidenceButtonText}>Ambil foto</Text></Pressable><AdminOnly><Pressable onPress={() => void pickEvidence(false)} style={styles.evidenceButton}><Text style={styles.evidenceButtonText}>Pilih galeri</Text></Pressable></AdminOnly></View>
       {evidence.length ? <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.evidenceRow}>{evidence.map((asset, index) => <View key={`${asset.assetId ?? asset.uri}-${index}`}><PreviewImage uri={asset.uri} images={evidence.map((entry) => entry.uri)} index={index} style={styles.evidenceImage} /><Pressable accessibilityLabel={`Hapus foto ${index + 1}`} onPress={() => setEvidence((current) => current.filter((_, itemIndex) => itemIndex !== index))} style={styles.removeEvidence}><Text style={styles.removeEvidenceText}>×</Text></Pressable></View>)}</ScrollView> : null}
     </KeyboardAwareScrollView>
     {error ? <Text style={styles.error}>{error}</Text> : null}

@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { ActivityIndicator, FlatList, Image, Modal, Pressable, RefreshControl, ScrollView, Share, StyleSheet, Text, TextInput, View } from 'react-native';
+import { ActivityIndicator, FlatList, Image, Modal, Pressable, RefreshControl, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { MoneyInput } from './money-input';
 import { Banknote, Barcode, Check, ChefHat, ChevronLeft, ChevronRight, CircleCheck, ClipboardList, CreditCard, Landmark, Merge, Minus, Plus, Printer, QrCode, ReceiptText, Save, Search, Share2, ShoppingCart, Split, Store, Trash2, UserRound, Users, Wallet, X } from 'lucide-react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -8,10 +8,11 @@ import { AppShellHeader } from './app-shell-header';
 import { BarcodeScanner } from './barcode-scanner';
 import { LoadMoreFooter } from './load-more-footer';
 import { customerHint, type PosCustomer } from '../lib/customers';
-import { customerLabel, formatAge, formatDate, formatServiceType, formatStatus, type ServiceType } from '../lib/display';
+import { customerLabel, formatAge, formatDate, formatServiceType, formatStatus, openBillStockActions, type OpenBillStockAction, type ServiceType } from '../lib/display';
 import { useDebouncedValue, useInfiniteList } from '../lib/infinite-list';
 import { scanBlePrinters, stopBleScan, type BlePrinter } from '../lib/ble-printer';
 import type { PairedPrinter, ReceiptOrder, Station } from '../lib/receipt-printer';
+import { shareReceiptPdf } from '../lib/receipt-pdf';
 import { KeyboardAvoidingView, KeyboardAwareScrollView, KeyboardStickyView } from 'react-native-keyboard-controller';
 
 export type PosMethod = 'CASH' | 'QRIS' | 'TRANSFER' | 'GRAB' | 'GOBIZ';
@@ -276,7 +277,7 @@ export function PosCatalogScreen(props: CatalogProps) {
     {!props.userBranchId && props.branches.length > 1 ? <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.branchChoices}>{props.branches.map((branch) => <Pressable key={branch.id} onPress={() => props.onBranchChange(branch.id)} style={[styles.branchChip, props.branchId === branch.id && styles.branchChipActive]}><Text numberOfLines={1} style={[styles.branchChipText, props.branchId === branch.id && styles.branchChipTextActive]}>{branch.name}</Text></Pressable>)}</ScrollView> : null}
     {props.warehouses.length > 1 ? <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.branchChoices}>{props.warehouses.filter((warehouse) => warehouse.branchId === props.branchId).map((warehouse) => <Pressable key={warehouse.id} onPress={() => props.onWarehouseChange(warehouse.id)} style={[styles.warehouseChip, props.warehouseId === warehouse.id && styles.warehouseChipActive]}><Text style={[styles.branchChipText, props.warehouseId === warehouse.id && styles.warehouseChipTextActive]}>{warehouse.name}</Text></Pressable>)}</ScrollView> : null}
     {!isTablet ? <View style={styles.catalogSearchRow}>{searchBox}{scanButton}</View> : null}
-    <View style={styles.catalogFilterRow}><Pressable accessibilityRole="button" accessibilityState={{ selected: !props.displayOnly }} onPress={() => props.onDisplayOnlyChange(false)} style={[styles.catalogFilter, !props.displayOnly && styles.catalogFilterActive]}><Text style={[styles.catalogFilterText, !props.displayOnly && styles.catalogFilterTextActive]}>Semua</Text></Pressable><Pressable accessibilityRole="button" accessibilityState={{ selected: props.displayOnly }} onPress={() => props.onDisplayOnlyChange(true)} style={[styles.catalogFilter, props.displayOnly && styles.catalogFilterActive]}><Store size={14} color={props.displayOnly ? '#fff' : '#60758a'} /><Text style={[styles.catalogFilterText, props.displayOnly && styles.catalogFilterTextActive]}>Display toko</Text></Pressable></View>
+    <View style={styles.catalogFilterRow}><Pressable accessibilityRole="button" accessibilityState={{ selected: !props.displayOnly }} onPress={() => props.onDisplayOnlyChange(false)} style={[styles.catalogFilter, !props.displayOnly && styles.catalogFilterActive]}><Text style={[styles.catalogFilterText, !props.displayOnly && styles.catalogFilterTextActive]}>Stok Gudang</Text></Pressable><Pressable accessibilityRole="button" accessibilityState={{ selected: props.displayOnly }} onPress={() => props.onDisplayOnlyChange(true)} style={[styles.catalogFilter, props.displayOnly && styles.catalogFilterActive]}><Store size={14} color={props.displayOnly ? '#fff' : '#60758a'} /><Text style={[styles.catalogFilterText, props.displayOnly && styles.catalogFilterTextActive]}>Display toko</Text></Pressable></View>
     <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.categoryChoices}>{props.categories.map((category) => <Pressable key={category} onPress={() => props.onCategoryChange(category)} style={[styles.catalogCategory, props.selectedCategory === category && styles.catalogCategoryActive]}><Text style={[styles.catalogCategoryText, props.selectedCategory === category && styles.catalogCategoryTextActive]}>{category}</Text></Pressable>)}</ScrollView>
     {props.loading ? <View style={styles.loadingRow}><ActivityIndicator color="#07885b" /><Text style={styles.loadingText}>Memuat produk...</Text></View> : null}
     {props.error ? <Text style={[styles.errorText, styles.catalogError]}>{props.error}</Text> : null}
@@ -641,7 +642,7 @@ type OpenBillVoidSheetProps = {
   error: string;
   bottomInset: number;
   /** `quantity` is omitted for a full void. */
-  onVoid: (quantity: string | undefined, reason: string) => void;
+  onVoid: (quantity: string | undefined, reason: string, stockAction: OpenBillStockAction) => void;
   onClose: () => void;
 };
 
@@ -649,13 +650,16 @@ type OpenBillVoidSheetProps = {
 export function OpenBillVoidSheet(props: OpenBillVoidSheetProps) {
   const [quantity, setQuantity] = useState(String(props.line.quantity));
   const [reason, setReason] = useState('');
+  // The goods left stock when ordered, so the cashier says whether they come back (unopened) or were wasted (opened).
+  const [stockAction, setStockAction] = useState<OpenBillStockAction | null>(null);
   const [localError, setLocalError] = useState('');
   const submit = () => {
     const value = Number(quantity.replace(',', '.'));
     if (!Number.isFinite(value) || value <= 0 || value > props.line.quantity) { setLocalError(`Jumlah void harus lebih dari 0 dan maksimal ${props.line.quantity}.`); return; }
     if (!reason.trim()) { setLocalError('Alasan void wajib diisi.'); return; }
+    if (!stockAction) { setLocalError('Pilih Kembalikan ke stok atau Terbuang.'); return; }
     setLocalError('');
-    props.onVoid(value === props.line.quantity ? undefined : String(value), reason.trim());
+    props.onVoid(value === props.line.quantity ? undefined : String(value), reason.trim(), stockAction);
   };
   const error = localError || props.error;
   return <Modal visible transparent animationType="slide" onRequestClose={() => { if (!props.saving) props.onClose(); }}>
@@ -667,8 +671,10 @@ export function OpenBillVoidSheet(props: OpenBillVoidSheetProps) {
         <Text style={styles.sheetHint}>Default seluruh jumlah di bill. Isi lebih kecil untuk void sebagian.</Text>
         <Text style={catalogStyles.optionSection}>ALASAN *</Text>
         <TextInput accessibilityLabel="Alasan void" autoFocus value={reason} onChangeText={setReason} maxLength={300} multiline placeholder="Wajib diisi, contoh: pelanggan batal pesan" placeholderTextColor="#8a97a8" style={[styles.sheetInput, styles.sheetMultiline]} />
+        <Text style={catalogStyles.optionSection}>BARANGNYA *</Text>
+        <View style={styles.stockChoices}>{openBillStockActions.map((option) => <Pressable key={option.value} accessibilityRole="radio" accessibilityState={{ selected: stockAction === option.value }} disabled={props.saving} onPress={() => { setStockAction(option.value); setLocalError(''); }} style={[styles.stockChoice, stockAction === option.value && styles.stockChoiceSelected]}><Text style={[styles.stockChoiceTitle, stockAction === option.value && styles.stockChoiceTitleSelected]}>{option.label}</Text><Text style={styles.sheetHint}>{option.hint}</Text></Pressable>)}</View>
         {error ? <Text style={[styles.errorText, styles.sheetError]}>{error}</Text> : null}
-        <Pressable accessibilityRole="button" disabled={props.saving || !reason.trim()} onPress={submit} style={[catalogStyles.primaryButton, styles.voidSubmit, (props.saving || !reason.trim()) && catalogStyles.disabled]}>{props.saving ? <ActivityIndicator color="#fff" /> : <Text style={catalogStyles.primaryText}>Void item</Text>}</Pressable>
+        <Pressable accessibilityRole="button" disabled={props.saving || !reason.trim() || !stockAction} onPress={submit} style={[catalogStyles.primaryButton, styles.voidSubmit, (props.saving || !reason.trim() || !stockAction) && catalogStyles.disabled]}>{props.saving ? <ActivityIndicator color="#fff" /> : <Text style={catalogStyles.primaryText}>Void item</Text>}</Pressable>
       </View>
     </KeyboardAvoidingView>
   </Modal>;
@@ -855,14 +861,21 @@ type ReceiptScreenProps = {
   onOpenBluetoothSettings: () => void;
 };
 
+/** "Bagikan PDF" on the receipt is hidden for now; flip this to bring it back (the PDF share itself still works). */
+const SHOW_SHARE_RECEIPT = false;
+
 export function PosReceiptScreen(props: ReceiptScreenProps) {
   const { isTablet } = useResponsive();
   const [shareError, setShareError] = useState('');
+  const [sharing, setSharing] = useState(false);
   const completedAt = props.order.completedAt ?? props.order.createdAt;
   const share = async () => {
+    if (sharing) return;
     setShareError('');
-    try { await Share.share({ message: `Nota ${props.order.orderNumber}\nTotal ${money(props.order.grandTotal)}\nTerima kasih telah berbelanja.` }); }
-    catch { setShareError('Nota gagal dibagikan.'); }
+    setSharing(true);
+    try { await shareReceiptPdf(props.order, props.cashierName); }
+    catch (cause) { setShareError(cause instanceof Error && cause.message ? `Nota gagal dibagikan: ${cause.message}` : 'Nota gagal dibagikan.'); }
+    finally { setSharing(false); }
   };
 
   return <View style={[styles.screen, { paddingTop: props.topInset, paddingBottom: props.bottomInset + 8 }]}>
@@ -895,13 +908,13 @@ export function PosReceiptScreen(props: ReceiptScreenProps) {
       {props.printError || shareError ? <Text style={styles.errorText}>{props.printError || shareError}</Text> : null}
       {!isTablet ? <View style={styles.receiptActions}>
         <Pressable accessibilityRole="button" onPress={props.onPrint} disabled={props.printing} style={styles.secondaryButton}>{props.printing ? <ActivityIndicator color="#087f5b" /> : <><Printer size={17} color="#087f5b" /><Text style={styles.secondaryText}>Cetak ulang</Text></>}</Pressable>
-        <Pressable accessibilityRole="button" onPress={() => void share()} style={styles.primaryButton}><Share2 size={17} color="#fff" /><Text style={styles.primaryText}>Bagikan</Text></Pressable>
+        {SHOW_SHARE_RECEIPT ? <Pressable accessibilityRole="button" onPress={() => void share()} disabled={sharing} style={styles.primaryButton}>{sharing ? <ActivityIndicator color="#fff" /> : <><Share2 size={17} color="#fff" /><Text style={styles.primaryText}>Bagikan PDF</Text></>}</Pressable> : null}
       </View> : null}
       {props.printerPickerVisible ? <PrinterPickerSheet devices={props.printerDevices} loading={props.printerLoading} bottomInset={props.bottomInset} title={props.printerPickerTitle} onChoose={props.onChoosePrinter} onClose={props.onClosePrinterPicker} onOpenBluetoothSettings={props.onOpenBluetoothSettings} /> : null}
     </ScrollView>
     {isTablet ? <View style={styles.receiptSideActions}>
       <Pressable accessibilityRole="button" onPress={props.onPrint} disabled={props.printing} style={[styles.secondaryButton, styles.sideActionButton]}>{props.printing ? <ActivityIndicator color="#087f5b" /> : <><Printer size={18} color="#087f5b" /><Text style={styles.secondaryText}>Cetak ulang</Text></>}</Pressable>
-      <Pressable accessibilityRole="button" onPress={() => void share()} style={[styles.primaryButton, styles.sideActionButton]}><Share2 size={18} color="#fff" /><Text style={styles.primaryText}>Bagikan</Text></Pressable>
+      {SHOW_SHARE_RECEIPT ? <Pressable accessibilityRole="button" onPress={() => void share()} disabled={sharing} style={[styles.primaryButton, styles.sideActionButton]}>{sharing ? <ActivityIndicator color="#fff" /> : <><Share2 size={18} color="#fff" /><Text style={styles.primaryText}>Bagikan PDF</Text></>}</Pressable> : null}
       <Pressable accessibilityRole="button" onPress={props.onNewOrder} style={[styles.newOrderButton, styles.sideActionButton]}><CircleCheck size={18} color="#07885b" /><Text style={styles.newOrderText}>Transaksi baru</Text></Pressable>
     </View> : null}
     </View>
@@ -951,7 +964,7 @@ const styles = StyleSheet.create({
   voidLine: { minHeight: 52, backgroundColor: '#fdf6f5' }, struck: { color: '#9aa6b4', textDecorationLine: 'line-through' },
   noticeText: { padding: 10, borderRadius: 9, overflow: 'hidden', color: '#087c53', backgroundColor: '#e5f8f0', fontSize: 10, lineHeight: 15 },
   warningText: { padding: 10, borderRadius: 9, overflow: 'hidden', color: '#8a5a08', backgroundColor: '#fff8e8', fontSize: 10, lineHeight: 15 },
-  sheetMultiline: { height: 76, paddingTop: 10, textAlignVertical: 'top' }, voidSubmit: { backgroundColor: '#c0392b' },
+  sheetMultiline: { height: 76, paddingTop: 10, textAlignVertical: 'top' }, voidSubmit: { backgroundColor: '#c0392b' }, stockChoices: { flexDirection: 'row', gap: 8 }, stockChoice: { flex: 1, padding: 10, borderWidth: 1, borderColor: '#e3eaf0', borderRadius: 10 }, stockChoiceSelected: { borderColor: '#07956f', backgroundColor: '#ecfaf4' }, stockChoiceTitle: { color: '#26374e', fontSize: 12, fontWeight: '800' }, stockChoiceTitleSelected: { color: '#07845f' },
   billListSheet: { height: '80%' }, billSearchBox: { flex: 0, flexGrow: 0, flexShrink: 0 }, billListSubtitle: { paddingHorizontal: 0 }, billList: { flex: 1, marginTop: 8 }, billListContent: { paddingBottom: 8 },
   billRow: { minHeight: 58, flexDirection: 'row', alignItems: 'center', gap: 9, borderBottomWidth: 1, borderBottomColor: '#edf1f4' }, billRowPressed: { backgroundColor: '#f6f9f8' }, billRowTotal: { color: '#172338', fontSize: 11, fontWeight: '900' }, billRowDeposit: { marginTop: 3, color: '#8a5a08', fontSize: 9, fontWeight: '800' },
   billTotals: { paddingHorizontal: 10, paddingVertical: 4, borderRadius: 10, backgroundColor: '#fff' },

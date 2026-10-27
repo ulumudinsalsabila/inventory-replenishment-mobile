@@ -55,7 +55,7 @@ export default function NotificationsScreen() {
     </View>
     {list.loading && !items.length ? <ActivityIndicator style={styles.loader} color="#07956f" /> : null}
     {list.error && !items.length ? <Pressable accessibilityRole="button" onPress={() => void list.reload()} style={styles.error}><Text style={styles.errorText}>{list.error}</Text><Text style={styles.retry}>Coba lagi</Text></Pressable> : null}
-    {!list.loading && !list.error && !items.length ? <View style={styles.empty}><Bell size={30} color="#91a098" /><Text style={styles.emptyTitle}>Belum ada notifikasi</Text><Text style={styles.emptyText}>Perubahan permintaan stok dan aktivitas penting akan tampil di sini.</Text></View> : null}
+    {!list.loading && !list.error && !items.length ? <View style={styles.empty}><Bell size={30} color="#91a098" /><Text style={styles.emptyTitle}>Belum ada notifikasi</Text><Text style={styles.emptyText}>Perubahan pengajuan stok dan aktivitas penting akan tampil di sini.</Text></View> : null}
     <View style={styles.list}>{items.map((item) => <Pressable key={item.id} accessibilityRole="button" onPress={() => void openNotification(item)} style={({ pressed }) => [styles.card, !item.readAt && styles.cardUnread, pressed && styles.pressed]}>
       <View style={[styles.icon, !item.readAt && styles.iconUnread]}><Bell size={18} color={!item.readAt ? '#07885b' : '#7b8995'} /></View>
       <View style={styles.content}><View style={styles.titleRow}><Text numberOfLines={1} style={[styles.itemTitle, !item.readAt && styles.itemTitleUnread]}>{item.title}</Text>{!item.readAt ? <View style={styles.unreadDot} /> : null}</View><Text style={styles.body}>{item.body}</Text><Text style={styles.time}>{formatDateTime(item.createdAt)}</Text></View>

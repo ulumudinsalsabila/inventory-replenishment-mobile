@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useState } from 'react';
 import { ActivityIndicator, Modal, Pressable, RefreshControl, StyleSheet, Text, TextInput, View } from 'react-native';
 import { useFocusEffect, router } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -41,14 +41,9 @@ export default function CashInOutScreen() {
   if (branchId && !assignedBranchId) params.set('branchId', branchId);
   const list = useInfiniteList<CashRow>(authorizedRequest, canRead ? `cash-transactions?${params.toString()}` : null);
   const scrollProps = useLoadMoreOnScroll(list.loadMore);
-  const reloadList = useRef(list.reload);
-  useEffect(() => { reloadList.current = list.reload; }, [list.reload]);
-  const focusedBefore = useRef(false);
 
-  // Transactions are recorded on another route, so reload the list whenever this screen regains focus.
+  // The list reloads itself on refocus (useInfiniteList); the branch list is refreshed here too.
   useFocusEffect(useCallback(() => {
-    if (focusedBefore.current) void reloadList.current();
-    focusedBefore.current = true;
     if (assignedBranchId) return;
     let active = true;
     void authorizedRequest<Page<Branch>>('catalog/branches?page=1&perPage=100&sortBy=name&sortOrder=asc')

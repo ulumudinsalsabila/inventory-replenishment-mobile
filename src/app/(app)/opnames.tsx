@@ -119,10 +119,10 @@ export default function OpnamesScreen() {
       <LoadMoreFooter loadingMore={inventoryList.loadingMore} hasMore={inventoryList.hasMore} count={inventory.length} error={inventoryList.error} onRetry={inventoryList.loadMore} />
       <Pressable disabled={saving || !canCreate} onPress={() => void createOpname()} style={[styles.primary, (saving || !canCreate) && styles.disabled]}>{saving ? <ActivityIndicator color="#fff" /> : <Text style={styles.primaryText}>Simpan draft ({Object.values(counts).filter((value) => value.trim() !== '').length} produk)</Text>}</Pressable>
     </> : <>
-      {canCreate ? <Pressable accessibilityRole="button" onPress={() => { setSearch(''); setCreating(true); }} style={styles.primary}><Text style={styles.primaryText}>+ Buat stock opname</Text></Pressable> : null}
+      {canCreate ? <Pressable accessibilityRole="button" onPress={() => { setSearch(''); setCreating(true); }} style={styles.primary}><Text style={styles.primaryText}>+ Buat stok opname</Text></Pressable> : null}
       {rows.map((row) => <Pressable accessibilityRole="button" key={row.id} onPress={() => void openOpname(row.id)} style={styles.itemCard}><View style={styles.row}><View style={styles.flex}><Text style={styles.number}>{row.opnameNumber}</Text><Text style={styles.muted}>{row.warehouse.name} · {row.items.length} produk · {formatDate(row.createdAt)}</Text></View><Text style={styles.status}>{statusLabels[row.status] ?? formatStatus(row.status)}</Text></View></Pressable>)}
       {list.error && !rows.length ? <View style={styles.errorCard}><Text style={styles.errorText}>{list.error}</Text><Pressable accessibilityRole="button" onPress={() => void list.reload()}><Text style={styles.retry}>Coba lagi</Text></Pressable></View> : null}
-      {!list.loading && !list.error && !rows.length ? <View style={styles.empty}><Text style={styles.product}>Belum ada stock opname</Text><Text style={styles.muted}>Opname yang dibuat akan tampil di sini.</Text></View> : null}
+      {!list.loading && !list.error && !rows.length ? <View style={styles.empty}><Text style={styles.product}>Belum ada stok opname</Text><Text style={styles.muted}>Opname yang dibuat akan tampil di sini.</Text></View> : null}
       <LoadMoreFooter loadingMore={list.loadingMore} hasMore={list.hasMore} count={rows.length} error={list.error} onRetry={list.loadMore} />
     </>}
   </KeyboardAwareScrollView></View>;

@@ -1,6 +1,6 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useState } from 'react';
 import { ActivityIndicator, FlatList, Pressable, RefreshControl, StyleSheet, Text, TextInput, View } from 'react-native';
-import { router, Stack, useFocusEffect } from 'expo-router';
+import { router, Stack } from 'expo-router';
 import { ChevronDown, Plus, Search, Store, UserCheck, Users, UserX } from 'lucide-react-native';
 import type { ComponentType } from 'react';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -59,15 +59,6 @@ export default function CustomersScreen() {
   const scrollProps = useLoadMoreOnScroll(list.loadMore);
   const summary = firstPage?.path === listPath ? firstPage.summary : null;
   const error = list.items.length ? '' : list.error;
-
-  // Customers are edited on the detail route, so reload the list whenever this screen regains focus.
-  const reloadList = useRef(list.reload);
-  useEffect(() => { reloadList.current = list.reload; }, [list.reload]);
-  const focusedBefore = useRef(false);
-  useFocusEffect(useCallback(() => {
-    if (focusedBefore.current) void reloadList.current();
-    focusedBefore.current = true;
-  }, []));
 
   if (!canRead) return <View style={styles.noAccess}><Text style={styles.noAccessTitle}>Customer tidak tersedia</Text><Text style={styles.noAccessText}>Akun ini belum memiliki izin untuk melihat data customer.</Text></View>;
 

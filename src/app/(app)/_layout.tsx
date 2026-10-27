@@ -30,10 +30,10 @@ export default function AppLayout() {
     <Stack.Screen name="cash-closing" options={{ title: 'Cash Closing' }} />
     <Stack.Screen name="cash-in-out-form" options={{ headerShown: false }} />
     <Stack.Screen name="cash-in-out-detail" options={{ headerShown: false }} />
-    <Stack.Screen name="stock-requests" options={{ title: 'Permintaan Stok' }} />
+    <Stack.Screen name="stock-requests" options={{ title: 'Pengajuan Stok' }} />
     <Stack.Screen name="transfers" options={{ title: 'Transfer Gudang' }} />
     <Stack.Screen name="adjustments" options={{ title: 'Adjustment Stok' }} />
-    <Stack.Screen name="opnames" options={{ title: 'Stock Opname' }} />
+    <Stack.Screen name="opnames" options={{ title: 'Stok Opname' }} />
     <Stack.Screen name="branch-profit" options={{ title: 'Keuntungan per cabang' }} />
     <Stack.Screen name="unsold-stock" options={{ title: 'Stok belum terjual' }} />
     <Stack.Screen name="open-bills" options={{ title: 'Laporan Open Bill' }} />

@@ -5,6 +5,7 @@ import * as Print from 'expo-print';
 import { router, useLocalSearchParams } from 'expo-router';
 import { useAuth } from '../../auth/auth-provider';
 import { ApiError } from '../../lib/api';
+import { useOnRefocus } from '../../lib/use-refocus';
 import { useNotifications } from '../../notifications/notifications-provider';
 import { OpenBillListSheet, OpenBillSaveSheet, OpenBillVoidSheet, PosCatalogScreen, PosCheckoutFlow, PosReceiptScreen, PrinterPickerSheet, equalShares, type OpenBillInfo, type OpenBillRow, type OpenBillVoid, type PosLine, type PosMethod, type PosProduct } from '../../components/pos-flow';
 import { formatDepositReceipt, formatKitchenTicket, formatOrderReceipt, formatPreBill, getPairedPrinters, getQuickSaleTickets, getSavedPrinter, getStationPrinter, openAndroidBluetoothSettings, paidTotalOf, printThermalReceipt, printThermalSlip, savePrinter, saveQuickSaleTickets, saveStationPrinter, stationLabel, stationTickets, type KitchenTicket, type PairedPrinter, type PreBill, type ReceiptOrder, type Station } from '../../lib/receipt-printer';
@@ -13,7 +14,7 @@ import { CustomerPickerSheet } from '../../components/customer-picker';
 import { PrintSettingsSheet, SplitBillSheet, type SplitPart, type SplitSourceLine } from '../../components/cafe-sheets';
 import { DEPOSIT_SETTLE_PERMISSION, DepositSettlementSheet, closedDepositOf, depositSettlementErrorMessage, depositSettlementNotice, type DepositPayment, type DepositSettlement, type DepositSettlementResult } from '../../components/deposit-settlement-sheet';
 import { customerErrorMessage, type Customer, type PosCustomer } from '../../lib/customers';
-import { customerLabel, formatDate, formatServiceType, formatStatus, stockWarningText, type ServiceType, type StockShortage } from '../../lib/display';
+import { customerLabel, formatDate, formatServiceType, formatStatus, stockWarningText, type OpenBillStockAction, type ServiceType, type StockShortage } from '../../lib/display';
 
 type Branch = { id: string; name: string; address?: string | null };
 type Warehouse = { id: string; name: string; branchId: string | null };
@@ -57,7 +58,23 @@ type BillOrder = Omit<Order, 'items'> & {
  * `customerId` is the registered customer the bill is linked to on the server (null for a guest bill); `payments` are its
  * deposits as loaded, to tell whether one already went into a cash closing.
  */
-type LoadedBill = OpenBillInfo & { version: number; signature: string; customerId: string | null; payments?: DepositPayment[] };
+type LoadedBill = OpenBillInfo & { version: number; signature: string; customerId: string | null; payments?: DepositPayment[]; savedLines?: SavedBillLine[] };
+/** A bill line as last saved; its goods already left stock (open bills deduct when ordered). */
+type SavedBillLine = { orderItemId: string; quantity: number; name: string };
+const savedLinesOf = (lines: Line[]): SavedBillLine[] => lines.flatMap((line) => line.bill ? [{ orderItemId: line.bill.orderItemId, quantity: line.quantity, name: line.product.name }] : []);
+/** Saved lines this cart drops or lowers. */
+const reducedBillLines = (bill: LoadedBill, lines: Line[]) => (bill.savedLines ?? []).filter((saved) => {
+  const current = lines.find((line) => line.bill?.orderItemId === saved.orderItemId);
+  return !current || current.quantity < saved.quantity;
+});
+/** Asks whether goods taken off a bill come back to stock (unopened) or were wasted (opened); null when the cashier backs out. */
+function askReducedStockAction(names: string[]) {
+  return new Promise<OpenBillStockAction | null>((resolve) => Alert.alert('Barang dikurangi dari bill', `${names.join(', ')} dikurangi atau dihapus dari bill. Barangnya dikembalikan ke stok atau terbuang?`, [
+    { text: 'Batal', style: 'cancel', onPress: () => resolve(null) },
+    { text: 'Terbuang', style: 'destructive', onPress: () => resolve('WASTE') },
+    { text: 'Kembalikan ke stok', onPress: () => resolve('RETURN') },
+  ], { cancelable: true, onDismiss: () => resolve(null) }));
+}
 const cartSignature = (lines: Line[], discount: string, customerName: string, customerId: string, serviceType: ServiceType) => JSON.stringify([lines.map((line) => [line.key, line.quantity]), Number(discount) || 0, customerName.trim(), customerId, serviceType]);
 const serviceTypeOf = (takeaway: boolean): ServiceType => takeaway ? 'TAKEAWAY' : 'DINE_IN';
 /** A printout waiting for the thermal preview; station tickets go to that station's printer. */
@@ -75,6 +92,8 @@ function openBillErrorMessage(error: unknown, fallback = 'Open bill gagal disimp
   if (isCustomerUnavailable(error) || (error instanceof ApiError && error.code === 'PERMISSION_DENIED')) return customerErrorMessage(error);
   if (error instanceof ApiError) {
     const details = (error.details ?? {}) as { product?: string; onBill?: string; paid?: string; orderNumber?: string };
+    // Open bill goods leave stock as soon as they are on the bill, so short stock now blocks saving it.
+    if (error.code === 'INSUFFICIENT_STOCK' && Array.isArray(error.details) && error.details.length) return `${stockWarningText(error.details as StockShortage[])}. Kurangi jumlah atau hapus item tersebut.`;
     if (error.code === 'OPEN_BILL_LOCKED') return 'Bill ini sudah dibayar atau dibatalkan sehingga tidak bisa diubah lagi.';
     if (error.code === 'INVALID_CUSTOMER_PHONE') return 'No. HP tidak valid. Gunakan format 08…, 628…, atau +62 8….';
     if (error.code === 'OPEN_BILL_CUSTOMER_REQUIRED') return 'Nama pelanggan dan No. HP wajib diisi untuk open bill.';
@@ -141,6 +160,8 @@ export default function PosScreen() {
   const [displayOnly, setDisplayOnly] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [reloadKey, setReloadKey] = useState(0);
+  // Stock changes elsewhere (other cashiers, display moves), so refresh the catalog when POS regains focus.
+  useOnRefocus(() => setReloadKey((value) => value + 1));
   const [warehouseReloadKey, setWarehouseReloadKey] = useState(0);
   const loadedWarehouseId = useRef('');
   // Warehouse whose catalog is in `products`; unlike the ref above it re-renders, so a pending bill can wait for it.
@@ -418,14 +439,18 @@ export default function PosScreen() {
     // customerId: a string links/changes the customer, null detaches it (guest bill), omitted keeps the current link.
     const customerId = selectedCustomer?.id ?? null;
     const link = customerId === bill.customerId ? {} : { customerId };
+    // Goods on the bill already left stock; for lines this save drops or lowers, the cashier says what happened to them.
+    const reduced = reducedBillLines(bill, cart);
+    const stockAction = reduced.length ? await askReducedStockAction([...new Set(reduced.map((line) => line.name))]) : 'RETURN';
+    if (!stockAction) return null;
     try {
-      const updated = await authorizedRequest<Order & { version: number; customerId?: string | null; stockWarnings?: StockShortage[] }>(`orders/${bill.id}/open-bill`, { method: 'PUT', body: JSON.stringify({ version: bill.version, ...link, customerName: name, customerPhone: phone, serviceType, discountAmount: String(discountAmount), items: orderItems(true) }) });
+      const updated = await authorizedRequest<Order & { version: number; customerId?: string | null; stockWarnings?: StockShortage[] }>(`orders/${bill.id}/open-bill`, { method: 'PUT', body: JSON.stringify({ version: bill.version, ...link, customerName: name, customerPhone: phone, serviceType, discountAmount: String(discountAmount), items: orderItems(true), stockAction }) });
       const savedName = updated.customerName ?? name;
       const savedCustomerId = updated.customerId === undefined ? customerId : updated.customerId;
       setCustomer(savedName); setCustomerPhone(updated.customerPhone ?? phone);
       // The bill snapshots the customer's current name, which may have been edited since it was picked.
       if (selectedCustomer && savedCustomerId === selectedCustomer.id) setSelectedCustomer({ ...selectedCustomer, name: savedName });
-      setOpenBill({ ...bill, customerName: savedName, customerPhone: updated.customerPhone ?? phone, customerId: savedCustomerId, version: updated.version, signature: cartSignature(cart, discount, savedName, savedCustomerId ?? '', serviceType) });
+      setOpenBill({ ...bill, customerName: savedName, customerPhone: updated.customerPhone ?? phone, customerId: savedCustomerId, version: updated.version, signature: cartSignature(cart, discount, savedName, savedCustomerId ?? '', serviceType), savedLines: savedLinesOf(cart) });
       return updated;
     } catch (e) {
       if (!isVersionConflict(e)) throw e;
@@ -477,13 +502,13 @@ export default function PosScreen() {
    * Voids a sent line fully (no quantity) or partly; needs order.void_item. Blocked while the cart has unsaved edits, so the
    * cashier saves them knowingly first instead of having them saved as a side effect of a void.
    */
-  async function voidLine(line: Line, quantity: string | undefined, reason: string) {
+  async function voidLine(line: Line, quantity: string | undefined, reason: string, stockAction: OpenBillStockAction) {
     const bill = openBill;
     if (!bill || !line.bill) return;
     if (openBillDirty) { setVoidError(VOID_BLOCKED_MESSAGE); return; }
     setBillBusy(true); setVoidError(''); setError(''); setNotice(''); setWarning('');
     try {
-      const updated = await authorizedRequest<BillOrder>(`orders/${bill.id}/items/${line.bill.orderItemId}/void`, { method: 'POST', body: JSON.stringify({ version: bill.version, ...(quantity ? { quantity } : {}), reason }) });
+      const updated = await authorizedRequest<BillOrder>(`orders/${bill.id}/items/${line.bill.orderItemId}/void`, { method: 'POST', body: JSON.stringify({ version: bill.version, ...(quantity ? { quantity } : {}), reason, stockAction }) });
       setVoidTarget(null);
       applyOpenBill(updated, '', `${line.product.name} × ${Number(quantity ?? line.quantity)} di-void.`);
       // The void brought the total down to the deposit: the cart shows the repriced bill, which now only needs completing.
@@ -724,7 +749,7 @@ export default function PosScreen() {
     const billTakeaway = bill.serviceType === 'TAKEAWAY';
     setCart(lines); setDiscount(billDiscount); setCustomer(name); setCustomerPhone(bill.customerPhone ?? ''); setPendingOrder(null); setPaymentStep(false); setTakeaway(billTakeaway); setSplitMethods(null); setCashReceived('');
     setSelectedCustomer(customerId ? { id: customerId, name, phone: bill.customerPhone } : null);
-    setOpenBill({ id: bill.id, orderNumber: bill.orderNumber, customerName: name, customerPhone: bill.customerPhone ?? '', itemVoids: bill.itemVoids ?? [], paidTotal: paidTotalOf(bill), payments: bill.payments, customerId, version: bill.version, signature: cartSignature(lines, billDiscount, name, customerId ?? '', serviceTypeOf(billTakeaway)) });
+    setOpenBill({ id: bill.id, orderNumber: bill.orderNumber, customerName: name, customerPhone: bill.customerPhone ?? '', itemVoids: bill.itemVoids ?? [], paidTotal: paidTotalOf(bill), payments: bill.payments, customerId, version: bill.version, signature: cartSignature(lines, billDiscount, name, customerId ?? '', serviceTypeOf(billTakeaway)), savedLines: savedLinesOf(lines) });
     setError(message); setNotice(success); setCartVisible(true);
     if (customerId && can('customer.read')) {
       // The bill only snapshots name and phone; fetch the customer's own phone (the bill's may have been typed
@@ -742,16 +767,20 @@ export default function PosScreen() {
     if (closedDepositOf(bill.payments) > 0) { setSettleError(''); setSettleVisible(true); return; }
     // Deposits not yet in a cash closing are voided with the bill; the cashier hands the money back.
     const deposit = bill.paidTotal ? `\n\nDP ${money(bill.paidTotal)} akan dibatalkan; kembalikan uang ke pelanggan.` : '';
-    Alert.alert('Batalkan open bill?', `Bill ${bill.orderNumber} atas nama ${bill.customerName} akan dibatalkan dan tidak bisa dibuka lagi.${deposit}`, [
+    // Its goods already left stock, so one choice decides whether they all come back (unopened) or were wasted (opened).
+    Alert.alert('Batalkan open bill?', `Bill ${bill.orderNumber} atas nama ${bill.customerName} akan dibatalkan dan tidak bisa dibuka lagi.${deposit}
+
+Barang di bill ini dikembalikan ke stok atau dicatat terbuang?`, [
       { text: 'Kembali', style: 'cancel' },
-      { text: 'Ya, batalkan', style: 'destructive', onPress: () => void cancelOpenBill(bill) },
+      { text: 'Batal, barang terbuang', style: 'destructive', onPress: () => void cancelOpenBill(bill, 'WASTE') },
+      { text: 'Batal, kembalikan stok', onPress: () => void cancelOpenBill(bill, 'RETURN') },
     ]);
   }
 
-  async function cancelOpenBill(bill: LoadedBill) {
+  async function cancelOpenBill(bill: LoadedBill, stockAction: OpenBillStockAction) {
     setBillBusy(true); setError('');
     try {
-      await authorizedRequest(`orders/${bill.id}/cancel`, { method: 'POST' });
+      await authorizedRequest(`orders/${bill.id}/cancel`, { method: 'POST', body: JSON.stringify({ stockAction }) });
       resetCart(); setCartVisible(false);
       setNotice(`Open bill ${bill.orderNumber} dibatalkan.`);
       void refreshNotifications();
@@ -768,12 +797,12 @@ export default function PosScreen() {
   }
 
   /** Cancels the loaded bill and refunds or forfeits its deposit (order.deposit_settle), then clears the cart. */
-  async function settleDeposit(settlement: DepositSettlement, reason: string) {
+  async function settleDeposit(settlement: DepositSettlement, reason: string, stockAction: OpenBillStockAction) {
     const bill = openBill;
     if (!bill) return;
     setBillBusy(true); setSettleError(''); setError(''); setWarning('');
     try {
-      const result = await authorizedRequest<DepositSettlementResult>(`orders/${bill.id}/cancel-with-deposit`, { method: 'POST', body: JSON.stringify({ settlement, reason }) });
+      const result = await authorizedRequest<DepositSettlementResult>(`orders/${bill.id}/cancel-with-deposit`, { method: 'POST', body: JSON.stringify({ settlement, reason, stockAction }) });
       setSettleVisible(false); resetCart(); setCartVisible(false);
       setNotice(depositSettlementNotice(result));
       void refreshNotifications();
@@ -1001,7 +1030,7 @@ export default function PosScreen() {
       saving={billBusy}
       error={voidError}
       bottomInset={insets.bottom}
-      onVoid={(quantity, reason) => void voidLine(voidTarget, quantity, reason)}
+      onVoid={(quantity, reason, stockAction) => void voidLine(voidTarget, quantity, reason, stockAction)}
       onClose={() => { setVoidTarget(null); setVoidError(''); }}
     /> : null}
     {settleVisible && openBill ? <DepositSettlementSheet
@@ -1011,7 +1040,7 @@ export default function PosScreen() {
       saving={billBusy}
       error={settleError}
       bottomInset={insets.bottom}
-      onSubmit={(settlement, reason) => void settleDeposit(settlement, reason)}
+      onSubmit={(settlement, reason, stockAction) => void settleDeposit(settlement, reason, stockAction)}
       onClose={() => { setSettleVisible(false); setSettleError(''); }}
     /> : null}
     {splitLines && openBill ? <SplitBillSheet

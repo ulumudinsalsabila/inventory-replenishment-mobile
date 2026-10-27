@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { AdminOnly } from '../../auth/admin-only';
 import { ActivityIndicator, Alert, Modal, Platform, Pressable, RefreshControl, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { File } from 'expo-file-system';
 import * as ImagePicker from 'expo-image-picker';
@@ -182,7 +183,7 @@ export default function TransfersScreen() {
             <Text style={styles.sectionTitle}>Foto bukti penerimaan</Text>
             <View style={styles.evidenceActions}>
               <Pressable disabled={evidenceBusy} onPress={() => void addEvidence(true)} style={styles.evidenceButton}><Text style={styles.evidenceButtonText}>Ambil foto</Text></Pressable>
-              <Pressable disabled={evidenceBusy} onPress={() => void addEvidence(false)} style={styles.evidenceButton}><Text style={styles.evidenceButtonText}>Pilih foto</Text></Pressable>
+              <AdminOnly><Pressable disabled={evidenceBusy} onPress={() => void addEvidence(false)} style={styles.evidenceButton}><Text style={styles.evidenceButtonText}>Pilih foto</Text></Pressable></AdminOnly>
             </View>
             {evidenceBusy ? <ActivityIndicator color="#087f5b" /> : null}
             {(selected.evidenceImages ?? []).length ? <ScrollView horizontal contentContainerStyle={styles.evidenceList}>{selected.evidenceImages!.map((photo, index, all) => <PreviewImage key={photo.id} uri={photo.url} images={all.map((entry) => entry.url)} index={index} style={styles.evidenceImage} />)}</ScrollView> : <Text style={styles.hint}>Belum ada foto bukti.</Text>}

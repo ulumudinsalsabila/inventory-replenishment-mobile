@@ -1,5 +1,8 @@
-/** Methods a cashier can pick for refunds and exchange settlements (EXCHANGE credit is applied automatically). */
-export const refundPaymentMethods = ['CASH', 'QRIS', 'TRANSFER', 'GRAB', 'GOBIZ', 'DEBIT_CARD', 'CREDIT_CARD', 'OTHER'];
+/**
+ * Methods a cashier can pick for refunds and exchange settlements: the same five as the POS (EXCHANGE credit is applied
+ * automatically).
+ */
+export const refundPaymentMethods = ['CASH', 'QRIS', 'TRANSFER', 'GRAB', 'GOBIZ'];
 const platformMethods = ['GRAB', 'GOBIZ'];
 
 /** Money can go back through any store method; platform methods only when the order was paid there (the server enforces this too). */
@@ -8,9 +11,15 @@ export function refundMethodsFor(payments: { method: string; status: string }[] 
   return refundPaymentMethods.filter((method) => !platformMethods.includes(method) || paid.has(method));
 }
 
+/** Preselected refund method: how the order was paid if that is still offered (older card payments are not), else cash. */
+export function defaultRefundMethod(payments: { method: string; status: string }[] | undefined) {
+  const offered = refundMethodsFor(payments);
+  return payments?.find((payment) => payment.status === 'COMPLETED' && offered.includes(payment.method))?.method ?? 'CASH';
+}
+
 const movementLabels: Record<string, string> = {
   PURCHASE_IN: 'Pembelian masuk', PURCHASE: 'Pembelian', PURCHASE_BONUS: 'Bonus pembelian', TRANSFER_IN: 'Transfer masuk', TRANSFER_OUT: 'Transfer keluar',
-  SALE: 'Penjualan', SALE_REVERSAL: 'Pembatalan penjualan', RETURN: 'Retur', WASTE: 'Barang rusak', ADJUSTMENT: 'Adjustment', STOCK_OPNAME: 'Stock opname',
+  SALE: 'Penjualan', SALE_REVERSAL: 'Pembatalan penjualan', RETURN: 'Retur', WASTE: 'Barang rusak', ADJUSTMENT: 'Adjustment', STOCK_OPNAME: 'Stok opname',
 };
 
 /** Indonesian name of a stock movement type. */
@@ -77,6 +86,16 @@ export function stockWarningText(shortages: StockShortage[] | null | undefined) 
   const quantity = (value: string) => Number(value).toLocaleString('id-ID', { maximumFractionDigits: 3 });
   return `Stok kurang: ${shortages.map((entry) => `${entry.product} (butuh ${quantity(entry.required)}, tersedia ${quantity(entry.available)})`).join(', ')}`;
 }
+
+/**
+ * What happens to goods an open bill already took out of stock when they come off it (void or cancel):
+ * RETURN puts unopened goods back, WASTE records opened goods as wasted.
+ */
+export type OpenBillStockAction = 'RETURN' | 'WASTE';
+export const openBillStockActions: { value: OpenBillStockAction; label: string; hint: string }[] = [
+  { value: 'RETURN', label: 'Kembalikan ke stok', hint: 'Barang belum dibuka, stok bertambah lagi.' },
+  { value: 'WASTE', label: 'Terbuang', hint: 'Barang sudah dibuka, dicatat sebagai barang terbuang.' },
+];
 
 /** Short elapsed time: 45 -> "45 mnt", 130 -> "2 jam 10 mnt", 3000 -> "2 hari". */
 export function formatDuration(minutes: number) {

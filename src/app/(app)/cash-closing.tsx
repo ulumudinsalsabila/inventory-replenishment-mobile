@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { AdminOnly } from '../../auth/admin-only';
 import { ActivityIndicator, Modal, Platform, Pressable, RefreshControl, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { MoneyInput } from '../../components/money-input';
 import { File } from 'expo-file-system';
@@ -19,6 +20,7 @@ import { formatCashClosingReceipt, getPairedPrinters, getSavedPrinter, openAndro
 import { KeyboardAwareScrollView } from 'react-native-keyboard-controller';
 import { PreviewImage } from '../../components/image-viewer';
 import { PrinterPickerSheet } from '../../components/pos-flow';
+import { CashResolutionSheet, resolutionDestinationLabel, resolutionTypeLabel, type CashClosingResolution } from '../../components/cash-resolution-sheet';
 
 
 type Branch = { id: string; name: string; code: string };
@@ -36,6 +38,11 @@ type CashClosing = CashClosingReceipt & {
   note?: string | null;
   branch?: Branch;
   attachments?: { id: string; url: string; fileName: string; mimeType: string }[];
+  /** Settled part of the difference and what is still open (both positive); `resolved` once nothing is open. */
+  resolvedAmount?: string;
+  remainingDifference?: string;
+  resolved?: boolean;
+  resolutions?: CashClosingResolution[];
 };
 type Preview = {
   expectedCash: string;
@@ -67,6 +74,9 @@ type Evidence = ImagePicker.ImagePickerAsset;
 const money = (value?: string | number | null) => `Rp ${Number(value ?? 0).toLocaleString('id-ID', { maximumFractionDigits: 0 })}`;
 const escapeHtml = (value: string) => value.replace(/[&<>"']/g, (character) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[character]!);
 const paymentRows: [string, Exclude<keyof Preview, 'openBills'>][] = [['Cash', 'cashSales'], ['QRIS', 'qrisSales'], ['Transfer', 'transferSales'], ['Grab', 'grabSales'], ['GoBiz', 'gobizSales'], ['Kartu', 'cardSales'], ['Lainnya', 'otherSales']];
+/** Card and "other" are not POS methods; they only show when older or web data still has an amount on them. */
+const nonPosFields = new Set<string>(['cardSales', 'otherSales', 'cardRefund', 'otherRefund']);
+const shownRows = (rows: [string, Exclude<keyof Preview, 'openBills'>][], values: Record<string, unknown>) => rows.filter(([, field]) => !nonPosFields.has(field) || Number(values[field] ?? 0) !== 0);
 const refundRows: [string, Exclude<keyof Preview, 'openBills'>][] = [['Cash', 'cashRefund'], ['QRIS', 'qrisRefund'], ['Transfer', 'transferRefund'], ['Grab', 'grabRefund'], ['GoBiz', 'gobizRefund'], ['Kartu', 'cardRefund'], ['Lainnya', 'otherRefund']];
 
 export default function CashClosingScreen() {
@@ -75,6 +85,9 @@ export default function CashClosingScreen() {
   const bottomGap = useBottomGap();
   const canRead = user?.permissions.includes('cash_closing.read') ?? false;
   const canCreate = user?.permissions.includes('cash_closing.create') ?? false;
+  // Settling a closing difference is for admins only (cash_closing.resolve).
+  const canResolve = user?.permissions.includes('cash_closing.resolve') ?? false;
+  const [resolveVisible, setResolveVisible] = useState(false);
   const assignedBranchId = user?.branchId ?? null;
   const [branches, setBranches] = useState<Branch[]>([]);
   const { selectedBranchId: listBranchId, setSelectedBranchId: setListBranchId } = useBranchFilter();
@@ -265,14 +278,14 @@ export default function CashClosingScreen() {
       {preview ? <>
         <View style={styles.summaryTiles}><View style={styles.tile}><Text style={styles.tileLabel}>Total penjualan</Text><Text style={styles.tileValue}>{money(preview.totalSales)}</Text><Text style={styles.tileMeta}>{preview.transactionCount} transaksi</Text></View><View style={[styles.tile, styles.tileRefund]}><Text style={styles.tileLabel}>Total refund</Text><Text style={styles.tileValue}>{money(preview.totalRefund)}</Text></View></View>
         <View style={styles.summaryTiles}><View style={[styles.tile, styles.tileIn]}><Text style={styles.tileLabel}>Kas masuk</Text><Text style={styles.tileValue}>{money(preview.cashIn)}</Text></View><View style={[styles.tile, styles.tileOut]}><Text style={styles.tileLabel}>Kas keluar</Text><Text style={styles.tileValue}>{money(preview.cashOut)}</Text></View></View>
-        <View style={styles.card}><Text style={styles.cardTitle}>Penjualan per metode</Text>{paymentRows.map(([label, field]) => <View key={field} style={styles.methodRow}><Text style={styles.methodName}>{label}</Text><Text style={styles.methodValue}>{money(preview[field])}</Text></View>)}</View>
-        <View style={styles.card}><Text style={styles.cardTitle}>Refund per metode</Text>{refundRows.map(([label, field]) => <View key={field} style={styles.methodRow}><Text style={styles.methodName}>Refund {label}</Text><Text style={styles.methodValue}>{money(preview[field])}</Text></View>)}</View>
+        <View style={styles.card}><Text style={styles.cardTitle}>Penjualan per metode</Text>{shownRows(paymentRows, preview).map(([label, field]) => <View key={field} style={styles.methodRow}><Text style={styles.methodName}>{label}</Text><Text style={styles.methodValue}>{money(preview[field])}</Text></View>)}</View>
+        <View style={styles.card}><Text style={styles.cardTitle}>Refund per metode</Text>{shownRows(refundRows, preview).map(([label, field]) => <View key={field} style={styles.methodRow}><Text style={styles.methodName}>Refund {label}</Text><Text style={styles.methodValue}>{money(preview[field])}</Text></View>)}</View>
       </> : <Text style={styles.empty}>Pilih cabang dan tunggu ringkasan dimuat.</Text>}
     </ScrollView> : null}
     {step === 2 ? <ScrollView style={styles.formContent} contentContainerStyle={styles.formBody}>
       <View style={styles.card}><View style={styles.cardHeading}><ShieldCheck size={18} color="#087f5b" /><Text style={styles.cardTitle}>Ringkasan closing</Text></View><DetailRow label="Nomor closing" value="Dibuat setelah disimpan" /><DetailRow label="Cabang" value={branches.find((branch) => branch.id === branchId)?.name ?? 'Cabang saya'} /><DetailRow label="Periode mulai" value={preview?.periodStart ? formatDateTime(preview.periodStart) : '—'} /><DetailRow label="Dibuat pada" value={formatDateTime(new Date())} /><DetailRow label="Kas seharusnya" value={money(preview?.expectedCash)} /><DetailRow label="Kas fisik aktual" value={money(actualCash)} /><View style={[styles.differenceRow, difference === 0 ? styles.differenceMatch : styles.differenceWarn]}><Text style={styles.differenceLabel}>Selisih kas</Text><Text style={styles.differenceValue}>{money(difference)}</Text></View></View>
       {openBillWarning}
-      <View style={styles.card}><View style={styles.cardHeading}><Paperclip size={18} color="#6e5db5" /><Text style={styles.cardTitle}>Foto bukti (opsional)</Text></View><Text style={styles.muted}>Maksimal 5 foto, 5 MB per file.</Text><View style={styles.evidenceGrid}>{evidence.map((asset, index) => <View key={`${asset.assetId ?? asset.uri}-${index}`} style={styles.evidenceWrap}><PreviewImage uri={asset.uri} images={evidence.map((entry) => entry.uri)} index={index} style={styles.evidenceImage} /><Pressable accessibilityRole="button" accessibilityLabel={`Hapus foto ${index + 1}`} onPress={() => setEvidence((current) => current.filter((_, itemIndex) => itemIndex !== index))} style={styles.removeEvidence}><X size={13} color="#fff" /></Pressable></View>)}{evidence.length < 5 ? <View style={styles.evidenceActions}><Pressable accessibilityRole="button" onPress={() => void selectEvidence(true)} style={styles.evidenceButton}><Camera size={17} color="#087f5b" /><Text style={styles.evidenceButtonText}>Kamera</Text></Pressable><Pressable accessibilityRole="button" onPress={() => void selectEvidence(false)} style={styles.evidenceButton}><ImagePlus size={17} color="#087f5b" /><Text style={styles.evidenceButtonText}>Galeri</Text></Pressable></View> : null}</View></View>
+      <View style={styles.card}><View style={styles.cardHeading}><Paperclip size={18} color="#6e5db5" /><Text style={styles.cardTitle}>Foto bukti (opsional)</Text></View><Text style={styles.muted}>Maksimal 5 foto, 5 MB per file.</Text><View style={styles.evidenceGrid}>{evidence.map((asset, index) => <View key={`${asset.assetId ?? asset.uri}-${index}`} style={styles.evidenceWrap}><PreviewImage uri={asset.uri} images={evidence.map((entry) => entry.uri)} index={index} style={styles.evidenceImage} /><Pressable accessibilityRole="button" accessibilityLabel={`Hapus foto ${index + 1}`} onPress={() => setEvidence((current) => current.filter((_, itemIndex) => itemIndex !== index))} style={styles.removeEvidence}><X size={13} color="#fff" /></Pressable></View>)}{evidence.length < 5 ? <View style={styles.evidenceActions}><Pressable accessibilityRole="button" onPress={() => void selectEvidence(true)} style={styles.evidenceButton}><Camera size={17} color="#087f5b" /><Text style={styles.evidenceButtonText}>Kamera</Text></Pressable><AdminOnly><Pressable accessibilityRole="button" onPress={() => void selectEvidence(false)} style={styles.evidenceButton}><ImagePlus size={17} color="#087f5b" /><Text style={styles.evidenceButtonText}>Galeri</Text></Pressable></AdminOnly></View> : null}</View></View>
     </ScrollView> : null}
     <View style={[styles.footer, { paddingBottom: bottomGap }]}>{step > 0 ? <Pressable accessibilityRole="button" onPress={() => setStep((value) => value - 1)} style={styles.secondaryButton}><Text style={styles.secondaryText}>Kembali</Text></Pressable> : <Pressable accessibilityRole="button" onPress={resetForm} style={styles.secondaryButton}><Text style={styles.secondaryText}>Batal</Text></Pressable>}{step < 2 ? <Pressable accessibilityRole="button" disabled={step === 0 && (!preview?.transactionCount || !actualCash.trim() || previewLoading)} onPress={() => { setError(''); setStep((value) => value + 1); }} style={[styles.primaryButton, step === 0 && (!preview?.transactionCount || !actualCash.trim() || previewLoading) && styles.disabled]}><Text style={styles.primaryText}>{step === 0 ? 'Lanjut ke rekonsiliasi' : 'Lanjut ke konfirmasi'}</Text><ChevronRight size={17} color="#fff" /></Pressable> : <Pressable accessibilityRole="button" disabled={saving} onPress={() => void submitClosing()} style={[styles.primaryButton, saving && styles.disabled]}>{saving ? <ActivityIndicator color="#fff" /> : <Text style={styles.primaryText}>Simpan closing</Text>}</Pressable>}</View>
   </View>;
@@ -286,7 +299,7 @@ export default function CashClosingScreen() {
     <View style={styles.filters}>{[{ id: 'ALL', label: 'Semua' }, { id: 'MATCH', label: 'Sesuai' }, { id: 'DIFFERENCE', label: 'Selisih' }].map((item) => <Pressable key={item.id} onPress={() => setFilter(item.id as typeof filter)} style={[styles.filter, filter === item.id && styles.filterActive]}><Text style={[styles.filterText, filter === item.id && styles.filterTextActive]}>{item.label}</Text></Pressable>)}</View>
     {error || listError ? <Text style={styles.error}>{error || listError}</Text> : null}
     {list.loading ? <ActivityIndicator style={styles.loader} color="#07885b" /> : null}
-    {canRead ? filteredRows.map((row) => <Pressable key={row.id} accessibilityRole="button" onPress={() => void openDetail(row)} style={styles.closingCard}><View style={styles.closingTop}><View style={styles.closingIcon}><CalendarDays size={18} color="#3f79bf" /></View><View style={styles.closingLabels}><Text numberOfLines={1} style={styles.closingNumber}>{row.closingNumber}</Text><Text style={styles.muted}>{formatDateTime(row.closedAt ?? row.periodEnd ?? row.periodStart ?? '')}</Text></View><View style={[styles.statusBadge, row.status === 'MATCH' ? styles.statusMatch : styles.statusDifference]}><Text style={[styles.statusText, row.status === 'MATCH' ? styles.statusMatchText : styles.statusDifferenceText]}>{row.status === 'MATCH' ? 'SESUAI' : formatStatus(row.status)}</Text></View><ChevronRight size={17} color="#8a9aab" /></View><View style={styles.closingAmounts}><View><Text style={styles.amountLabel}>Penjualan</Text><Text style={styles.amountValue}>{money(row.totalSales)}</Text></View><View style={styles.amountEnd}><Text style={styles.amountLabel}>Selisih</Text><Text style={[styles.amountValue, Number(row.difference) === 0 ? styles.positive : styles.negative]}>{money(row.difference)}</Text></View></View></Pressable>) : <View style={styles.card}><Text style={styles.cardTitle}>Akses tidak tersedia</Text><Text style={styles.muted}>Akun ini belum memiliki izin membaca cash closing.</Text></View>}
+    {canRead ? filteredRows.map((row) => <Pressable key={row.id} accessibilityRole="button" onPress={() => void openDetail(row)} style={styles.closingCard}><View style={styles.closingTop}><View style={styles.closingIcon}><CalendarDays size={18} color="#3f79bf" /></View><View style={styles.closingLabels}><Text numberOfLines={1} style={styles.closingNumber}>{row.closingNumber}</Text><Text style={styles.muted}>{formatDateTime(row.closedAt ?? row.periodEnd ?? row.periodStart ?? '')}</Text></View><View style={[styles.statusBadge, row.status === 'MATCH' || row.resolved ? styles.statusMatch : styles.statusDifference]}><Text style={[styles.statusText, row.status === 'MATCH' || row.resolved ? styles.statusMatchText : styles.statusDifferenceText]}>{row.status === 'MATCH' ? 'SESUAI' : row.resolved ? 'SELISIH SELESAI' : formatStatus(row.status)}</Text></View><ChevronRight size={17} color="#8a9aab" /></View><View style={styles.closingAmounts}><View><Text style={styles.amountLabel}>Penjualan</Text><Text style={styles.amountValue}>{money(row.totalSales)}</Text></View><View style={styles.amountEnd}><Text style={styles.amountLabel}>Selisih</Text><Text style={[styles.amountValue, Number(row.difference) === 0 ? styles.positive : styles.negative]}>{money(row.difference)}</Text></View></View></Pressable>) : <View style={styles.card}><Text style={styles.cardTitle}>Akses tidak tersedia</Text><Text style={styles.muted}>Akun ini belum memiliki izin membaca cash closing.</Text></View>}
     {canRead ? <LoadMoreFooter loadingMore={list.loadingMore} hasMore={list.hasMore} count={filteredRows.length} error={list.error} onRetry={list.loadMore} /> : null}
     {!list.loading && !listError && canRead && !filteredRows.length ? <Text style={styles.empty}>Belum ada closing untuk periode {rangeLabel(rangePreset).toLowerCase()}.</Text> : null}
   </ScrollView>
@@ -313,8 +326,8 @@ export default function CashClosingScreen() {
           <DetailRow label="Transfer" value={money(selected.transferSales)} />
           <DetailRow label="Grab" value={money(selected.grabSales)} />
           <DetailRow label="GoBiz" value={money(selected.gobizSales)} />
-          <DetailRow label="Kartu" value={money(selected.cardSales)} />
-          <DetailRow label="Lainnya" value={money(selected.otherSales)} />
+          {Number(selected.cardSales ?? 0) ? <DetailRow label="Kartu" value={money(selected.cardSales)} /> : null}
+          {Number(selected.otherSales ?? 0) ? <DetailRow label="Lainnya" value={money(selected.otherSales)} /> : null}
           <View style={[styles.differenceRow, styles.differenceMatch]}><Text style={styles.differenceLabel}>Total penjualan</Text><Text style={styles.differenceValue}>{money(selected.totalSales)}</Text></View>
           <DetailRow label="Cabang" value={selected.branch?.name ?? '—'} />
           <DetailRow label="Periode" value={`${selected.periodStart ? formatDateTime(selected.periodStart) : '—'} - ${selected.periodEnd ? formatDateTime(selected.periodEnd) : '—'}`} />
@@ -325,6 +338,19 @@ export default function CashClosingScreen() {
           <DetailRow label="Kas seharusnya" value={money(selected.expectedCash)} />
           <DetailRow label="Kas fisik aktual" value={money(selected.actualCash)} />
           <View style={[styles.differenceRow, Number(selected.difference) === 0 ? styles.differenceMatch : styles.differenceWarn]}><Text style={styles.differenceLabel}>Selisih kas</Text><Text style={styles.differenceValue}>{money(selected.difference)}</Text></View>
+          {Number(selected.difference) !== 0 ? <>
+            <Text style={styles.sectionTitle}>Penyelesaian selisih</Text>
+            <DetailRow label="Selisih awal" value={money(Math.abs(Number(selected.difference)))} />
+            <DetailRow label="Sudah diselesaikan" value={money(selected.resolvedAmount)} />
+            <View style={[styles.differenceRow, selected.resolved ? styles.differenceMatch : styles.differenceWarn]}><Text style={styles.differenceLabel}>{selected.resolved ? 'Selisih selesai' : 'Sisa selisih'}</Text><Text style={styles.differenceValue}>{money(selected.remainingDifference)}</Text></View>
+            {(selected.resolutions ?? []).map((resolution) => <View key={resolution.id} style={styles.resolutionCard}>
+              <View style={styles.resolutionTop}><Text style={styles.resolutionTitle}>{resolutionTypeLabel[resolution.type]}{resolution.destination ? ` · ${resolutionDestinationLabel[resolution.destination]}` : ''}</Text><Text style={styles.resolutionAmount}>{money(resolution.amount)}</Text></View>
+              <Text style={styles.muted}>{resolution.reason}</Text>
+              <Text style={styles.muted}>{resolution.createdBy?.name ?? 'Admin'} · {formatDateTime(resolution.createdAt)}</Text>
+              {resolution.attachments?.length ? <View style={styles.evidenceGrid}>{resolution.attachments.map((attachment, index, all) => <PreviewImage key={attachment.id} uri={attachment.url} images={all.map((entry) => entry.url)} index={index} accessibilityLabel={attachment.fileName} style={styles.evidenceImage} />)}</View> : null}
+            </View>)}
+            {canResolve && !selected.resolved ? <Pressable accessibilityRole="button" onPress={() => setResolveVisible(true)} style={styles.resolveButton}><Text style={styles.resolveButtonText}>Selesaikan selisih</Text></Pressable> : null}
+          </> : null}
           {selected.note ? <><Text style={styles.sectionTitle}>Catatan</Text><Text style={styles.muted}>{selected.note}</Text></> : null}
           <Text style={styles.sectionTitle}>Lampiran ({selected.attachments?.length ?? 0})</Text>
           <View style={styles.evidenceGrid}>{selected.attachments?.map((attachment, index, all) => <PreviewImage key={attachment.id} uri={attachment.url} images={all.map((entry) => entry.url)} index={index} accessibilityLabel={attachment.fileName} style={styles.evidenceImage} />)}</View>
@@ -332,6 +358,13 @@ export default function CashClosingScreen() {
       </View>
     </View>
   </Modal>
+  {resolveVisible && selected ? <CashResolutionSheet
+    closing={{ id: selected.id, closingNumber: selected.closingNumber, status: selected.status, remainingDifference: selected.remainingDifference ?? String(Math.abs(Number(selected.difference))) }}
+    bottomInset={insets.bottom}
+    request={authorizedRequest}
+    onResolved={(updated) => { setSelected(updated as CashClosing); setResolveVisible(false); void list.reload(); }}
+    onClose={() => setResolveVisible(false)}
+  /> : null}
   {selected ? <ThermalPreview
     visible={previewVisible}
     title={`Cash closing ${selected.closingNumber}`}
@@ -388,5 +421,5 @@ const styles = StyleSheet.create({
   differenceRow: { flexDirection: 'row', justifyContent: 'space-between', marginTop: 9, padding: 11, borderRadius: 9 }, differenceMatch: { backgroundColor: '#e6f7ef' }, differenceWarn: { backgroundColor: '#fff0ed' }, differenceLabel: { color: '#475f57', fontSize: 11, fontWeight: '800' }, differenceValue: { color: '#07885b', fontSize: 12, fontWeight: '900' },
   footer: { flexDirection: 'row', gap: 8, paddingHorizontal: 14, paddingTop: 10, borderTopWidth: 1, borderTopColor: '#e8edf0', backgroundColor: '#fff' }, secondaryButton: { minHeight: 46, minWidth: 82, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 10, borderWidth: 1, borderColor: '#dce5eb', borderRadius: 10 }, secondaryText: { color: '#53677e', fontSize: 12, fontWeight: '800' }, primaryButton: { flex: 1, minHeight: 46, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 7, paddingHorizontal: 10, borderRadius: 10, backgroundColor: '#07885b' }, primaryText: { color: '#fff', fontSize: 12, fontWeight: '900' }, createButton: { minHeight: 46, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 7, marginHorizontal: 14, marginTop: 7, marginBottom: 10, borderRadius: 10, backgroundColor: '#07885b' }, createButtonText: { color: '#fff', fontSize: 12, fontWeight: '900' }, disabled: { opacity: 0.45 }, loader: { padding: 16 }, error: { marginBottom: 10, padding: 10, borderRadius: 9, color: '#a3332a', backgroundColor: '#fff1ef', fontSize: 12, lineHeight: 17 }, muted: { marginTop: 4, color: '#8191a3', fontSize: 11, lineHeight: 16 }, empty: { marginTop: 20, color: '#7b8b9b', fontSize: 12, textAlign: 'center' },
   modalBackdrop: { flex: 1, justifyContent: 'flex-end', backgroundColor: '#0a172966' }, detailSheet: { maxHeight: '86%', paddingHorizontal: 14, paddingTop: 14, paddingBottom: 24, borderTopLeftRadius: 16, borderTopRightRadius: 16, backgroundColor: '#f7f9fa' }, detailHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }, closeButton: { width: 34, height: 34, alignItems: 'center', justifyContent: 'center', borderRadius: 9, backgroundColor: '#eaf0f3' }, detailContent: { flexGrow: 0 }, detailBanner: { minHeight: 64, flexDirection: 'row', alignItems: 'center', gap: 9, marginBottom: 8, padding: 11, borderRadius: 10, backgroundColor: '#e6f7ef' }, bannerAmount: { color: '#07885b', fontSize: 14, fontWeight: '900' }, detailRow: { minHeight: 41, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 10, borderBottomWidth: 1, borderBottomColor: '#e8edf1' }, detailLabel: { color: '#71839a', fontSize: 11 }, detailValue: { maxWidth: '68%', color: '#25364a', fontSize: 11, fontWeight: '800', textAlign: 'right' }, sectionTitle: { marginTop: 14, marginBottom: 6, color: '#25364a', fontSize: 13, fontWeight: '900' },
-  evidenceGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 8 }, evidenceWrap: { position: 'relative' }, evidenceImage: { width: 68, height: 68, borderRadius: 8, backgroundColor: '#edf2f4' }, removeEvidence: { position: 'absolute', top: -4, right: -4, width: 19, height: 19, alignItems: 'center', justifyContent: 'center', borderRadius: 10, backgroundColor: '#b8322d' }, evidenceActions: { flexDirection: 'row', gap: 7, marginTop: 4 }, evidenceButton: { minHeight: 72, minWidth: 84, alignItems: 'center', justifyContent: 'center', gap: 4, paddingHorizontal: 8, borderWidth: 1, borderColor: '#dce5eb', borderStyle: 'dashed', borderRadius: 9, backgroundColor: '#fff' }, evidenceButtonText: { color: '#53677e', fontSize: 11, fontWeight: '800' },
+  evidenceGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 8 }, resolutionCard: { marginTop: 8, padding: 11, borderWidth: 1, borderColor: '#e3eaf0', borderRadius: 10, backgroundColor: '#fbfcfd' }, resolutionTop: { flexDirection: 'row', justifyContent: 'space-between', gap: 8, marginBottom: 3 }, resolutionTitle: { flex: 1, color: '#25364a', fontSize: 12, fontWeight: '800' }, resolutionAmount: { color: '#07845f', fontSize: 12, fontWeight: '900' }, resolveButton: { minHeight: 44, alignItems: 'center', justifyContent: 'center', marginTop: 12, borderRadius: 11, backgroundColor: '#07885b' }, resolveButtonText: { color: '#fff', fontSize: 12, fontWeight: '900' }, evidenceWrap: { position: 'relative' }, evidenceImage: { width: 68, height: 68, borderRadius: 8, backgroundColor: '#edf2f4' }, removeEvidence: { position: 'absolute', top: -4, right: -4, width: 19, height: 19, alignItems: 'center', justifyContent: 'center', borderRadius: 10, backgroundColor: '#b8322d' }, evidenceActions: { flexDirection: 'row', gap: 7, marginTop: 4 }, evidenceButton: { minHeight: 72, minWidth: 84, alignItems: 'center', justifyContent: 'center', gap: 4, paddingHorizontal: 8, borderWidth: 1, borderColor: '#dce5eb', borderStyle: 'dashed', borderRadius: 9, backgroundColor: '#fff' }, evidenceButtonText: { color: '#53677e', fontSize: 11, fontWeight: '800' },
 });
