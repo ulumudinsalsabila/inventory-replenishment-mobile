@@ -13,6 +13,7 @@ import { useDebouncedValue, useInfiniteList, useLoadMoreOnScroll } from '../../l
 import { formatDate, formatStatus } from '../../lib/display';
 import { KeyboardAwareScrollView } from 'react-native-keyboard-controller';
 import { PreviewImage } from '../../components/image-viewer';
+import { shrinkPhotos } from '../../lib/photo';
 
 type Actor = { id: string; name: string };
 type TransferSummary = {
@@ -131,10 +132,11 @@ export default function TransfersScreen() {
       ? await ImagePicker.launchCameraAsync({ mediaTypes: ['images'], quality: 0.75, cameraType: ImagePicker.CameraType.back })
       : await ImagePicker.launchImageLibraryAsync({ mediaTypes: ['images'], allowsMultipleSelection: true, selectionLimit: 8, quality: 0.75 });
     if (result.canceled || !result.assets.length) return;
+    const assets = await shrinkPhotos(result.assets);
     setEvidenceBusy(true); setError('');
     try {
       const form = new FormData();
-      result.assets.forEach((asset, index) => {
+      assets.forEach((asset, index) => {
         const uriParts = asset.uri.split('/');
         const name = asset.fileName ?? uriParts[uriParts.length - 1] ?? `evidence-${index}.jpg`;
         if (Platform.OS === 'web') {

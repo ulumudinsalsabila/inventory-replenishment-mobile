@@ -13,6 +13,7 @@ import { formatDate } from '../../lib/display';
 import { useDebouncedValue, useInfiniteList, useLoadMoreOnScroll } from '../../lib/infinite-list';
 import { KeyboardAwareScrollView } from 'react-native-keyboard-controller';
 import { PreviewImage } from '../../components/image-viewer';
+import { shrinkPhotos } from '../../lib/photo';
 
 type Branch = { id: string; name: string; code: string };
 type Page<T> = { data: T[]; meta?: { totalPages: number } };
@@ -75,8 +76,9 @@ export default function CashScreen() {
       ? await ImagePicker.launchCameraAsync({ mediaTypes: ['images'], quality: 0.75, cameraType: ImagePicker.CameraType.back })
       : await ImagePicker.launchImageLibraryAsync({ mediaTypes: ['images'], allowsMultipleSelection: true, selectionLimit: 5 - evidence.length, quality: 0.75 });
     if (result.canceled || !result.assets.length) return;
-    if (result.assets.length + evidence.length > 5 || result.assets.some((asset) => Number(asset.fileSize ?? 0) > 5 * 1024 * 1024)) { setError('Maksimal 5 foto dan ukuran tiap file 5 MB.'); return; }
-    setEvidence((current) => [...current, ...result.assets].slice(0, 5));
+    const assets = await shrinkPhotos(result.assets);
+    if (assets.length + evidence.length > 5 || assets.some((asset) => Number(asset.fileSize ?? 0) > 5 * 1024 * 1024)) { setError('Maksimal 5 foto dan ukuran tiap file 5 MB.'); return; }
+    setEvidence((current) => [...current, ...assets].slice(0, 5));
     setError('');
   }
 

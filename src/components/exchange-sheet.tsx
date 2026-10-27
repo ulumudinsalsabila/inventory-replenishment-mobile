@@ -11,6 +11,7 @@ import { useAuth } from '../auth/auth-provider';
 import { defaultRefundMethod, formatStatus, refundMethodsFor, refundPaymentMethods } from '../lib/display';
 import type { PosProduct } from './pos-flow';
 import { PreviewImage } from './image-viewer';
+import { shrinkPhotos } from '../lib/photo';
 
 export type ExchangeOrder = {
   id: string;
@@ -107,8 +108,9 @@ export function ExchangeSheet({ visible, order, onClose, onDone }: { visible: bo
       ? await ImagePicker.launchCameraAsync({ mediaTypes: ['images'], quality: 0.75, cameraType: ImagePicker.CameraType.back })
       : await ImagePicker.launchImageLibraryAsync({ mediaTypes: ['images'], allowsMultipleSelection: true, selectionLimit: 8 - evidence.length, quality: 0.75 });
     if (result.canceled || !result.assets.length) return;
-    if (result.assets.some((asset) => Number(asset.fileSize ?? 0) > 5 * 1024 * 1024)) { setError('Ukuran setiap foto bukti maksimal 5 MB.'); return; }
-    setEvidence((current) => [...current, ...result.assets].slice(0, 8));
+    const assets = await shrinkPhotos(result.assets);
+    if (assets.some((asset) => Number(asset.fileSize ?? 0) > 5 * 1024 * 1024)) { setError('Ukuran setiap foto bukti maksimal 5 MB.'); return; }
+    setEvidence((current) => [...current, ...assets].slice(0, 8));
     setError('');
   }
 

@@ -17,6 +17,7 @@ import { DistributorPurchaseWizard } from '../../components/distributor-purchase
 import { OptionSheet } from '../../components/option-sheet';
 import { KeyboardAvoidingView, KeyboardAwareScrollView } from 'react-native-keyboard-controller';
 import { PreviewImage } from '../../components/image-viewer';
+import { shrinkPhotos } from '../../lib/photo';
 
 type Purchase = {
   id: string;
@@ -192,14 +193,15 @@ export default function DistributorPurchasesScreen() {
       ? await ImagePicker.launchCameraAsync({ mediaTypes: ['images'], quality: 0.75, cameraType: ImagePicker.CameraType.back })
       : await ImagePicker.launchImageLibraryAsync({ mediaTypes: ['images'], allowsMultipleSelection: true, selectionLimit: 12 - currentCount, quality: 0.75, preferredAssetRepresentationMode: ImagePicker.UIImagePickerPreferredAssetRepresentationMode.Compatible });
     if (result.canceled || !result.assets.length) return;
-    if (result.assets.length + currentCount > 12 || result.assets.some((asset) => Number(asset.fileSize ?? 0) > 5 * 1024 * 1024)) { setReceiveError('Maksimal 12 foto dan ukuran tiap foto maksimal 5 MB.'); return; }
+    const assets = await shrinkPhotos(result.assets);
+    if (assets.length + currentCount > 12 || assets.some((asset) => Number(asset.fileSize ?? 0) > 5 * 1024 * 1024)) { setReceiveError('Maksimal 12 foto dan ukuran tiap foto maksimal 5 MB.'); return; }
     const allowedTypes = ['image/jpeg', 'image/png', 'image/webp'];
-    if (result.assets.some((asset) => asset.mimeType && !allowedTypes.includes(asset.mimeType))) { setReceiveError('Foto harus berformat JPEG, PNG, atau WebP.'); return; }
+    if (assets.some((asset) => asset.mimeType && !allowedTypes.includes(asset.mimeType))) { setReceiveError('Foto harus berformat JPEG, PNG, atau WebP.'); return; }
     setUploadingAttachments(true); setReceiveError('');
     try {
-      for (let start = 0; start < result.assets.length; start += 8) {
+      for (let start = 0; start < assets.length; start += 8) {
         const form = new FormData();
-        result.assets.slice(start, start + 8).forEach((asset, index) => {
+        assets.slice(start, start + 8).forEach((asset, index) => {
           const name = asset.fileName ?? asset.uri.split('/').pop() ?? `invoice-${start + index}.jpg`;
           if (Platform.OS === 'web') {
             if (!asset.file) throw new Error('File foto dari browser tidak tersedia.');

@@ -21,6 +21,7 @@ import { KeyboardAwareScrollView } from 'react-native-keyboard-controller';
 import { PreviewImage } from '../../components/image-viewer';
 import { PrinterPickerSheet } from '../../components/pos-flow';
 import { CashResolutionSheet, resolutionDestinationLabel, resolutionTypeLabel, type CashClosingResolution } from '../../components/cash-resolution-sheet';
+import { shrinkPhotos } from '../../lib/photo';
 
 
 type Branch = { id: string; name: string; code: string };
@@ -53,6 +54,8 @@ type Preview = {
   gobizSales: string;
   cardSales: string;
   otherSales: string;
+  /** Goods given out on kasbon: not money, shown as a minus next to the sales. */
+  kasbonSales?: string;
   totalSales: string;
   cashIn: string;
   cashOut: string;
@@ -173,8 +176,9 @@ export default function CashClosingScreen() {
       ? await ImagePicker.launchCameraAsync({ mediaTypes: ['images'], quality: 0.75, cameraType: ImagePicker.CameraType.back })
       : await ImagePicker.launchImageLibraryAsync({ mediaTypes: ['images'], allowsMultipleSelection: true, selectionLimit: 5 - evidence.length, quality: 0.75 });
     if (result.canceled || !result.assets.length) return;
-    if (result.assets.length + evidence.length > 5 || result.assets.some((asset) => Number(asset.fileSize ?? 0) > 5 * 1024 * 1024)) { setError('Maksimal 5 foto dan ukuran tiap file 5 MB.'); return; }
-    setEvidence((current) => [...current, ...result.assets].slice(0, 5));
+    const assets = await shrinkPhotos(result.assets);
+    if (assets.length + evidence.length > 5 || assets.some((asset) => Number(asset.fileSize ?? 0) > 5 * 1024 * 1024)) { setError('Maksimal 5 foto dan ukuran tiap file 5 MB.'); return; }
+    setEvidence((current) => [...current, ...assets].slice(0, 5));
     setError('');
   }
 
@@ -284,7 +288,7 @@ export default function CashClosingScreen() {
       {preview ? <>
         <View style={styles.summaryTiles}><View style={styles.tile}><Text style={styles.tileLabel}>Total penjualan</Text><Text style={styles.tileValue}>{money(preview.totalSales)}</Text><Text style={styles.tileMeta}>{preview.transactionCount} transaksi</Text></View><View style={[styles.tile, styles.tileRefund]}><Text style={styles.tileLabel}>Total refund</Text><Text style={styles.tileValue}>{money(preview.totalRefund)}</Text></View></View>
         <View style={styles.summaryTiles}><View style={[styles.tile, styles.tileIn]}><Text style={styles.tileLabel}>Kas masuk</Text><Text style={styles.tileValue}>{money(preview.cashIn)}</Text></View><View style={[styles.tile, styles.tileOut]}><Text style={styles.tileLabel}>Kas keluar</Text><Text style={styles.tileValue}>{money(preview.cashOut)}</Text></View></View>
-        <View style={styles.card}><Text style={styles.cardTitle}>Penjualan per metode</Text>{shownRows(paymentRows, preview).map(([label, field]) => <View key={field} style={styles.methodRow}><Text style={styles.methodName}>{label}</Text><Text style={styles.methodValue}>{money(preview[field])}</Text></View>)}</View>
+        <View style={styles.card}><Text style={styles.cardTitle}>Penjualan per metode</Text>{shownRows(paymentRows, preview).map(([label, field]) => <View key={field} style={styles.methodRow}><Text style={styles.methodName}>{label}</Text><Text style={styles.methodValue}>{money(preview[field])}</Text></View>)}<View style={styles.methodRow}><Text style={styles.methodName}>Kasbon (barang keluar)</Text><Text style={styles.methodValue}>- {money(preview.kasbonSales)}</Text></View></View>
         <View style={styles.card}><Text style={styles.cardTitle}>Refund per metode</Text>{shownRows(refundRows, preview).map(([label, field]) => <View key={field} style={styles.methodRow}><Text style={styles.methodName}>Refund {label}</Text><Text style={styles.methodValue}>{money(preview[field])}</Text></View>)}</View>
       </> : <Text style={styles.empty}>Pilih cabang dan tunggu ringkasan dimuat.</Text>}
     </ScrollView> : null}
@@ -337,6 +341,8 @@ export default function CashClosingScreen() {
           <DetailRow label="GoBiz" value={money(selected.gobizSales)} />
           {Number(selected.cardSales ?? 0) ? <DetailRow label="Kartu" value={money(selected.cardSales)} /> : null}
           {Number(selected.otherSales ?? 0) ? <DetailRow label="Lainnya" value={money(selected.otherSales)} /> : null}
+          {/* Kasbon is goods on credit, not money: shown as a minus and kept out of the sales total. */}
+          <DetailRow label="Kasbon (barang keluar)" value={`- ${money(selected.kasbonSales)}`} />
           <View style={[styles.differenceRow, styles.differenceMatch]}><Text style={styles.differenceLabel}>Total penjualan</Text><Text style={styles.differenceValue}>{money(selected.totalSales)}</Text></View>
           <DetailRow label="Cabang" value={selected.branch?.name ?? '—'} />
           <DetailRow label="Periode" value={`${selected.periodStart ? formatDateTime(selected.periodStart) : '—'} - ${selected.periodEnd ? formatDateTime(selected.periodEnd) : '—'}`} />

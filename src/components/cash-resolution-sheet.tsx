@@ -6,6 +6,7 @@ import { Camera, ImagePlus, X } from 'lucide-react-native';
 import { KeyboardAvoidingView, KeyboardAwareScrollView } from 'react-native-keyboard-controller';
 import { ApiError } from '../lib/api';
 import { MoneyInput } from './money-input';
+import { shrinkPhotos } from '../lib/photo';
 
 export type ResolutionType = 'CASHIER_REPLACED' | 'COUNT_ERROR' | 'WRITE_OFF';
 export type ResolutionDestination = 'DRAWER' | 'HANDED_OVER';
@@ -58,8 +59,9 @@ export function CashResolutionSheet({ closing, bottomInset, request, onResolved,
       ? await ImagePicker.launchCameraAsync({ mediaTypes: ['images'], quality: 0.75, cameraType: ImagePicker.CameraType.back })
       : await ImagePicker.launchImageLibraryAsync({ mediaTypes: ['images'], allowsMultipleSelection: true, selectionLimit: 5 - photos.length, quality: 0.75 });
     if (result.canceled || !result.assets.length) return;
-    if (result.assets.some((asset) => Number(asset.fileSize ?? 0) > 5 * 1024 * 1024)) { setError('Ukuran tiap foto maksimal 5 MB.'); return; }
-    setPhotos((current) => [...current, ...result.assets].slice(0, 5));
+    const assets = await shrinkPhotos(result.assets);
+    if (assets.some((asset) => Number(asset.fileSize ?? 0) > 5 * 1024 * 1024)) { setError('Ukuran tiap foto maksimal 5 MB.'); return; }
+    setPhotos((current) => [...current, ...assets].slice(0, 5));
     setError('');
   }
 

@@ -23,6 +23,7 @@ import { KeyboardAwareScrollView } from 'react-native-keyboard-controller';
 import { PreviewImage } from '../../components/image-viewer';
 import { DEPOSIT_SETTLE_PERMISSION, DepositSettlementSheet, closedDepositOf, depositSettlementErrorMessage, depositSettlementNotice, type DepositSettlement, type DepositSettlementResult } from '../../components/deposit-settlement-sheet';
 import { PrinterPickerSheet } from '../../components/pos-flow';
+import { shrinkPhotos } from '../../lib/photo';
 
 type OrderLine = NonNullable<ReceiptOrder['items']>[number] & { id: string; note?: string | null; sentAt?: string | null };
 /** A sent open bill line (or part of it) taken off before payment; kept for the audit trail. */
@@ -317,8 +318,9 @@ export default function OrdersScreen() {
       ? await ImagePicker.launchCameraAsync({ mediaTypes: ['images'], quality: 0.75, cameraType: ImagePicker.CameraType.back })
       : await ImagePicker.launchImageLibraryAsync({ mediaTypes: ['images'], allowsMultipleSelection: true, selectionLimit: 8 - refundEvidence.length, quality: 0.75 });
     if (result.canceled || !result.assets.length) return;
-    if (result.assets.some((asset) => Number(asset.fileSize ?? 0) > 5 * 1024 * 1024)) { setRefundError('Ukuran setiap foto bukti maksimal 5 MB.'); return; }
-    setRefundEvidence((current) => [...current, ...result.assets].slice(0, 8));
+    const assets = await shrinkPhotos(result.assets);
+    if (assets.some((asset) => Number(asset.fileSize ?? 0) > 5 * 1024 * 1024)) { setRefundError('Ukuran setiap foto bukti maksimal 5 MB.'); return; }
+    setRefundEvidence((current) => [...current, ...assets].slice(0, 8));
     setRefundError('');
   }
 

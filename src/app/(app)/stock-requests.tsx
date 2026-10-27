@@ -14,6 +14,7 @@ import { formatDate, formatStatus } from '../../lib/display';
 import { useInfiniteList, useLoadMoreOnScroll } from '../../lib/infinite-list';
 import { KeyboardAvoidingView, KeyboardAwareScrollView } from 'react-native-keyboard-controller';
 import { PreviewImage } from '../../components/image-viewer';
+import { shrinkPhotos } from '../../lib/photo';
 
 type NamedOption = { id: string; name: string; code?: string; branchId?: string | null };
 type ProductUnit = { unitId: string; conversionFactor: string; unit: { id: string; code: string; name: string } };
@@ -231,8 +232,9 @@ export default function StockRequestsScreen() {
       ? await ImagePicker.launchCameraAsync({ mediaTypes: ['images'], quality: 0.75, cameraType: ImagePicker.CameraType.back })
       : await ImagePicker.launchImageLibraryAsync({ mediaTypes: ['images'], allowsMultipleSelection: true, selectionLimit: remaining, quality: 0.75 });
     if (result.canceled || !result.assets.length) return;
-    if (result.assets.some((asset) => Number(asset.fileSize ?? 0) > 5 * 1024 * 1024)) { setActionError('Ukuran setiap foto maksimal 5 MB.'); return; }
-    setPhotos((current) => [...current, ...result.assets].slice(0, remaining + current.length));
+    const assets = await shrinkPhotos(result.assets);
+    if (assets.some((asset) => Number(asset.fileSize ?? 0) > 5 * 1024 * 1024)) { setActionError('Ukuran setiap foto maksimal 5 MB.'); return; }
+    setPhotos((current) => [...current, ...assets].slice(0, remaining + current.length));
     setActionError('');
   }
 

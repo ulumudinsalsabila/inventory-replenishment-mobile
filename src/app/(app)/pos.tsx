@@ -17,6 +17,7 @@ import { PrintSettingsSheet, SplitBillSheet, type SplitPart, type SplitSourceLin
 import { DEPOSIT_SETTLE_PERMISSION, DepositSettlementSheet, closedDepositOf, depositSettlementErrorMessage, depositSettlementNotice, type DepositPayment, type DepositSettlement, type DepositSettlementResult } from '../../components/deposit-settlement-sheet';
 import { customerErrorMessage, type Customer, type PosCustomer } from '../../lib/customers';
 import { customerLabel, formatDate, formatServiceType, formatStatus, stockWarningText, type OpenBillStockAction, type ServiceType, type StockShortage } from '../../lib/display';
+import { shrinkPhotos } from '../../lib/photo';
 
 type Branch = { id: string; name: string; address?: string | null };
 type Warehouse = { id: string; name: string; branchId: string | null };
@@ -409,8 +410,9 @@ export default function PosScreen() {
     if (!permission.granted) { setError('Izin kamera diperlukan untuk mengambil foto.'); return; }
     const result = await ImagePicker.launchCameraAsync({ mediaTypes: ['images'], quality: 0.75, cameraType: ImagePicker.CameraType.back });
     if (result.canceled || !result.assets.length) return;
-    if (result.assets.some((asset) => Number(asset.fileSize ?? 0) > 5 * 1024 * 1024)) { setError('Ukuran foto bukti maksimal 5 MB.'); return; }
-    setPaymentPhotos((current) => [...current, ...result.assets].slice(0, MAX_PAYMENT_PHOTOS));
+    const assets = await shrinkPhotos(result.assets);
+    if (assets.some((asset) => Number(asset.fileSize ?? 0) > 5 * 1024 * 1024)) { setError('Ukuran foto bukti maksimal 5 MB.'); return; }
+    setPaymentPhotos((current) => [...current, ...assets].slice(0, MAX_PAYMENT_PHOTOS));
     setError('');
   }
 

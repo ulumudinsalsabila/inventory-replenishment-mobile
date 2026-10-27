@@ -12,6 +12,7 @@ import { formatDate } from '../../../lib/display';
 import { useDebouncedValue, useInfiniteList, useLoadMoreOnScroll } from '../../../lib/infinite-list';
 import { KeyboardAvoidingView, KeyboardAwareScrollView } from 'react-native-keyboard-controller';
 import { PreviewImage } from '../../../components/image-viewer';
+import { shrinkPhotos } from '../../../lib/photo';
 
 type Warehouse = { id: string; code: string; name: string; branchId: string | null };
 type Page<T> = { data: T[]; meta: { total: number; totalPages: number } };
@@ -123,7 +124,8 @@ export default function DisplayScreen() {
     if (!permission.granted) { setError('Izin kamera dibutuhkan untuk mengambil foto.'); return; }
     const result = await ImagePicker.launchCameraAsync({ mediaTypes: ['images'], quality: 0.75, cameraType: ImagePicker.CameraType.back });
     if (result.canceled || !result.assets.length) return;
-    const selected = result.assets.map((asset, index) => ({ uri: asset.uri, name: asset.fileName ?? asset.uri.split('/').pop() ?? `display-${index + 1}.jpg`, size: asset.fileSize ?? 0, asset }));
+    const assets = await shrinkPhotos(result.assets);
+    const selected = assets.map((asset, index) => ({ uri: asset.uri, name: asset.fileName ?? asset.uri.split('/').pop() ?? `display-${index + 1}.jpg`, size: asset.fileSize ?? 0, asset }));
     if (selected.some((file) => file.size > 5 * 1024 * 1024)) { setError('Ukuran setiap foto maksimal 5 MB.'); return; }
     setEvidence((current) => [...current, ...selected].slice(0, 8));
     setError('');

@@ -301,7 +301,9 @@ export function formatCashClosingReceipt(closing: CashClosingReceipt, width = 32
     rule,
     columns('TOTAL SALES', cashRupiah(closing.totalSales), width),
     rule,
-    ...(Number(closing.kasbonSales ?? 0) !== 0 ? [columns('KASBON (BUKAN UANG)', cashRupiah(closing.kasbonSales), width), rule] : []),
+    // Kasbon is goods given out on credit: printed as a minus, outside TOTAL SALES and the expected cash.
+    columns('KASBON', `-${cashRupiah(closing.kasbonSales)}`, width),
+    rule,
     'CASH MOVEMENT',
     columns('Cash In', cashRupiah(closing.cashIn), width),
     columns('Cash Out', cashRupiah(closing.cashOut), width),
