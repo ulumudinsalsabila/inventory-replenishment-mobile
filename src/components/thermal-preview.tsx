@@ -1,4 +1,4 @@
-import { ActivityIndicator, Image, Modal, Platform, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { ActivityIndicator, Modal, Platform, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { Printer, X } from 'lucide-react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import type { PairedPrinter } from '../lib/receipt-printer';
@@ -8,8 +8,8 @@ type Props = {
   title: string;
   /** Plain receipt text, exactly as it will be sent to the printer. */
   text: string;
-  /** Image printed above the text (the store logo on order receipts), shown at its printed size. */
-  logo?: { uri: string; width: number; height: number };
+  /** Leading lines of  the printer prints bold (the store name on order receipts). */
+  boldLines?: number;
   printer: PairedPrinter | null;
   printing: boolean;
   error: string;
@@ -19,7 +19,7 @@ type Props = {
 };
 
 /** Shows a 58 mm receipt the way the thermal printer will lay it out, before anything is sent. */
-export function ThermalPreview({ visible, title, text, logo, printer, printing, error, onPrint, onChangePrinter, onClose }: Props) {
+export function ThermalPreview({ visible, title, text, boldLines = 0, printer, printing, error, onPrint, onChangePrinter, onClose }: Props) {
   const insets = useSafeAreaInsets();
   return <Modal visible={visible} transparent animationType="slide" onRequestClose={() => { if (!printing) onClose(); }}>
     <View style={styles.backdrop}>
@@ -30,8 +30,7 @@ export function ThermalPreview({ visible, title, text, logo, printer, printing, 
         </View>
         <ScrollView style={styles.paperScroll} contentContainerStyle={styles.paperWrap}>
           <View style={styles.paper}>
-            {logo ? <Image source={{ uri: logo.uri }} style={[styles.logo, { aspectRatio: logo.width / logo.height }]} resizeMode="contain" /> : null}
-            <Text selectable style={styles.receiptText}>{text}</Text>
+            <Text selectable style={styles.receiptText}>{boldLines > 0 ? <><Text style={styles.bold}>{text.split('\n').slice(0, boldLines).join('\n')}</Text>{'\n'}{text.split('\n').slice(boldLines).join('\n')}</> : text}</Text>
             <View style={styles.tear} />
           </View>
         </ScrollView>
@@ -62,9 +61,8 @@ const styles = StyleSheet.create({
   paperWrap: { alignItems: 'center', paddingVertical: 6 },
   // 32 monospace characters at 12 px is about the width of a 58 mm roll.
   paper: { paddingHorizontal: 14, paddingTop: 16, paddingBottom: 10, borderRadius: 4, backgroundColor: '#fff', shadowColor: '#0a1729', shadowOpacity: 0.12, shadowRadius: 8, shadowOffset: { width: 0, height: 2 }, elevation: 3 },
-  // 192 of the printer's 384 dots, i.e. half the paper width.
-  logo: { width: '50%', alignSelf: 'center', marginBottom: 6 },
   receiptText: { color: '#111', fontSize: 12, lineHeight: 17, fontFamily: Platform.select({ ios: 'Menlo', android: 'monospace', default: 'monospace' }) },
+  bold: { fontWeight: '900' },
   tear: { height: 1, marginTop: 14, borderTopWidth: 1, borderColor: '#cfd6dd', borderStyle: 'dashed' },
   printerRow: { flexDirection: 'row', alignItems: 'center', gap: 10, marginTop: 12, padding: 11, borderRadius: 12, backgroundColor: '#fff' },
   printerLabel: { color: '#708096', fontSize: 10 },

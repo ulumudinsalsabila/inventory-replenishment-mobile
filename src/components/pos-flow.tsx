@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { ActivityIndicator, FlatList, Image, Modal, Pressable, RefreshControl, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { MoneyInput } from './money-input';
-import { Banknote, Barcode, Camera, Check, ChefHat, ChevronLeft, ChevronRight, CircleCheck, ClipboardList, CreditCard, Landmark, Merge, Minus, Plus, Printer, QrCode, ReceiptText, Save, Search, Share2, ShoppingCart, Split, Store, Trash2, UserRound, Users, Wallet, X } from 'lucide-react-native';
+import { Banknote, Barcode, Camera, Gift, Check, ChefHat, ChevronLeft, ChevronRight, CircleCheck, ClipboardList, CreditCard, Landmark, Merge, Minus, Plus, Printer, QrCode, ReceiptText, Save, Search, Share2, ShoppingCart, Split, Store, Trash2, UserRound, Users, Wallet, X } from 'lucide-react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useResponsive } from '../lib/responsive';
 import { AppShellHeader } from './app-shell-header';
@@ -58,6 +58,8 @@ export type PosLine = {
   quantity: number;
   variantId: string;
   addonIds: string[];
+  /** A free item given with the sale: priced at Rp 0 but still taken from stock. */
+  isBonus?: boolean;
   /** Present on lines loaded from a saved open bill. */
   bill?: PosBillLine;
 };
@@ -83,6 +85,7 @@ type CheckoutProps = {
   priceFor: (line: PosLine) => number;
   onQuantity: (key: string, delta: number) => void;
   onUnitChange: (key: string, unitId: string) => void;
+  onToggleBonus: (key: string) => void;
   canIncrease: (line: PosLine) => boolean;
   onCheckout: () => void;
   /** Optional proof photos (local URIs) sent with the payment. */
@@ -478,7 +481,7 @@ export function PosCheckoutFlow(props: CheckoutProps) {
   // Nothing to pay for: no lines, or every line is priced at Rp 0.
   const canPay = props.lines.length > 0 && props.total > 0;
   const continueToPayment = () => {
-    if (!canPay) { props.onError(props.lines.length ? 'Total pesanan Rp 0. Atur harga produk terlebih dahulu sebelum pembayaran.' : 'Pesanan masih kosong.'); return; }
+    if (!canPay) { props.onError(props.lines.length ? 'Total pesanan Rp 0 (semua item bonus atau belum ada harga), jadi belum bisa dibayar.' : 'Pesanan masih kosong.'); return; }
     // A walk-in sale without a name is recorded as "Umum"; an open bill keeps its customer's name.
     if (!props.customer.trim() && props.openBill) { props.onError('Nama pelanggan wajib diisi.'); return; }
     props.onError('');
@@ -528,6 +531,7 @@ export function PosCheckoutFlow(props: CheckoutProps) {
                 const active = line.unitId === unit.unitId;
                 return <Pressable key={unit.unitId} accessibilityRole="button" accessibilityState={{ selected: active }} accessibilityLabel={`Satuan ${unit.unit.name}`} onPress={() => props.onUnitChange(line.key, unit.unitId)} style={[styles.unitChoice, active && styles.unitChoiceActive]}><Text style={[styles.unitChoiceText, active && styles.unitChoiceTextActive]}>{unit.unit.code} · {money(unit.sellingPrice)}</Text></Pressable>;
               })}</View> : null}
+              {isLineEditable(line) ? <Pressable accessibilityRole="switch" accessibilityState={{ checked: Boolean(line.isBonus) }} accessibilityLabel={`Bonus gratis untuk ${line.product.name}`} onPress={() => props.onToggleBonus(line.key)} style={[styles.bonusToggle, line.isBonus && styles.bonusToggleActive]}><Gift size={12} color={line.isBonus ? '#fff' : '#b45309'} /><Text style={[styles.bonusToggleText, line.isBonus && styles.bonusToggleTextActive]}>{line.isBonus ? 'Bonus (gratis)' : 'Jadikan bonus'}</Text></Pressable> : null}
               <View style={styles.lineBottom}>{isLineEditable(line) ? <View style={styles.quantityControl}><Pressable accessibilityRole="button" accessibilityLabel={`Kurangi ${line.product.name}`} onPress={() => props.onQuantity(line.key, -1)} style={styles.quantityButton}><Text style={styles.quantityButtonText}>−</Text></Pressable><Text style={styles.quantityValue}>{line.quantity}</Text><Pressable accessibilityRole="button" accessibilityLabel={`Tambah ${line.product.name}`} disabled={!props.canIncrease(line)} onPress={() => props.onQuantity(line.key, 1)} style={[styles.quantityButton, !props.canIncrease(line) && styles.disabled]}><Text style={styles.quantityButtonText}>+</Text></Pressable></View> : <Text style={styles.quantityValue}>× {line.quantity}</Text>}<Text style={styles.linePrice}>{money(props.priceFor(line) * line.quantity)}</Text></View>
               {/* Sent lines are locked: more of the same is a new line, less needs a void. */}
               {sent ? props.onVoidLine ? <Pressable accessibilityRole="button" accessibilityLabel={`Void ${line.product.name}`} disabled={props.billBusy} onPress={() => props.onVoidLine?.(line)} style={[styles.voidButton, props.billBusy && styles.disabled]}><Text style={styles.voidButtonText}>Void</Text></Pressable> : <Text style={styles.lockHint}>Terkunci · Butuh izin void</Text> : null}
@@ -566,7 +570,7 @@ export function PosCheckoutFlow(props: CheckoutProps) {
         {props.onOpenPrintSettings ? <Pressable accessibilityRole="button" onPress={props.onOpenPrintSettings} style={styles.settingsLink}><Printer size={14} color="#07885b" /><Text style={styles.settingsLinkText}>Pengaturan printer tiket bar/dapur</Text><ChevronRight size={14} color="#07885b" /></Pressable> : null}
         {props.error ? <Text style={styles.errorText}>{props.error}</Text> : null}
         {props.warning ? <Text style={styles.warningText}>{props.warning}</Text> : null}
-        {props.lines.length > 0 && props.total <= 0 ? <Text style={styles.errorText}>Total pesanan Rp 0, jadi belum bisa dibayar. Atur harga produk terlebih dahulu.</Text> : null}
+        {props.lines.length > 0 && props.total <= 0 ? <Text style={styles.errorText}>Total pesanan Rp 0 (semua item bonus atau belum ada harga), jadi belum bisa dibayar.</Text> : null}
         {props.notice ? <View style={styles.noticeBox}><Text style={[styles.noticeText, styles.noticeBoxText]}>{props.notice}</Text>{props.noticeAction ? <Pressable accessibilityRole="button" onPress={props.noticeAction.onPress} style={styles.noticeAction}><Text style={styles.noticeActionText}>{props.noticeAction.label}</Text><ChevronRight size={14} color="#07885b" /></Pressable> : null}</View> : null}
       </KeyboardAwareScrollView>
       <View style={[styles.footer, { paddingBottom: Math.max(props.bottomInset + 8, 12) }]}>
@@ -648,10 +652,11 @@ function SummaryRow({ label, value, strong }: { label: string; value: string; st
 /** "Terkirim" on lines already sent to the kitchen, "Tidak ada di katalog" on products this warehouse no longer sells. */
 function LineBadges({ line }: { line: PosLine }) {
   const bill = line.bill;
-  if (!bill || (!bill.sentAt && !bill.missing)) return null;
+  if (!line.isBonus && (!bill || (!bill.sentAt && !bill.missing))) return null;
   return <View style={styles.lineBadges}>
-    {bill.sentAt ? <Text style={[styles.lineBadge, styles.sentBadge]}>Terkirim</Text> : null}
-    {bill.missing ? <Text style={[styles.lineBadge, styles.missingBadge]}>Tidak ada di katalog</Text> : null}
+    {line.isBonus ? <Text style={[styles.lineBadge, styles.bonusBadge]}>Bonus</Text> : null}
+    {bill?.sentAt ? <Text style={[styles.lineBadge, styles.sentBadge]}>Terkirim</Text> : null}
+    {bill?.missing ? <Text style={[styles.lineBadge, styles.missingBadge]}>Tidak ada di katalog</Text> : null}
   </View>;
 }
 
@@ -979,7 +984,8 @@ const styles = StyleSheet.create({
   sheetInput: { height: 44, paddingHorizontal: 11, borderWidth: 1, borderColor: '#e3eaf0', borderRadius: 10, color: '#172338', fontSize: 12, fontWeight: '700' }, sheetError: { marginTop: 10 },
   kitchenButton: { minHeight: 42, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 7, paddingHorizontal: 12, borderRadius: 11, backgroundColor: '#b86e05' },
   unitChoices: { flexDirection: 'row', flexWrap: 'wrap', gap: 5, marginTop: 6 }, unitChoice: { paddingHorizontal: 8, paddingVertical: 4, borderWidth: 1, borderColor: '#e7edf1', borderRadius: 8, backgroundColor: '#fff' }, unitChoiceActive: { borderColor: '#07885b', backgroundColor: '#e8f7f0' }, unitChoiceText: { color: '#536a80', fontSize: 10, fontWeight: '700' }, unitChoiceTextActive: { color: '#07885b' },
-  lineBadges: { flexDirection: 'row', flexWrap: 'wrap', gap: 5, marginTop: 4 }, lineBadge: { overflow: 'hidden', paddingHorizontal: 6, paddingVertical: 2, borderRadius: 6, fontSize: 9, fontWeight: '900' }, sentBadge: { color: '#087c53', backgroundColor: '#dff7ee' }, missingBadge: { color: '#8a5a08', backgroundColor: '#fff1d6' },
+  lineBadges: { flexDirection: 'row', flexWrap: 'wrap', gap: 5, marginTop: 4 }, lineBadge: { overflow: 'hidden', paddingHorizontal: 6, paddingVertical: 2, borderRadius: 6, fontSize: 9, fontWeight: '900' }, sentBadge: { color: '#087c53', backgroundColor: '#dff7ee' }, bonusBadge: { color: '#b45309', backgroundColor: '#fef3c7' },
+  bonusToggle: { flexDirection: 'row', alignItems: 'center', alignSelf: 'flex-start', gap: 5, marginTop: 6, paddingHorizontal: 8, paddingVertical: 4, borderWidth: 1, borderColor: '#fcd9a5', borderRadius: 8, backgroundColor: '#fffbeb' }, bonusToggleActive: { borderColor: '#d97706', backgroundColor: '#d97706' }, bonusToggleText: { color: '#b45309', fontSize: 10, fontWeight: '800' }, bonusToggleTextActive: { color: '#fff' }, missingBadge: { color: '#8a5a08', backgroundColor: '#fff1d6' },
   voidButton: { alignSelf: 'flex-start', minHeight: 32, justifyContent: 'center', marginTop: 7, paddingHorizontal: 12, borderWidth: 1, borderColor: '#f3c5c1', borderRadius: 9, backgroundColor: '#fff' }, voidButtonText: { color: '#c0392b', fontSize: 10, fontWeight: '900' },
   lockHint: { marginTop: 6, color: '#8a97a8', fontSize: 9, fontWeight: '700' },
   voidLine: { minHeight: 52, backgroundColor: '#fdf6f5' }, struck: { color: '#9aa6b4', textDecorationLine: 'line-through' },

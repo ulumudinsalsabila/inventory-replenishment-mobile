@@ -4,10 +4,6 @@ import RNBluetoothClassic from 'react-native-bluetooth-classic';
 import { writeBlePrinter } from './ble-printer';
 import { cancelPrinterRelease, schedulePrinterRelease } from './printer-release';
 import { customerLabel, formatDate, formatServiceType, formatStatus, type ServiceType } from './display';
-import { RECEIPT_LOGO_PREVIEW_URI, RECEIPT_LOGO_RASTER } from './receipt-logo';
-
-/** The logo printed on order receipts, for ThermalPreview. */
-export const RECEIPT_LOGO_PREVIEW = { uri: RECEIPT_LOGO_PREVIEW_URI, width: RECEIPT_LOGO_RASTER.width, height: RECEIPT_LOGO_RASTER.height };
 
 /**
  * A saved thermal printer. `transport` is how it is reached: Bluetooth Classic (paired in Android settings, the default for
@@ -25,6 +21,8 @@ export type ReceiptLine = {
   unitPrice: string;
   totalPrice: string;
   note?: string | null;
+  /** A free item given with the sale; printed with (BONUS) and Rp 0. */
+  isBonus?: boolean;
   addons?: { addonNameSnapshot: string; quantity: string; totalPrice: string }[];
   /** Order lines carry their product's category, whose station decides the ticket a line is printed on. */
   product?: { category?: { name: string; station?: Station | null } | null } | null;
@@ -209,19 +207,19 @@ function receiptText(order: ReceiptOrder, width: number) {
   const date = order.completedAt ?? order.createdAt;
   const lines = [
     ...wrap(order.branch?.name ?? 'INVENTORY REPLENISHMENT', width).map((line) => center(line, width)),
-    ...(order.branch?.code ? [center(order.branch.code, width)] : []),
+    // The store phone stands where the branch code used to be; customers need the number, not the internal code.
+    ...(order.branch?.phone ? [center(order.branch.phone, width)] : []),
     rule,
     center(order.orderNumber, width),
     ...(date ? [center(formatDate(date), width)] : []),
     ...serviceLines(order.serviceType, width).map((line) => center(line, width)),
     ...customerLines(order.customerName, order.customerPhone, width),
     ...(order.cashierName ? wrap(`Kasir: ${order.cashierName}`, width) : []),
-    ...(order.branch?.phone ? wrap(`Telp: ${order.branch.phone}`, width) : []),
     rule,
   ];
 
   for (const item of order.items ?? []) {
-    lines.push(...wrap(`${item.productNameSnapshot}${item.variantNameSnapshot ? ` (${item.variantNameSnapshot})` : ''}`, width));
+    lines.push(...wrap(`${item.productNameSnapshot}${item.variantNameSnapshot ? ` (${item.variantNameSnapshot})` : ''}${item.isBonus ? ' (BONUS)' : ''}`, width));
     const addonTotal = (item.addons ?? []).reduce((sum, addon) => sum + Number(addon.totalPrice), 0);
     lines.push(columns(`${item.inputQuantity ?? item.quantity} ${item.unit?.code ?? ''} x ${rupiah(Number(item.unitPrice))}`, rupiah(Math.max(0, Number(item.totalPrice) - addonTotal)), width));
     for (const addon of item.addons ?? []) lines.push(...wrap(`+ ${addon.addonNameSnapshot} x ${addon.quantity} ${rupiah(Number(addon.totalPrice))}`, width));
@@ -325,27 +323,9 @@ export function formatCashClosingReceipt(closing: CashClosingReceipt, width = 32
   return lines.join('\n');
 }
 
-/** Rows per GS v 0 command; small bands keep the image within the input buffer of cheap printers. */
-const LOGO_BAND_ROWS = 64;
-
-/** ESC/POS commands that print the store logo centred, as a byte string (one character per byte). */
-function logoCommands() {
-  const { width, height, data } = RECEIPT_LOGO_RASTER;
-  const bitmap = atob(data);
-  const bytesPerRow = Math.ceil(width / 8);
-  let commands = String.fromCharCode(0x1b, 0x61, 1);
-  for (let top = 0; top < height; top += LOGO_BAND_ROWS) {
-    const rows = Math.min(LOGO_BAND_ROWS, height - top);
-    commands += String.fromCharCode(0x1d, 0x76, 0x30, 0, bytesPerRow & 0xff, bytesPerRow >> 8, rows & 0xff, rows >> 8);
-    commands += bitmap.slice(top * bytesPerRow, (top + rows) * bytesPerRow);
-  }
-  return `${commands}\n${String.fromCharCode(0x1b, 0x61, 0)}`;
-}
-
-/** `header` is raw ESC/POS (e.g. the logo) sent before the text; the text itself is plain ASCII. */
-async function printThermalText(text: string, printer: PairedPrinter, header = '') {
-  const payload = `${String.fromCharCode(0x1b, 0x40)}${header}${text}\n\n\n\n${String.fromCharCode(0x1b, 0x64, 3)}`;
-  // safeText keeps receipt text plain ASCII and the header is binary, so every character is exactly one ESC/POS byte.
+async function printThermalText(text: string, printer: PairedPrinter) {
+  const payload = `${String.fromCharCode(0x1b, 0x40)}${text}\n\n\n\n${String.fromCharCode(0x1b, 0x64, 3)}`;
+  // safeText keeps receipts plain ASCII, so every character is exactly one ESC/POS byte.
   if (printer.transport === 'ble') { await writeBlePrinter(printer.address, printer.name, Array.from(payload, (char) => char.charCodeAt(0) & 0xff)); return; }
   await ensureAndroidBluetoothAccess();
   let paired: Awaited<ReturnType<typeof RNBluetoothClassic.getBondedDevices>>;
@@ -378,8 +358,7 @@ async function writeClassic(printer: PairedPrinter, payload: string) {
   } catch { throw new Error(`Gagal tersambung ke ${printer.name}. Pastikan printer menyala dan dekat.`); }
   if (!(await connected.isConnected())) throw new Error(`Gagal tersambung ke ${printer.name}. Pastikan printer menyala dan dekat.`);
   let written = false;
-  // latin1 sends each character as one byte, including the logo's bitmap bytes above 0x7f.
-  try { written = await connected.write(payload, 'latin1'); } catch { written = false; }
+  try { written = await connected.write(payload, 'ascii'); } catch { written = false; }
   if (!written) throw new Error('Printer tidak menerima nota. Periksa koneksi lalu coba lagi.');
 }
 
@@ -395,8 +374,17 @@ export function formatOrderReceipt(order: ReceiptOrder, width = THERMAL_WIDTH) {
   return receiptText(order, width);
 }
 
+/** How many lines at the top of an order receipt hold the store name, which is printed bold. */
+export function receiptStoreLines(order: Pick<ReceiptOrder, 'branch'>, width = THERMAL_WIDTH) {
+  return wrap(order.branch?.name ?? 'INVENTORY REPLENISHMENT', width).length;
+}
+
 export async function printThermalReceipt(order: ReceiptOrder, printer: PairedPrinter) {
-  await printThermalText(formatOrderReceipt(order), printer, logoCommands());
+  const lines = formatOrderReceipt(order).split('\n');
+  const storeLines = receiptStoreLines(order);
+  // ESC E 1 / ESC E 0 switch emphasized (bold) printing on and off around the store name.
+  const bold = (on: boolean) => String.fromCharCode(0x1b, 0x45, on ? 1 : 0);
+  await printThermalText(`${bold(true)}${lines.slice(0, storeLines).join('\n')}\n${bold(false)}${lines.slice(storeLines).join('\n')}`, printer);
 }
 
 /** Sends already formatted text (pre-bill, DP receipt, kitchen ticket) to the thermal printer. */
@@ -427,7 +415,7 @@ export function formatPreBill(bill: PreBill, cashierName: string, width = THERMA
     ...(bill.items ?? []).flatMap((item) => {
       const addonTotal = (item.addons ?? []).reduce((sum, addon) => sum + Number(addon.totalPrice), 0);
       return [
-        ...wrap(`${item.productNameSnapshot}${item.variantNameSnapshot ? ` (${item.variantNameSnapshot})` : ''}`, width),
+        ...wrap(`${item.productNameSnapshot}${item.variantNameSnapshot ? ` (${item.variantNameSnapshot})` : ''}${item.isBonus ? ' (BONUS)' : ''}`, width),
         columns(`${Number(item.inputQuantity ?? item.quantity)} ${item.unit?.code ?? ''} x ${rupiah(Number(item.unitPrice))}`, rupiah(Math.max(0, Number(item.totalPrice) - addonTotal)), width),
         ...(item.addons ?? []).flatMap((addon) => wrap(`+ ${addon.addonNameSnapshot} x ${Number(addon.quantity)} ${rupiah(Number(addon.totalPrice))}`, width)),
         ...(item.note ? wrap(`  Catatan: ${item.note}`, width) : []),

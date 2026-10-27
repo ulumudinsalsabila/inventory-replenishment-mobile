@@ -10,7 +10,7 @@ import { ApiError } from '../../lib/api';
 import { useOnRefocus } from '../../lib/use-refocus';
 import { useNotifications } from '../../notifications/notifications-provider';
 import { OpenBillListSheet, OpenBillSaveSheet, OpenBillVoidSheet, PosCatalogScreen, PosCheckoutFlow, PosReceiptScreen, PrinterPickerSheet, equalShares, isLineEditable, type OpenBillInfo, type OpenBillRow, type OpenBillVoid, type PosLine, type PosMethod, type PosProduct } from '../../components/pos-flow';
-import { RECEIPT_LOGO_PREVIEW, formatDepositReceipt, formatKitchenTicket, formatOrderReceipt, formatPreBill, getPairedPrinters, getQuickSaleTickets, getSavedPrinter, getStationPrinter, openAndroidBluetoothSettings, paidTotalOf, printThermalReceipt, printThermalSlip, savePrinter, saveQuickSaleTickets, saveStationPrinter, stationLabel, stationTickets, type KitchenTicket, type PairedPrinter, type PreBill, type ReceiptOrder, type Station } from '../../lib/receipt-printer';
+import { receiptStoreLines, formatDepositReceipt, formatKitchenTicket, formatOrderReceipt, formatPreBill, getPairedPrinters, getQuickSaleTickets, getSavedPrinter, getStationPrinter, openAndroidBluetoothSettings, paidTotalOf, printThermalReceipt, printThermalSlip, savePrinter, saveQuickSaleTickets, saveStationPrinter, stationLabel, stationTickets, type KitchenTicket, type PairedPrinter, type PreBill, type ReceiptOrder, type Station } from '../../lib/receipt-printer';
 import { ThermalPreview } from '../../components/thermal-preview';
 import { CustomerPickerSheet } from '../../components/customer-picker';
 import { PrintSettingsSheet, SplitBillSheet, type SplitPart, type SplitSourceLine } from '../../components/cafe-sheets';
@@ -37,6 +37,7 @@ type BillItem = {
   unitPrice: string;
   totalPrice: string;
   note?: string | null;
+  isBonus?: boolean;
   sentAt?: string | null;
   unit?: { code: string } | null;
   addons?: { addonId: string; addonNameSnapshot: string; quantity: string; totalPrice: string }[];
@@ -77,6 +78,8 @@ function askReducedStockAction(names: string[]) {
     { text: 'Kembalikan ke stok', onPress: () => resolve('RETURN') },
   ], { cancelable: true, onDismiss: () => resolve(null) }));
 }
+/** Cart lines of the same product, unit, variant and add-ons merge; a bonus (free) line stays apart from the paid one. */
+const cartLineKey = (productId: string, unitId: string, variantId: string, addonIds: string[], isBonus = false) => `${productId}:${unitId}:${variantId}:${[...addonIds].sort().join(',')}${isBonus ? ':bonus' : ''}`;
 const cartSignature = (lines: Line[], discount: string, customerName: string, customerId: string, serviceType: ServiceType) => JSON.stringify([lines.map((line) => [line.key, line.quantity]), Number(discount) || 0, customerName.trim(), customerId, serviceType]);
 const serviceTypeOf = (takeaway: boolean): ServiceType => takeaway ? 'TAKEAWAY' : 'DINE_IN';
 /** A printout waiting for the thermal preview; station tickets go to that station's printer. */
@@ -280,7 +283,7 @@ export default function PosScreen() {
   // Add-ons loaded from a bill keep their stored quantity; add-ons picked in the POS count once per item.
   const addonQuantity = (line: Line, addonId: string) => Number(line.bill?.addons.find((addon) => addon.addonId === addonId)?.quantity ?? 1);
   // A bill line left unchanged keeps its stored price on the server; anything else is priced from the catalog.
-  const priceFor = (line: Line) => line.bill && line.quantity === line.bill.quantity ? line.bill.total / line.bill.quantity : Number(line.product.sellingUnits.find((unit) => unit.unitId === line.unitId)?.sellingPrice ?? line.product.basePrice) + Number(line.product.variants?.find((v) => v.id === line.variantId)?.priceDelta ?? 0) + line.addonIds.reduce((sum, id) => sum + Number(line.product.addons?.find((a) => a.id === id)?.basePrice ?? 0) * addonQuantity(line, id), 0);
+  const priceFor = (line: Line) => line.bill && line.quantity === line.bill.quantity ? line.bill.total / line.bill.quantity : line.isBonus ? 0 : Number(line.product.sellingUnits.find((unit) => unit.unitId === line.unitId)?.sellingPrice ?? line.product.basePrice) + Number(line.product.variants?.find((v) => v.id === line.variantId)?.priceDelta ?? 0) + line.addonIds.reduce((sum, id) => sum + Number(line.product.addons?.find((a) => a.id === id)?.basePrice ?? 0) * addonQuantity(line, id), 0);
   const subtotal = cart.reduce((sum, line) => sum + priceFor(line) * line.quantity, 0);
   const discountAmount = Math.min(Math.max(Number(discount) || 0, 0), subtotal);
   const total = subtotal - discountAmount;
@@ -334,19 +337,34 @@ export default function PosScreen() {
         return;
       }
     }
-    const key = `${product.id}:${unitId}:${line.variantId}:${[...line.addonIds].sort().join(',')}`;
+    const key = cartLineKey(product.id, unitId, line.variantId, line.addonIds, line.isBonus);
     setError('');
     setCart((current) => {
       const target = current.find((entry) => entry.key === key);
       // An unsent bill line that changes unit loses its bill link: it is saved as a new line and the server drops the old one.
-      const moved = { key, product, unitId, quantity: line.quantity + (target?.quantity ?? 0), variantId: line.variantId, addonIds: line.addonIds };
+      const moved = { key, product, unitId, quantity: line.quantity + (target?.quantity ?? 0), variantId: line.variantId, addonIds: line.addonIds, isBonus: line.isBonus };
+      return current.flatMap((entry) => entry.key === lineKey ? (target ? [] : [moved]) : entry.key === key ? [moved] : [entry]);
+    });
+  }
+  /** Marks a cart line as a free bonus item (still taken from stock) or back as a paid one, merging with a matching line. */
+  function toggleBonus(lineKey: string) {
+    if (lockedByPendingOrder()) return;
+    const line = cart.find((entry) => entry.key === lineKey);
+    if (!line || !isLineEditable(line)) return;
+    const isBonus = !line.isBonus;
+    const key = cartLineKey(line.product.id, line.unitId, line.variantId, line.addonIds, isBonus);
+    setError('');
+    setCart((current) => {
+      const target = current.find((entry) => entry.key === key);
+      // An unsent bill line loses its bill link here too: it is saved as a new line and the server drops the old one.
+      const moved = { key, product: line.product, unitId: line.unitId, quantity: line.quantity + (target?.quantity ?? 0), variantId: line.variantId, addonIds: line.addonIds, isBonus };
       return current.flatMap((entry) => entry.key === lineKey ? (target ? [] : [moved]) : entry.key === key ? [moved] : [entry]);
     });
   }
   function addConfigured(product: Product, unitId: string, variantId: string, addonIds: string[]) {
     if (lockedByPendingOrder()) return;
     if (!canAddUnit(product, unitId)) { reportStockLimit(product, unitId); return; }
-    const key = `${product.id}:${unitId}:${variantId}:${[...addonIds].sort().join(',')}`;
+    const key = cartLineKey(product.id, unitId, variantId, addonIds);
     setError(''); setNotice('');
     setCart((current) => {
       const found = current.find((line) => line.key === key);
@@ -371,6 +389,7 @@ export default function PosScreen() {
     productId: line.product.id, unitId: line.unitId || undefined, variantId: line.variantId || undefined, quantity: String(line.quantity),
     ...(line.bill?.note ? { note: line.bill.note } : {}),
     addons: line.bill ? line.bill.addons : line.addonIds.map((addonId) => ({ addonId, quantity: '1' })),
+    ...(line.isBonus ? { isBonus: true } : {}),
   }));
   const serviceType = serviceTypeOf(takeaway);
   const openBillDirty = Boolean(openBill) && cartSignature(cart, discount, customer, selectedCustomer?.id ?? '', serviceType) !== openBill?.signature;
@@ -796,7 +815,7 @@ export default function PosScreen() {
       const lineQuantity = Number(item.inputQuantity ?? item.quantity);
       const addons = (item.addons ?? []).map((addon) => ({ addonId: addon.addonId, quantity: String(Number(addon.quantity)) }));
       return {
-        key: `bill:${item.id}`, product: product ?? offCatalogProduct(item), unitId: item.unitId ?? '', quantity: lineQuantity, variantId: item.variantId ?? '', addonIds: addons.map((addon) => addon.addonId),
+        key: `bill:${item.id}`, product: product ?? offCatalogProduct(item), unitId: item.unitId ?? '', quantity: lineQuantity, variantId: item.variantId ?? '', addonIds: addons.map((addon) => addon.addonId), isBonus: Boolean(item.isBonus),
         bill: { orderItemId: item.id, quantity: lineQuantity, note: item.note ?? null, addons, total: Number(item.totalPrice), variantName: item.variantNameSnapshot ?? null, sentAt: item.sentAt ?? null, missing: !product },
       };
     });
@@ -912,8 +931,8 @@ Barang di bill ini dikembalikan ke stok atau dicatat terbuang?`, [
     setPrinting(true);
     const esc = (value: string) => value.replace(/[&<>"']/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[char]!);
     const date = receipt.completedAt ?? receipt.createdAt;
-    const rows = (receipt.items ?? []).map((item) => `<div class="item"><div class="row"><span>${esc(item.productNameSnapshot)}${item.variantNameSnapshot ? ` (${esc(item.variantNameSnapshot)})` : ''}</span><span>${money(Number(item.totalPrice))}</span></div><div class="sub">${Number(item.inputQuantity ?? item.quantity)} ${esc(item.unit?.code ?? '')} x ${money(Number(item.unitPrice))}</div>${(item.addons ?? []).map((addon) => `<div class="sub">+ ${esc(addon.addonNameSnapshot)} x ${Number(addon.quantity)} (${money(Number(addon.totalPrice))})</div>`).join('')}</div>`).join('');
-    const html = `<!doctype html><html><head><meta name="viewport" content="width=device-width, initial-scale=1"><style>@page{margin:5mm}*{box-sizing:border-box}body{font:12px Arial,sans-serif;color:#111;width:72mm;margin:0 auto}.center{text-align:center}.title{font-size:18px;font-weight:bold}.muted{color:#555;font-size:10px}.line{border-top:1px dashed #555;margin:9px 0}.row{display:flex;justify-content:space-between;gap:8px}.item{margin:8px 0}.sub{color:#555;font-size:10px;margin-top:3px}.total{font-weight:bold;font-size:15px}</style></head><body><div class="center"><div class="title">${esc(receipt.branch?.name ?? 'NOTA PEMBELIAN')}</div>${receipt.branch?.code ? `<div class="muted">${esc(receipt.branch.code)}</div>` : ''}<div class="line"></div><div>${esc(receipt.orderNumber)}</div><div class="muted">${date ? formatDate(date) : ''}</div>${receipt.serviceType ? `<div>${esc(formatServiceType(receipt.serviceType))}</div>` : ''}${receipt.customerName || receipt.customerPhone ? `<div>Pelanggan: ${esc(customerLabel(receipt.customerName, receipt.customerPhone))}</div>` : ''}</div><div class="line"></div>${rows}<div class="line"></div><div class="row"><span>Subtotal</span><span>${money(Number(receipt.subtotal))}</span></div><div class="row"><span>Diskon</span><span>-${money(Number(receipt.discountAmount))}</span></div>${Number(receipt.taxAmount ?? 0) ? `<div class="row"><span>Pajak</span><span>${money(Number(receipt.taxAmount))}</span></div>` : ''}${Number(receipt.serviceCharge ?? 0) ? `<div class="row"><span>Layanan</span><span>${money(Number(receipt.serviceCharge))}</span></div>` : ''}<div class="row total"><span>TOTAL</span><span>${money(Number(receipt.grandTotal))}</span></div>${(receipt.payments ?? []).map((payment) => `<div class="row"><span>${esc(formatStatus(payment.method))}</span><span>${money(Number(payment.amount))}</span></div>${payment.receivedAmount ? `<div class="row"><span>Diterima</span><span>${money(Number(payment.receivedAmount))}</span></div>` : ''}${payment.changeAmount ? `<div class="row"><span>Kembalian</span><span>${money(Number(payment.changeAmount))}</span></div>` : ''}`).join('')}<div class="line"></div><div class="center">Terima kasih</div></body></html>`;
+    const rows = (receipt.items ?? []).map((item) => `<div class="item"><div class="row"><span>${esc(item.productNameSnapshot)}${item.variantNameSnapshot ? ` (${esc(item.variantNameSnapshot)})` : ''}${item.isBonus ? ' (BONUS)' : ''}</span><span>${money(Number(item.totalPrice))}</span></div><div class="sub">${Number(item.inputQuantity ?? item.quantity)} ${esc(item.unit?.code ?? '')} x ${money(Number(item.unitPrice))}</div>${(item.addons ?? []).map((addon) => `<div class="sub">+ ${esc(addon.addonNameSnapshot)} x ${Number(addon.quantity)} (${money(Number(addon.totalPrice))})</div>`).join('')}</div>`).join('');
+    const html = `<!doctype html><html><head><meta name="viewport" content="width=device-width, initial-scale=1"><style>@page{margin:5mm}*{box-sizing:border-box}body{font:12px Arial,sans-serif;color:#111;width:72mm;margin:0 auto}.center{text-align:center}.title{font-size:18px;font-weight:bold}.muted{color:#555;font-size:10px}.line{border-top:1px dashed #555;margin:9px 0}.row{display:flex;justify-content:space-between;gap:8px}.item{margin:8px 0}.sub{color:#555;font-size:10px;margin-top:3px}.total{font-weight:bold;font-size:15px}</style></head><body><div class="center"><div class="title">${esc(receipt.branch?.name ?? 'NOTA PEMBELIAN')}</div>${receipt.branch?.phone ? `<div class="muted">${esc(receipt.branch.phone)}</div>` : ''}<div class="line"></div><div>${esc(receipt.orderNumber)}</div><div class="muted">${date ? formatDate(date) : ''}</div>${receipt.serviceType ? `<div>${esc(formatServiceType(receipt.serviceType))}</div>` : ''}${receipt.customerName || receipt.customerPhone ? `<div>Pelanggan: ${esc(customerLabel(receipt.customerName, receipt.customerPhone))}</div>` : ''}</div><div class="line"></div>${rows}<div class="line"></div><div class="row"><span>Subtotal</span><span>${money(Number(receipt.subtotal))}</span></div><div class="row"><span>Diskon</span><span>-${money(Number(receipt.discountAmount))}</span></div>${Number(receipt.taxAmount ?? 0) ? `<div class="row"><span>Pajak</span><span>${money(Number(receipt.taxAmount))}</span></div>` : ''}${Number(receipt.serviceCharge ?? 0) ? `<div class="row"><span>Layanan</span><span>${money(Number(receipt.serviceCharge))}</span></div>` : ''}<div class="row total"><span>TOTAL</span><span>${money(Number(receipt.grandTotal))}</span></div>${(receipt.payments ?? []).map((payment) => `<div class="row"><span>${esc(formatStatus(payment.method))}</span><span>${money(Number(payment.amount))}</span></div>${payment.receivedAmount ? `<div class="row"><span>Diterima</span><span>${money(Number(payment.receivedAmount))}</span></div>` : ''}${payment.changeAmount ? `<div class="row"><span>Kembalian</span><span>${money(Number(payment.changeAmount))}</span></div>` : ''}`).join('')}<div class="line"></div><div class="center">Terima kasih</div></body></html>`;
     try { await Print.printAsync({ html }); }
     catch (e) { setPrintError(e instanceof Error ? e.message : 'Nota gagal dicetak.'); }
     finally { setPrinting(false); }
@@ -1013,7 +1032,7 @@ Barang di bill ini dikembalikan ke stok atau dicatat terbuang?`, [
     visible={previewVisible}
     title={`Nota ${receipt.orderNumber}`}
     text={formatOrderReceipt(receipt)}
-    logo={RECEIPT_LOGO_PREVIEW}
+    boldLines={receiptStoreLines(receipt)}
     printer={printer}
     printing={printing}
     error={printError}
@@ -1169,6 +1188,7 @@ Barang di bill ini dikembalikan ke stok atau dicatat terbuang?`, [
     priceFor={priceFor}
     onQuantity={quantity}
     onUnitChange={changeUnit}
+    onToggleBonus={toggleBonus}
     canIncrease={(line) => canAddUnit(line.product, line.unitId)}
     onCheckout={() => void checkout()}
     onClear={() => { resetCart(); setDepositAmount(''); setError(''); setNotice(''); setWarning(''); }}
