@@ -195,9 +195,7 @@ export function DistributorPurchaseWizard({ onCancel, onSaved, initialDraft }: P
   async function saveDraft() {
     if (!validateStepOne()) return;
     if (!lines.length || !lines.some((line) => line.lineType === 'PURCHASE')) { setError('Tambahkan minimal satu produk pembelian berbayar.'); return; }
-    if (lines.some((line) => !Number(line.orderedQty) || Number(line.orderedQty) <= 0 || !Number.isFinite(Number(line.unitPrice)) || Number(line.unitPrice) < 0)) { setError('Jumlah dan harga produk harus lebih dari nol.'); return; }
-    const unpriced = lines.find((line) => line.lineType === 'PURCHASE' && !(Number(line.unitPrice) > 0));
-    if (unpriced) { setError(`Isi harga modal ${products.find((product) => product.id === unpriced.productId)?.name ?? 'produk'} terlebih dahulu.`); return; }
+    if (lines.some((line) => !Number(line.orderedQty) || Number(line.orderedQty) <= 0 || !Number.isFinite(Number(line.unitPrice)) || Number(line.unitPrice) < 0)) { setError('Jumlah produk harus lebih dari nol dan harga tidak boleh minus.'); return; }
     if (lines.some((line) => line.lineType === 'BONUS' && (Number(line.unitPrice) !== 0 || Number(line.discountAmount) !== 0))) { setError('Produk bonus harus memiliki harga dan diskon Rp 0.'); return; }
     if (lines.some((line) => Number(line.discountAmount) > Number(line.orderedQty) * Number(line.unitPrice))) { setError('Diskon item tidak boleh melebihi harga item.'); return; }
     if ((Number(discountAmount) || 0) > subtotal) { setError('Diskon transaksi tidak boleh melebihi subtotal.'); return; }
@@ -208,7 +206,8 @@ export function DistributorPurchaseWizard({ onCancel, onSaved, initialDraft }: P
         distributorId, warehouseId, purchaseDate: new Date(`${purchaseDate}T00:00:00.000Z`).toISOString(),
         distributorInvoiceNumber: distributorInvoiceNumber.trim(), note: note.trim() || undefined,
         discountAmount: String(Number(discountAmount) || 0), additionalCost: String(Number(additionalCost) || 0),
-        items: lines.map((line) => ({ ...line, discountAmount: line.lineType === 'BONUS' ? '0' : String(Number(line.discountAmount) || 0) })),
+        // A price left empty or 0 is sent as 0: the admin fills it in on the draft before the goods are received.
+        items: lines.map((line) => ({ ...line, unitPrice: line.lineType === 'BONUS' ? '0' : String(Number(line.unitPrice) || 0), discountAmount: line.lineType === 'BONUS' ? '0' : String(Number(line.discountAmount) || 0) })),
       });
       const saved = draftId
         ? await authorizedRequest<{ id: string }>(`distributor-purchases/${draftId}`, { method: 'PATCH', body })
@@ -248,7 +247,8 @@ export function DistributorPurchaseWizard({ onCancel, onSaved, initialDraft }: P
             const units = unitOptions(product);
             const activeUnit = units.find((unit) => unit.unitId === line?.unitId) ?? units[0];
             const expanded = Boolean(line) && expandedProductId === product.id;
-            const priceEditable = line?.lineType === 'PURCHASE' && !defaultUnitPrice(product, line.unitId);
+            // The stored cost is only the starting value; the price on the distributor's invoice can differ, or be 0 for the admin to fill in.
+            const priceEditable = line?.lineType === 'PURCHASE';
             return <View key={product.id} style={[styles.productCard, line && styles.productCardSelected]}>
               <Pressable accessibilityRole="button" accessibilityState={{ expanded }} accessibilityLabel={line ? `${expanded ? 'Tutup' : 'Buka'} detail ${product.name}` : `Tambah ${product.name}`} onPress={() => { if (!line) addProduct(product); setExpandedProductId(line && expanded ? null : product.id); }} style={({ pressed }) => [styles.productRow, pressed && styles.pressed]}>
                 {product.images[0]?.url ? <Image source={{ uri: product.images[0].url }} style={styles.productImage} /> : <View style={[styles.productImage, styles.imageFallback]}><Package size={20} color="#8191a3" /></View>}
@@ -268,7 +268,7 @@ export function DistributorPurchaseWizard({ onCancel, onSaved, initialDraft }: P
                 {units.length > 1 ? <View><Text style={styles.inputLabel}>Satuan</Text><ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.rowUnitOptions}>{units.map((unit) => <Pressable key={unit.unitId} accessibilityRole="button" accessibilityLabel={`Satuan ${unit.unit.name}`} accessibilityState={{ selected: line.unitId === unit.unitId }} onPress={() => chooseLineUnit(index, product, unit.unitId)} style={[styles.unitChip, line.unitId === unit.unitId && styles.unitChipActive]}><Text style={[styles.unitText, line.unitId === unit.unitId && styles.unitTextActive]}>{unit.unit.code}</Text></Pressable>)}</ScrollView></View> : null}
                 <View style={styles.productInputs}>
                   <View style={styles.productInputGroup}><Text style={styles.inputLabel}>Jumlah</Text><TextInput accessibilityLabel={`Jumlah ${product.name}`} keyboardType="decimal-pad" value={line.orderedQty} onChangeText={(value) => updateLine(index, { orderedQty: value.replace(',', '.') })} style={styles.smallInput} /></View>
-                  <View style={styles.productInputGroup}><Text style={styles.inputLabel}>Harga modal</Text>{/* Stored cost prices stay fixed; a product without one gets its price typed here. */}<MoneyInput accessibilityLabel={`Harga modal ${product.name}`} editable={priceEditable} value={line.unitPrice} onChangeText={priceEditable ? (value) => updateLine(index, { unitPrice: value }) : undefined} placeholder={priceEditable ? 'Isi harga' : undefined} style={[styles.smallInput, !priceEditable && styles.readOnlyInput]} /></View>
+                  <View style={styles.productInputGroup}><Text style={styles.inputLabel}>Harga modal</Text><MoneyInput accessibilityLabel={`Harga modal ${product.name}`} editable={priceEditable} value={line.unitPrice} onChangeText={priceEditable ? (value) => updateLine(index, { unitPrice: value }) : undefined} placeholder={priceEditable ? '0' : undefined} style={[styles.smallInput, !priceEditable && styles.readOnlyInput]} /></View>
                   <View style={styles.productInputGroup}><Text style={styles.inputLabel}>Diskon item</Text><MoneyInput accessibilityLabel={`Diskon item ${product.name}`} editable={line.lineType !== 'BONUS'} value={line.discountAmount} onChangeText={(value) => updateLine(index, { discountAmount: value })} style={[styles.smallInput, line.lineType === 'BONUS' && styles.readOnlyInput]} /></View>
                 </View>
                 <View style={styles.lineTotal}>
