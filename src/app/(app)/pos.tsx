@@ -161,8 +161,8 @@ export default function PosScreen() {
   const [pendingOrder, setPendingOrder] = useState<Order | null>(null);
   const [cartVisible, setCartVisible] = useState(false);
   const [paymentStep, setPaymentStep] = useState(false);
-  // Dine in by default; sent with the order and restored when a bill is loaded.
-  const [takeaway, setTakeaway] = useState(false);
+  // Takeaway by default; sent with the order and restored when a bill is loaded.
+  const [takeaway, setTakeaway] = useState(true);
   const [selectedDistributor, setSelectedDistributor] = useState('Semua');
   // Optional proof photos (e.g. a transfer or QRIS screen) sent with the next payment.
   const [paymentPhotos, setPaymentPhotos] = useState<ImagePicker.ImagePickerAsset[]>([]);
@@ -397,7 +397,7 @@ export default function PosScreen() {
   /** Empties the cart and forgets the loaded open bill (the bill itself stays saved on the server). */
   function resetCart() {
     setPaymentPhotos([]);
-    setCart([]); setPendingOrder(null); setOpenBill(null); setPaymentStep(false); setTakeaway(false); setCustomer(''); setCustomerPhone(''); setDiscount('0'); setSelectedCustomer(null); setDepositMode(false); setSplitMethods(null); setCashReceived('');
+    setCart([]); setPendingOrder(null); setOpenBill(null); setPaymentStep(false); setTakeaway(true); setCustomer(''); setCustomerPhone(''); setDiscount('0'); setSelectedCustomer(null); setDepositMode(false); setSplitMethods(null); setCashReceived('');
   }
 
   async function takePaymentPhoto() {

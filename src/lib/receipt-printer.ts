@@ -81,7 +81,20 @@ export type CashClosingReceipt = {
   actualCash?: string;
   difference?: string;
   note?: string | null;
+  /** Goods that left with the closing's sales, grouped by item name (GET /cash-closings/:id). */
+  soldItems?: SoldItem[];
 };
+
+/** One grouped goods row of a closing (see GET /cash-closings/:id); a bonus row has its own line at Rp 0. */
+type SoldItem = { name: string; unitCode?: string | null; unitPrice?: string; isBonus?: boolean; quantity: string; total?: string };
+
+/** Same layout as an item on the sales receipt: the name, then "QTY UNIT x Rp PRICE" with the total on the right. */
+function soldItemLines(item: SoldItem, width: number) {
+  return [
+    ...wrap(`${item.name}${item.isBonus ? ' (BONUS)' : ''}`, width),
+    columns(`${Number(item.quantity).toLocaleString('id-ID', { maximumFractionDigits: 3 })} ${item.unitCode ?? ''} x ${rupiah(Number(item.unitPrice ?? 0))}`, rupiah(Number(item.total ?? 0)), width),
+  ];
+}
 
 const SAVED_PRINTER_KEY = 'inventory.bluetooth.receipt-printer.v1';
 const PRINTER_NAME = /printer|thermal|pos|receipt|prj|rpp|mtp|xp[- ]|pt[- ]|58|80/i;
@@ -311,6 +324,14 @@ export function formatCashClosingReceipt(closing: CashClosingReceipt, width = 32
     rule,
     columns('DIFFERENCE', cashRupiah(closing.difference), width),
     rule,
+    ...(closing.soldItems ? [
+      'BARANG KELUAR',
+      ...(closing.soldItems.length ? closing.soldItems.flatMap((item) => soldItemLines(item, width)) : ['Tidak ada barang terjual']),
+      rule,
+      columns('JENIS BARANG', String(closing.soldItems.length), width),
+      columns('TOTAL BARANG', cashRupiah(closing.soldItems.reduce((sum, item) => sum + Number(item.total ?? 0), 0)), width),
+      rule,
+    ] : []),
     columns('STATUS', formatStatus(closing.status).toLocaleUpperCase('id-ID'), width),
     ...wrap(`NOTE ${closing.note || '-'}`, width),
     rule,

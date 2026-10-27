@@ -118,7 +118,6 @@ export function ExchangeSheet({ visible, order, onClose, onDone }: { visible: bo
     if (!returnItems.length) { setError('Pilih minimal satu barang yang dikembalikan.'); return; }
     if (!lines.length) { setError('Pilih minimal satu barang pengganti.'); return; }
     if (!reason.trim()) { setError('Alasan tukar barang wajib diisi.'); return; }
-    if (!evidence.length) { setError('Minimal satu foto bukti wajib dipilih.'); return; }
     if (difference > 0 && payMethod === 'CASH' && !(Number(received) >= difference)) { setError(`Uang diterima minimal ${money(difference)}.`); return; }
     setSubmitting(true);
     try {
@@ -176,7 +175,7 @@ export function ExchangeSheet({ visible, order, onClose, onDone }: { visible: bo
       {difference < 0 ? <><Text style={styles.fieldLabel}>Selisih dikembalikan lewat</Text><View style={styles.chips}>{refundMethodsFor(order.payments).map((method) => <Chip key={method} label={formatStatus(method)} active={refundMethod === method} onPress={() => setRefundMethod(method)} />)}</View></> : null}
 
       <Text style={styles.fieldLabel}>Alasan *</Text><TextInput accessibilityLabel="Alasan tukar barang" style={[styles.input, styles.multiline]} value={reason} onChangeText={setReason} placeholder="Wajib diisi, contoh: salah ukuran" placeholderTextColor="#87948c" multiline />
-      <Text style={styles.fieldLabel}>Bukti barang dikembalikan *</Text><Text style={styles.muted}>Minimal 1 dan maksimal 8 foto.</Text>
+      <Text style={styles.fieldLabel}>Bukti barang dikembalikan (opsional)</Text><Text style={styles.muted}>Maksimal 8 foto.</Text>
       <View style={styles.evidenceActions}><Pressable onPress={() => void pickEvidence(true)} style={styles.evidenceButton}><Text style={styles.evidenceButtonText}>Ambil foto</Text></Pressable><AdminOnly><Pressable onPress={() => void pickEvidence(false)} style={styles.evidenceButton}><Text style={styles.evidenceButtonText}>Pilih galeri</Text></Pressable></AdminOnly></View>
       {evidence.length ? <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.evidenceRow}>{evidence.map((asset, index) => <View key={`${asset.assetId ?? asset.uri}-${index}`}><PreviewImage uri={asset.uri} images={evidence.map((entry) => entry.uri)} index={index} style={styles.evidenceImage} /><Pressable accessibilityLabel={`Hapus foto ${index + 1}`} onPress={() => setEvidence((current) => current.filter((_, itemIndex) => itemIndex !== index))} style={styles.removeEvidence}><Text style={styles.removeEvidenceText}>×</Text></Pressable></View>)}</ScrollView> : null}
     </KeyboardAwareScrollView>
