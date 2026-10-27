@@ -28,6 +28,7 @@ export type PosProduct = {
   available: string;
   trackInventory: boolean;
   category?: { name: string; station?: Station } | null;
+  distributor?: { id: string; name: string } | null;
   unit?: { id: string; code: string; name: string } | null;
   sellingUnits: { unitId: string; conversionFactor: string; sellingPrice: string; unit: { id: string; code: string; name: string } }[];
   variants?: { id: string; name: string; priceDelta: string }[];
@@ -81,6 +82,7 @@ type CheckoutProps = {
   discountAmount: number;
   priceFor: (line: PosLine) => number;
   onQuantity: (key: string, delta: number) => void;
+  onUnitChange: (key: string, unitId: string) => void;
   canIncrease: (line: PosLine) => boolean;
   onCheckout: () => void;
   onClear: () => void;
@@ -183,8 +185,8 @@ type CatalogProps = {
   warehouseId: string;
   userBranchId: string | null;
   products: PosProduct[];
-  categories: string[];
-  selectedCategory: string;
+  distributors: string[];
+  selectedDistributor: string;
   displayOnly: boolean;
   search: string;
   visibleProducts: PosProduct[];
@@ -202,7 +204,7 @@ type CatalogProps = {
   bottomInset: number;
   onBranchChange: (id: string) => void;
   onWarehouseChange: (id: string) => void;
-  onCategoryChange: (name: string) => void;
+  onDistributorChange: (name: string) => void;
   onDisplayOnlyChange: (value: boolean) => void;
   onSearchChange: (value: string) => void;
   onAdd: (product: PosProduct) => void;
@@ -278,7 +280,7 @@ export function PosCatalogScreen(props: CatalogProps) {
     {props.warehouses.length > 1 ? <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.branchChoices}>{props.warehouses.filter((warehouse) => warehouse.branchId === props.branchId).map((warehouse) => <Pressable key={warehouse.id} onPress={() => props.onWarehouseChange(warehouse.id)} style={[styles.warehouseChip, props.warehouseId === warehouse.id && styles.warehouseChipActive]}><Text style={[styles.branchChipText, props.warehouseId === warehouse.id && styles.warehouseChipTextActive]}>{warehouse.name}</Text></Pressable>)}</ScrollView> : null}
     {!isTablet ? <View style={styles.catalogSearchRow}>{searchBox}{scanButton}</View> : null}
     <View style={styles.catalogFilterRow}><Pressable accessibilityRole="button" accessibilityState={{ selected: !props.displayOnly }} onPress={() => props.onDisplayOnlyChange(false)} style={[styles.catalogFilter, !props.displayOnly && styles.catalogFilterActive]}><Text style={[styles.catalogFilterText, !props.displayOnly && styles.catalogFilterTextActive]}>Stok Gudang</Text></Pressable><Pressable accessibilityRole="button" accessibilityState={{ selected: props.displayOnly }} onPress={() => props.onDisplayOnlyChange(true)} style={[styles.catalogFilter, props.displayOnly && styles.catalogFilterActive]}><Store size={14} color={props.displayOnly ? '#fff' : '#60758a'} /><Text style={[styles.catalogFilterText, props.displayOnly && styles.catalogFilterTextActive]}>Display toko</Text></Pressable></View>
-    <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.categoryChoices}>{props.categories.map((category) => <Pressable key={category} onPress={() => props.onCategoryChange(category)} style={[styles.catalogCategory, props.selectedCategory === category && styles.catalogCategoryActive]}><Text style={[styles.catalogCategoryText, props.selectedCategory === category && styles.catalogCategoryTextActive]}>{category}</Text></Pressable>)}</ScrollView>
+    <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.categoryChoices}>{props.distributors.map((distributor) => <Pressable key={distributor} onPress={() => props.onDistributorChange(distributor)} style={[styles.catalogCategory, props.selectedDistributor === distributor && styles.catalogCategoryActive]}><Text style={[styles.catalogCategoryText, props.selectedDistributor === distributor && styles.catalogCategoryTextActive]}>{distributor}</Text></Pressable>)}</ScrollView>
     {props.loading ? <View style={styles.loadingRow}><ActivityIndicator color="#07885b" /><Text style={styles.loadingText}>Memuat produk...</Text></View> : null}
     {props.error ? <Text style={[styles.errorText, styles.catalogError]}>{props.error}</Text> : null}
     {props.notice ? <Text style={[styles.noticeText, styles.catalogError]}>{props.notice}</Text> : null}
@@ -310,7 +312,7 @@ export function PosCatalogScreen(props: CatalogProps) {
       const addable = props.canAdd(product, selectedLine?.unitId);
       return <Pressable accessibilityRole="button" accessibilityLabel={`Tambah ${product.name}, ${money(price)}${selected ? `, ${selected} di pesanan` : ''}`} accessibilityState={{ disabled: !addable }} disabled={!addable} onPress={() => props.onAdd(product)} style={({ pressed }) => [styles.catalogProductCard, cardWidth ? { width: cardWidth } : null, pressed && styles.cardPressed, !addable && !selected && styles.cardUnavailable]}>
         {product.imageUrl ? <Image source={{ uri: product.imageUrl }} style={styles.catalogProductImage} resizeMode="cover" /> : <View style={[styles.catalogProductImage, styles.catalogImageFallback]}><ReceiptText size={28} color="#8191a3" /></View>}
-        <Text numberOfLines={isTablet ? 2 : 1} style={styles.catalogProductName}>{product.name}</Text><Text style={styles.catalogProductCategory}>{product.category?.name ?? 'Produk'}</Text><Text style={styles.catalogProductStock}>{props.displayOnly ? `Display ${product.displayQuantity ?? 0} ${product.unit?.code ?? ''}` : `Stok ${product.available} ${product.unit?.code ?? ''}`}</Text>
+        <Text numberOfLines={isTablet ? 2 : 1} style={styles.catalogProductName}>{product.name}</Text><Text style={styles.catalogProductCategory}>{product.distributor?.name ?? 'Produk'}</Text><Text style={styles.catalogProductStock}>{props.displayOnly ? `Display ${product.displayQuantity ?? 0} ${product.unit?.code ?? ''}` : `Stok ${product.available} ${product.unit?.code ?? ''}`}</Text>
         <View style={styles.catalogCardFooter}><Text numberOfLines={1} adjustsFontSizeToFit style={styles.catalogProductPrice}>{money(price)}</Text>{selected && selectedLine ? <View style={styles.catalogQuantity}><Pressable accessibilityRole="button" accessibilityLabel={`Kurangi ${product.name}`} disabled={!isLineEditable(selectedLine)} onPress={() => props.onQuantity(selectedLine.key, -1)} style={[styles.catalogQtyButton, !isLineEditable(selectedLine) && styles.disabled]}><Minus size={15} color="#07885b" /></Pressable><Text style={styles.catalogQtyValue}>{selected}</Text><Pressable accessibilityRole="button" accessibilityLabel={`Tambah ${product.name}`} disabled={!props.canAdd(product, selectedLine.unitId)} onPress={() => props.onAdd(product)} style={[styles.catalogQtyButtonActive, !props.canAdd(product, selectedLine.unitId) && styles.disabled]}><Plus size={17} color="#fff" /></Pressable></View> : <Pressable accessibilityRole="button" accessibilityLabel={`Tambah ${product.name}`} disabled={!props.canAdd(product)} onPress={() => props.onAdd(product)} style={[styles.catalogAddButton, !props.canAdd(product) && styles.disabled]}><Plus size={19} color="#fff" /></Pressable>}</View>
       </Pressable>;
     }}
@@ -515,6 +517,10 @@ export function PosCheckoutFlow(props: CheckoutProps) {
             <View style={styles.lineDetails}>
               <Text numberOfLines={1} style={styles.productName}>{line.product.name}</Text><Text style={styles.productSku}>{lineSubtitle(line)}</Text>
               <LineBadges line={line} />
+              {isLineEditable(line) && line.product.sellingUnits.length > 1 ? <View style={styles.unitChoices}>{line.product.sellingUnits.map((unit) => {
+                const active = line.unitId === unit.unitId;
+                return <Pressable key={unit.unitId} accessibilityRole="button" accessibilityState={{ selected: active }} accessibilityLabel={`Satuan ${unit.unit.name}`} onPress={() => props.onUnitChange(line.key, unit.unitId)} style={[styles.unitChoice, active && styles.unitChoiceActive]}><Text style={[styles.unitChoiceText, active && styles.unitChoiceTextActive]}>{unit.unit.code} · {money(unit.sellingPrice)}</Text></Pressable>;
+              })}</View> : null}
               <View style={styles.lineBottom}>{isLineEditable(line) ? <View style={styles.quantityControl}><Pressable accessibilityRole="button" accessibilityLabel={`Kurangi ${line.product.name}`} onPress={() => props.onQuantity(line.key, -1)} style={styles.quantityButton}><Text style={styles.quantityButtonText}>−</Text></Pressable><Text style={styles.quantityValue}>{line.quantity}</Text><Pressable accessibilityRole="button" accessibilityLabel={`Tambah ${line.product.name}`} disabled={!props.canIncrease(line)} onPress={() => props.onQuantity(line.key, 1)} style={[styles.quantityButton, !props.canIncrease(line) && styles.disabled]}><Text style={styles.quantityButtonText}>+</Text></Pressable></View> : <Text style={styles.quantityValue}>× {line.quantity}</Text>}<Text style={styles.linePrice}>{money(props.priceFor(line) * line.quantity)}</Text></View>
               {/* Sent lines are locked: more of the same is a new line, less needs a void. */}
               {sent ? props.onVoidLine ? <Pressable accessibilityRole="button" accessibilityLabel={`Void ${line.product.name}`} disabled={props.billBusy} onPress={() => props.onVoidLine?.(line)} style={[styles.voidButton, props.billBusy && styles.disabled]}><Text style={styles.voidButtonText}>Void</Text></Pressable> : <Text style={styles.lockHint}>Terkunci · Butuh izin void</Text> : null}
@@ -958,6 +964,7 @@ const styles = StyleSheet.create({
   billDangerButton: { minHeight: 42, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 12, borderWidth: 1, borderColor: '#f3c5c1', borderRadius: 11, backgroundColor: '#fff' }, billDangerText: { color: '#c0392b', fontSize: 11, fontWeight: '900' },
   sheetInput: { height: 44, paddingHorizontal: 11, borderWidth: 1, borderColor: '#e3eaf0', borderRadius: 10, color: '#172338', fontSize: 12, fontWeight: '700' }, sheetError: { marginTop: 10 },
   kitchenButton: { minHeight: 42, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 7, paddingHorizontal: 12, borderRadius: 11, backgroundColor: '#b86e05' },
+  unitChoices: { flexDirection: 'row', flexWrap: 'wrap', gap: 5, marginTop: 6 }, unitChoice: { paddingHorizontal: 8, paddingVertical: 4, borderWidth: 1, borderColor: '#e7edf1', borderRadius: 8, backgroundColor: '#fff' }, unitChoiceActive: { borderColor: '#07885b', backgroundColor: '#e8f7f0' }, unitChoiceText: { color: '#536a80', fontSize: 10, fontWeight: '700' }, unitChoiceTextActive: { color: '#07885b' },
   lineBadges: { flexDirection: 'row', flexWrap: 'wrap', gap: 5, marginTop: 4 }, lineBadge: { overflow: 'hidden', paddingHorizontal: 6, paddingVertical: 2, borderRadius: 6, fontSize: 9, fontWeight: '900' }, sentBadge: { color: '#087c53', backgroundColor: '#dff7ee' }, missingBadge: { color: '#8a5a08', backgroundColor: '#fff1d6' },
   voidButton: { alignSelf: 'flex-start', minHeight: 32, justifyContent: 'center', marginTop: 7, paddingHorizontal: 12, borderWidth: 1, borderColor: '#f3c5c1', borderRadius: 9, backgroundColor: '#fff' }, voidButtonText: { color: '#c0392b', fontSize: 10, fontWeight: '900' },
   lockHint: { marginTop: 6, color: '#8a97a8', fontSize: 9, fontWeight: '700' },

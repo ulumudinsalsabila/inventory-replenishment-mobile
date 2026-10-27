@@ -7,7 +7,7 @@ import { useAuth } from '../../auth/auth-provider';
 import { ApiError } from '../../lib/api';
 import { useOnRefocus } from '../../lib/use-refocus';
 import { useNotifications } from '../../notifications/notifications-provider';
-import { OpenBillListSheet, OpenBillSaveSheet, OpenBillVoidSheet, PosCatalogScreen, PosCheckoutFlow, PosReceiptScreen, PrinterPickerSheet, equalShares, type OpenBillInfo, type OpenBillRow, type OpenBillVoid, type PosLine, type PosMethod, type PosProduct } from '../../components/pos-flow';
+import { OpenBillListSheet, OpenBillSaveSheet, OpenBillVoidSheet, PosCatalogScreen, PosCheckoutFlow, PosReceiptScreen, PrinterPickerSheet, equalShares, isLineEditable, type OpenBillInfo, type OpenBillRow, type OpenBillVoid, type PosLine, type PosMethod, type PosProduct } from '../../components/pos-flow';
 import { formatDepositReceipt, formatKitchenTicket, formatOrderReceipt, formatPreBill, getPairedPrinters, getQuickSaleTickets, getSavedPrinter, getStationPrinter, openAndroidBluetoothSettings, paidTotalOf, printThermalReceipt, printThermalSlip, savePrinter, saveQuickSaleTickets, saveStationPrinter, stationLabel, stationTickets, type KitchenTicket, type PairedPrinter, type PreBill, type ReceiptOrder, type Station } from '../../lib/receipt-printer';
 import { ThermalPreview } from '../../components/thermal-preview';
 import { CustomerPickerSheet } from '../../components/customer-picker';
@@ -156,7 +156,7 @@ export default function PosScreen() {
   const [paymentStep, setPaymentStep] = useState(false);
   // Dine in by default; sent with the order and restored when a bill is loaded.
   const [takeaway, setTakeaway] = useState(false);
-  const [selectedCategory, setSelectedCategory] = useState('Semua');
+  const [selectedDistributor, setSelectedDistributor] = useState('Semua');
   const [displayOnly, setDisplayOnly] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [reloadKey, setReloadKey] = useState(0);
@@ -267,10 +267,10 @@ export default function PosScreen() {
     else setWarehouseReloadKey((value) => value + 1);
   }
 
-  const categories = useMemo(() => ['Semua', ...new Set(products.map((product) => product.category?.name).filter((name): name is string => Boolean(name)))], [products]);
-  // A category from a previous catalog may no longer exist; fall back to "Semua" instead of showing an empty grid.
-  const activeCategory = categories.includes(selectedCategory) ? selectedCategory : 'Semua';
-  const visible = useMemo(() => products.filter((p) => (!displayOnly || Number(p.displayQuantity ?? 0) > 0) && (activeCategory === 'Semua' || p.category?.name === activeCategory) && `${p.name} ${p.sku} ${p.barcode ?? ''} ${p.category?.name ?? ''}`.toLowerCase().includes(search.toLowerCase())), [activeCategory, displayOnly, products, search]);
+  const distributors = useMemo(() => ['Semua', ...new Set(products.map((product) => product.distributor?.name).filter((name): name is string => Boolean(name)))], [products]);
+  // A distributor from a previous catalog may no longer exist; fall back to "Semua" instead of showing an empty grid.
+  const activeDistributor = distributors.includes(selectedDistributor) ? selectedDistributor : 'Semua';
+  const visible = useMemo(() => products.filter((p) => (!displayOnly || Number(p.displayQuantity ?? 0) > 0) && (activeDistributor === 'Semua' || p.distributor?.name === activeDistributor) && `${p.name} ${p.sku} ${p.barcode ?? ''} ${p.distributor?.name ?? ''}`.toLowerCase().includes(search.toLowerCase())), [activeDistributor, displayOnly, products, search]);
   // Add-ons loaded from a bill keep their stored quantity; add-ons picked in the POS count once per item.
   const addonQuantity = (line: Line, addonId: string) => Number(line.bill?.addons.find((addon) => addon.addonId === addonId)?.quantity ?? 1);
   // A bill line left unchanged keeps its stored price on the server; anything else is priced from the catalog.
@@ -305,13 +305,37 @@ export default function PosScreen() {
     return true;
   }
 
+  // A tap adds the base unit so repeated taps count up quickly; the unit is changed on the cart line at checkout.
   function add(product: Product) {
     if (lockedByPendingOrder()) return;
-    if ((product.sellingUnits?.length ?? 0) > 1 || (product.variants?.length ?? 0) > 0 || (product.addons?.length ?? 0) > 0) {
+    if ((product.variants?.length ?? 0) > 0 || (product.addons?.length ?? 0) > 0) {
       setOptionProduct(product); setOptionUnit(product.sellingUnits[0]?.unitId ?? product.unit?.id ?? ''); setOptionVariant(''); setOptionAddons([]); setError('');
       return;
     }
     addConfigured(product, product.sellingUnits[0]?.unitId ?? product.unit?.id ?? '', '', []);
+  }
+  /** Moves a cart line to another selling unit, merging it into a line that already has that unit. */
+  function changeUnit(lineKey: string, unitId: string) {
+    if (lockedByPendingOrder()) return;
+    const line = cart.find((entry) => entry.key === lineKey);
+    if (!line || line.unitId === unitId || !isLineEditable(line)) return;
+    const { product } = line;
+    if (product.trackInventory) {
+      const otherBaseQuantity = cart.filter((entry) => entry.product.id === product.id && entry.key !== lineKey).reduce((sum, entry) => sum + entry.quantity * conversionFactor(product, entry.unitId), 0);
+      if (otherBaseQuantity + line.quantity * conversionFactor(product, unitId) > Math.max(Number(product.available) || 0, 0) + 0.000001) {
+        const unit = product.sellingUnits.find((entry) => entry.unitId === unitId)?.unit.code ?? '';
+        setError(`Stok ${product.name} tidak cukup untuk ${line.quantity} ${unit}.`);
+        return;
+      }
+    }
+    const key = `${product.id}:${unitId}:${line.variantId}:${[...line.addonIds].sort().join(',')}`;
+    setError('');
+    setCart((current) => {
+      const target = current.find((entry) => entry.key === key);
+      // An unsent bill line that changes unit loses its bill link: it is saved as a new line and the server drops the old one.
+      const moved = { key, product, unitId, quantity: line.quantity + (target?.quantity ?? 0), variantId: line.variantId, addonIds: line.addonIds };
+      return current.flatMap((entry) => entry.key === lineKey ? (target ? [] : [moved]) : entry.key === key ? [moved] : [entry]);
+    });
   }
   function addConfigured(product: Product, unitId: string, variantId: string, addonIds: string[]) {
     if (lockedByPendingOrder()) return;
@@ -1106,6 +1130,7 @@ Barang di bill ini dikembalikan ke stok atau dicatat terbuang?`, [
     discountAmount={discountAmount}
     priceFor={priceFor}
     onQuantity={quantity}
+    onUnitChange={changeUnit}
     canIncrease={(line) => canAddUnit(line.product, line.unitId)}
     onCheckout={() => void checkout()}
     onClear={() => { resetCart(); setDepositAmount(''); setError(''); setNotice(''); setWarning(''); }}
@@ -1153,8 +1178,8 @@ Barang di bill ini dikembalikan ke stok atau dicatat terbuang?`, [
       warehouseId={warehouseId}
       userBranchId={user?.branchId ?? null}
       products={products}
-      categories={categories}
-      selectedCategory={activeCategory}
+      distributors={distributors}
+      selectedDistributor={activeDistributor}
       displayOnly={displayOnly}
       search={search}
       visibleProducts={visible}
@@ -1172,7 +1197,7 @@ Barang di bill ini dikembalikan ke stok atau dicatat terbuang?`, [
       bottomInset={0}
       onBranchChange={(id) => { if (id !== branchId) switchLocation(() => setBranchId(id)); }}
       onWarehouseChange={(id) => { if (id !== warehouseId) switchLocation(() => setWarehouseId(id)); }}
-      onCategoryChange={setSelectedCategory}
+      onDistributorChange={setSelectedDistributor}
       onDisplayOnlyChange={setDisplayOnly}
       onSearchChange={setSearch}
       onAdd={add}
