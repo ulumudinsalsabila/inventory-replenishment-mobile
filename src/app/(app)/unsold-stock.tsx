@@ -12,14 +12,14 @@ import { useDebouncedValue, useInfiniteList, useLoadMoreOnScroll } from '../../l
 import { fetchAllPages } from '../../lib/paging';
 import { money, quantity } from '../../lib/report';
 
-type StockItem = { productId: string; name: string; sku: string; imageUrl: string | null; category: { id: string; name: string }; unit: { code: string; name: string }; costPrice: number; quantity: number; stockValue: number };
+type StockItem = { productId: string; name: string; sku: string; imageUrl: string | null; distributor: { id: string; name: string } | null; unit: { code: string; name: string }; costPrice: number; quantity: number; stockValue: number };
 type StockGroup = { id: string | null; name: string; quantity: number; stockValue: number; productCount: number };
-type StockValue = { summary: { totalQuantity: number; productCount: number; stockValue: number }; byBranch: StockGroup[]; byCategory: StockGroup[]; data: StockItem[]; meta: { page: number; totalPages: number } };
+type StockValue = { summary: { totalQuantity: number; productCount: number; stockValue: number }; byBranch: StockGroup[]; byDistributor: StockGroup[]; data: StockItem[]; meta: { page: number; totalPages: number } };
 type Option = { id: string; name: string };
-type Tab = 'all' | 'branch' | 'category';
+type Tab = 'all' | 'branch' | 'distributor';
 type Sort = 'name' | 'quantity' | 'value';
 
-const tabs: { id: Tab; label: string }[] = [{ id: 'all', label: 'Semua' }, { id: 'branch', label: 'Per cabang' }, { id: 'category', label: 'Per kategori' }];
+const tabs: { id: Tab; label: string }[] = [{ id: 'all', label: 'Semua' }, { id: 'branch', label: 'Per cabang' }, { id: 'distributor', label: 'Per distributor' }];
 const sortOptions = [{ id: 'name', label: 'Nama produk (A-Z)' }, { id: 'quantity', label: 'Sisa stok terbanyak' }, { id: 'value', label: 'Nilai stok terbesar' }];
 const escapeHtml = (value: string) => value.replace(/[&<>"]/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[char] ?? char);
 
@@ -29,20 +29,20 @@ export default function UnsoldStockScreen() {
   const search = useDebouncedValue(searchInput.trim());
   const { selectedBranchId } = useBranchFilter();
   const [branchId, setBranchId] = useState(selectedBranchId);
-  const [categoryId, setCategoryId] = useState('');
+  const [distributorId, setDistributorId] = useState('');
   const [sort, setSort] = useState<Sort>('name');
   const [tab, setTab] = useState<Tab>('all');
-  // Summary and per-branch/per-category groups come with every page; they are kept from the first page of the current filters.
+  // Summary and per-branch/per-distributor groups come with every page; they are kept from the first page of the current filters.
   const [firstPage, setFirstPage] = useState<{ path: string; value: StockValue } | null>(null);
   const [branches, setBranches] = useState<Option[]>([]);
-  const [categories, setCategories] = useState<Option[]>([]);
-  const [sheet, setSheet] = useState<'branch' | 'category' | 'sort' | null>(null);
+  const [distributors, setDistributors] = useState<Option[]>([]);
+  const [sheet, setSheet] = useState<'branch' | 'distributor' | 'sort' | null>(null);
   const [exporting, setExporting] = useState(false);
 
   const params = new URLSearchParams({ sortBy: sort, sortOrder: sort === 'name' ? 'asc' : 'desc' });
   if (search) params.set('search', search);
   if (branchId) params.set('branchId', branchId);
-  if (categoryId) params.set('categoryId', categoryId);
+  if (distributorId) params.set('distributorId', distributorId);
   const listPath = `reports/stock-value?${params.toString()}`;
 
   const stockRequest = useCallback(async <R,>(path: string) => {
@@ -62,7 +62,7 @@ export default function UnsoldStockScreen() {
     if (!accessToken) return;
     let active = true;
     if (!user?.branchId) void authorizedRequest<{ data: Option[] }>('catalog/branches?page=1&perPage=100&sortBy=name&sortOrder=asc').then((response) => { if (active) setBranches(response.data); }).catch(() => undefined);
-    void authorizedRequest<{ data: Option[] }>('catalog/categories?page=1&perPage=100&sortBy=name&sortOrder=asc').then((response) => { if (active) setCategories(response.data); }).catch(() => undefined);
+    void fetchAllPages<Option>(authorizedRequest, 'distributors?sortBy=name&sortOrder=asc', 100).then((response) => { if (active) setDistributors(response.data); }).catch(() => undefined);
     return () => { active = false; };
   }, [accessToken, authorizedRequest, user?.branchId]);
 
@@ -71,20 +71,20 @@ export default function UnsoldStockScreen() {
     try {
       const { data: rows } = await fetchAllPages<StockItem>(authorizedRequest, listPath, 1000);
       const total = rows.reduce((sum, row) => sum + row.stockValue, 0);
-      const filters = [branches.find((item) => item.id === branchId)?.name ?? 'Semua cabang', categories.find((item) => item.id === categoryId)?.name ?? 'Semua kategori'].join(' · ');
-      const html = `<html><head><meta charset="utf-8"><style>body{font-family:sans-serif;font-size:11px;color:#13233a}h1{font-size:18px;margin:0}p{color:#5f7188}table{width:100%;border-collapse:collapse;margin-top:12px}th,td{padding:6px;border-bottom:1px solid #e1e7ee;text-align:left}th{background:#f2f5f8}.r{text-align:right}</style></head><body><h1>Stok belum terjual</h1><p>${escapeHtml(filters)} · Dicetak ${escapeHtml(new Date().toLocaleString('id-ID'))}</p><table><tr><th>SKU</th><th>Produk</th><th>Kategori</th><th class="r">Sisa stok</th><th class="r">Harga modal</th><th class="r">Nilai stok</th></tr>${rows.map((row) => `<tr><td>${escapeHtml(row.sku)}</td><td>${escapeHtml(row.name)}</td><td>${escapeHtml(row.category.name)}</td><td class="r">${quantity(row.quantity)} ${escapeHtml(row.unit.code)}</td><td class="r">${money(row.costPrice)}</td><td class="r">${money(row.stockValue)}</td></tr>`).join('')}<tr><th colspan="5">Total</th><th class="r">${money(total)}</th></tr></table></body></html>`;
+      const filters = [branches.find((item) => item.id === branchId)?.name ?? 'Semua cabang', distributors.find((item) => item.id === distributorId)?.name ?? 'Semua distributor'].join(' · ');
+      const html = `<html><head><meta charset="utf-8"><style>body{font-family:sans-serif;font-size:11px;color:#13233a}h1{font-size:18px;margin:0}p{color:#5f7188}table{width:100%;border-collapse:collapse;margin-top:12px}th,td{padding:6px;border-bottom:1px solid #e1e7ee;text-align:left}th{background:#f2f5f8}.r{text-align:right}</style></head><body><h1>Stok belum terjual</h1><p>${escapeHtml(filters)} · Dicetak ${escapeHtml(new Date().toLocaleString('id-ID'))}</p><table><tr><th>SKU</th><th>Produk</th><th>Distributor</th><th class="r">Sisa stok</th><th class="r">Harga modal</th><th class="r">Nilai stok</th></tr>${rows.map((row) => `<tr><td>${escapeHtml(row.sku)}</td><td>${escapeHtml(row.name)}</td><td>${escapeHtml(row.distributor?.name ?? '-')}</td><td class="r">${quantity(row.quantity)} ${escapeHtml(row.unit.code)}</td><td class="r">${money(row.costPrice)}</td><td class="r">${money(row.stockValue)}</td></tr>`).join('')}<tr><th colspan="5">Total</th><th class="r">${money(total)}</th></tr></table></body></html>`;
       await Print.printAsync({ html });
     } catch (cause) {
       Alert.alert('Gagal mengunduh', cause instanceof ApiError ? cause.message : 'Daftar stok belum dapat dicetak.');
     } finally {
       setExporting(false);
     }
-  }, [authorizedRequest, branchId, branches, categories, categoryId, listPath]);
+  }, [authorizedRequest, branchId, branches, distributors, distributorId, listPath]);
 
   const selectGroup = (group: StockGroup) => {
     if (!group.id) return;
     if (tab === 'branch') setBranchId(group.id ?? '');
-    else setCategoryId(group.id ?? '');
+    else setDistributorId(group.id ?? '');
     setTab('all');
   };
 
@@ -99,7 +99,7 @@ export default function UnsoldStockScreen() {
     </View>
     <View style={styles.filterRow}>
       {!user?.branchId ? <Pressable accessibilityRole="button" onPress={() => setSheet('branch')} style={[styles.filter, branchId ? styles.filterActive : null]}><Text numberOfLines={1} style={styles.filterText}>{branches.find((item) => item.id === branchId)?.name ?? 'Semua cabang'}</Text><ChevronDown size={15} color="#5f7188" /></Pressable> : null}
-      <Pressable accessibilityRole="button" onPress={() => setSheet('category')} style={[styles.filter, categoryId ? styles.filterActive : null]}><Text numberOfLines={1} style={styles.filterText}>{categories.find((item) => item.id === categoryId)?.name ?? 'Semua kategori'}</Text><ChevronDown size={15} color="#5f7188" /></Pressable>
+      <Pressable accessibilityRole="button" onPress={() => setSheet('distributor')} style={[styles.filter, distributorId ? styles.filterActive : null]}><Text numberOfLines={1} style={styles.filterText}>{distributors.find((item) => item.id === distributorId)?.name ?? 'Semua distributor'}</Text><ChevronDown size={15} color="#5f7188" /></Pressable>
     </View>
     <View style={styles.tabs}>{tabs.filter((item) => item.id !== 'branch' || !user?.branchId).map((item) => {
       const active = tab === item.id;
@@ -109,7 +109,7 @@ export default function UnsoldStockScreen() {
     {loading ? <ActivityIndicator style={styles.loader} color="#07956f" /> : null}
   </View>;
 
-  const groups = tab === 'branch' ? result?.byBranch ?? [] : result?.byCategory ?? [];
+  const groups = tab === 'branch' ? result?.byBranch ?? [] : result?.byDistributor ?? [];
 
   return <>
     <Stack.Screen options={{ headerRight: () => <Pressable accessibilityRole="button" accessibilityLabel="Unduh daftar stok" disabled={exporting} onPress={() => void exportStock()} style={styles.headerButton}>{exporting ? <ActivityIndicator color="#07956f" /> : <Download size={20} color="#26384d" />}</Pressable> }} />
@@ -127,7 +127,7 @@ export default function UnsoldStockScreen() {
         {item.imageUrl ? <Image source={{ uri: item.imageUrl }} style={styles.productImage} /> : <View style={[styles.productImage, styles.imageFallback]}><Package size={22} color="#8a9aab" /></View>}
         <View style={styles.productInfo}>
           <Text numberOfLines={2} style={styles.productName}>{item.name}</Text>
-          <Text numberOfLines={1} style={styles.productMeta}>{item.sku} · {item.category.name}</Text>
+          <Text numberOfLines={1} style={styles.productMeta}>{item.sku}{item.distributor ? ` · ${item.distributor.name}` : ''}</Text>
           <Text style={styles.stockLine}>Sisa stok <Text style={styles.stockQty}>{quantity(item.quantity)} {item.unit.code}</Text></Text>
         </View>
         <View style={styles.productRight}>
@@ -146,7 +146,7 @@ export default function UnsoldStockScreen() {
       refreshControl={<RefreshControl refreshing={list.refreshing} onRefresh={() => void list.refresh()} tintColor="#07956f" />}
       ListEmptyComponent={!loading && !error ? <Text style={styles.empty}>Belum ada stok.</Text> : null}
       renderItem={({ item }) => <Pressable accessibilityRole="button" accessibilityHint="Tampilkan produk pada kelompok ini" onPress={() => selectGroup(item)} style={({ pressed }) => [styles.productCard, pressed && styles.pressed]}>
-        <View style={[styles.groupIcon, tab === 'branch' ? styles.groupBranch : styles.groupCategory]}>{tab === 'branch' ? <Store size={20} color="#3f6fe0" /> : <Layers size={20} color="#e07d12" />}</View>
+        <View style={[styles.groupIcon, tab === 'branch' ? styles.groupBranch : styles.groupDistributor]}>{tab === 'branch' ? <Store size={20} color="#3f6fe0" /> : <Layers size={20} color="#e07d12" />}</View>
         <View style={styles.productInfo}><Text numberOfLines={1} style={styles.productName}>{item.name}</Text><Text style={styles.productMeta}>{quantity(item.productCount)} produk · {quantity(item.quantity)} item</Text></View>
         <View style={styles.productRight}><Text style={styles.productValue}>{money(item.stockValue)}</Text><Text style={styles.costLabel}>Nilai modal</Text></View>
         <ChevronRight size={17} color="#8a9aab" />
@@ -154,7 +154,7 @@ export default function UnsoldStockScreen() {
     />}
 
     <OptionSheet visible={sheet === 'branch'} title="Pilih cabang" selectedId={branchId} onSelect={setBranchId} onClose={() => setSheet(null)} options={[{ id: '', label: 'Semua cabang' }, ...branches.map((item) => ({ id: item.id, label: item.name }))]} />
-    <OptionSheet visible={sheet === 'category'} title="Pilih kategori" selectedId={categoryId} onSelect={setCategoryId} onClose={() => setSheet(null)} options={[{ id: '', label: 'Semua kategori' }, ...categories.map((item) => ({ id: item.id, label: item.name }))]} />
+    <OptionSheet visible={sheet === 'distributor'} title="Pilih distributor" selectedId={distributorId} onSelect={setDistributorId} onClose={() => setSheet(null)} options={[{ id: '', label: 'Semua distributor' }, ...distributors.map((item) => ({ id: item.id, label: item.name }))]} />
     <OptionSheet visible={sheet === 'sort'} title="Urutkan" selectedId={sort} onSelect={(value) => setSort(value as Sort)} onClose={() => setSheet(null)} options={sortOptions} />
   </>;
 }
@@ -202,6 +202,6 @@ const styles = StyleSheet.create({
   costValue: { color: '#43566b', fontSize: 11, fontWeight: '600' },
   groupIcon: { width: 44, height: 44, alignItems: 'center', justifyContent: 'center', borderRadius: 12 },
   groupBranch: { backgroundColor: '#eef4ff' },
-  groupCategory: { backgroundColor: '#fff6e9' },
+  groupDistributor: { backgroundColor: '#fff6e9' },
   pressed: { opacity: 0.75 },
 });

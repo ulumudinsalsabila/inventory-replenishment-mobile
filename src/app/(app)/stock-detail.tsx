@@ -12,7 +12,7 @@ import { money, quantity } from '../../lib/report';
 import { PreviewImage } from '../../components/image-viewer';
 
 type Detail = {
-  product: { id: string; name: string; sku: string; imageUrl: string | null; category: { name: string }; unit: { code: string; name: string }; costPrice: number; sellPrice: number };
+  product: { id: string; name: string; sku: string; imageUrl: string | null; category: { name: string } | null; distributor: { name: string } | null; unit: { code: string; name: string }; costPrice: number; sellPrice: number };
   quantity: number;
   stockValue: number;
   warehouses: { warehouseId: string; warehouseName: string; branchId: string | null; branchName: string | null; quantity: number; stockValue: number }[];
@@ -64,7 +64,7 @@ export default function StockDetailScreen() {
     <View style={styles.card}>
       <View style={styles.productRow}>
         {product.imageUrl ? <PreviewImage uri={product.imageUrl} accessibilityLabel={product.name} style={styles.image} /> : <View style={[styles.image, styles.imageFallback]}><Package size={28} color="#8a9aab" /></View>}
-        <View style={styles.productInfo}><Text style={styles.productName}>{product.name}</Text><Text style={styles.productMeta}>{product.sku} · {product.category.name}</Text></View>
+        <View style={styles.productInfo}><Text style={styles.productName}>{product.name}</Text><Text style={styles.productMeta}>{product.sku}{product.distributor ? ` · ${product.distributor.name}` : ''}</Text></View>
       </View>
       <View style={styles.statsRow}>
         <View style={styles.stat}><View style={[styles.statIcon, { backgroundColor: '#e7f8ef' }]}><Boxes size={19} color="#07956f" /></View><View style={styles.statText}><Text style={styles.statLabel}>Sisa stok</Text><Text numberOfLines={1} adjustsFontSizeToFit style={styles.statValue}>{quantity(detail.quantity)} {product.unit.code}</Text></View></View>
@@ -118,7 +118,7 @@ export default function StockDetailScreen() {
 
     <View style={[styles.card, styles.infoCard]}>
       <Text style={styles.infoTitle}>Informasi produk</Text>
-      {[['Kategori', product.category.name], ['Satuan', product.unit.code], ['Harga modal', money(product.costPrice)], ['Harga jual', money(product.sellPrice)]].map(([label, value]) => <View key={label} style={styles.infoRow}><Text style={styles.infoLabel}>{label}</Text><Text style={styles.infoValue}>{value}</Text></View>)}
+      {[['Distributor', product.distributor?.name ?? '-'], ['Kategori', product.category?.name ?? '-'], ['Satuan', product.unit.code], ['Harga modal', money(product.costPrice)], ['Harga jual', money(product.sellPrice)]].map(([label, value]) => <View key={label} style={styles.infoRow}><Text style={styles.infoLabel}>{label}</Text><Text style={styles.infoValue}>{value}</Text></View>)}
     </View>
   </ScrollView>;
 }
