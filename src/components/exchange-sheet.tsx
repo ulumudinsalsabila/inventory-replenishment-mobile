@@ -104,7 +104,7 @@ export function ExchangeSheet({ visible, order, onClose, onDone }: { visible: bo
     const permission = useCamera ? await ImagePicker.requestCameraPermissionsAsync() : await ImagePicker.requestMediaLibraryPermissionsAsync();
     if (!permission.granted) { setError(useCamera ? 'Izin kamera diperlukan untuk mengambil foto.' : 'Izin galeri diperlukan untuk memilih foto.'); return; }
     const result = useCamera
-      ? await ImagePicker.launchCameraAsync({ mediaTypes: ['images'], quality: 0.75 })
+      ? await ImagePicker.launchCameraAsync({ mediaTypes: ['images'], quality: 0.75, cameraType: ImagePicker.CameraType.back })
       : await ImagePicker.launchImageLibraryAsync({ mediaTypes: ['images'], allowsMultipleSelection: true, selectionLimit: 8 - evidence.length, quality: 0.75 });
     if (result.canceled || !result.assets.length) return;
     if (result.assets.some((asset) => Number(asset.fileSize ?? 0) > 5 * 1024 * 1024)) { setError('Ukuran setiap foto bukti maksimal 5 MB.'); return; }

@@ -189,7 +189,7 @@ export default function DistributorPurchasesScreen() {
     const permission = useCamera ? await ImagePicker.requestCameraPermissionsAsync() : await ImagePicker.requestMediaLibraryPermissionsAsync();
     if (!permission.granted) { setReceiveError(useCamera ? 'Izin kamera diperlukan untuk mengambil foto.' : 'Izin galeri diperlukan untuk memilih foto.'); return; }
     const result = useCamera
-      ? await ImagePicker.launchCameraAsync({ mediaTypes: ['images'], quality: 0.75 })
+      ? await ImagePicker.launchCameraAsync({ mediaTypes: ['images'], quality: 0.75, cameraType: ImagePicker.CameraType.back })
       : await ImagePicker.launchImageLibraryAsync({ mediaTypes: ['images'], allowsMultipleSelection: true, selectionLimit: 12 - currentCount, quality: 0.75, preferredAssetRepresentationMode: ImagePicker.UIImagePickerPreferredAssetRepresentationMode.Compatible });
     if (result.canceled || !result.assets.length) return;
     if (result.assets.length + currentCount > 12 || result.assets.some((asset) => Number(asset.fileSize ?? 0) > 5 * 1024 * 1024)) { setReceiveError('Maksimal 12 foto dan ukuran tiap foto maksimal 5 MB.'); return; }

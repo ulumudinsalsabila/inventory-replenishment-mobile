@@ -121,7 +121,7 @@ export default function DisplayScreen() {
     if (evidence.length >= 8) { setError('Maksimal 8 foto bukti.'); return; }
     const permission = await ImagePicker.requestCameraPermissionsAsync();
     if (!permission.granted) { setError('Izin kamera dibutuhkan untuk mengambil foto.'); return; }
-    const result = await ImagePicker.launchCameraAsync({ mediaTypes: ['images'], quality: 0.75 });
+    const result = await ImagePicker.launchCameraAsync({ mediaTypes: ['images'], quality: 0.75, cameraType: ImagePicker.CameraType.back });
     if (result.canceled || !result.assets.length) return;
     const selected = result.assets.map((asset, index) => ({ uri: asset.uri, name: asset.fileName ?? asset.uri.split('/').pop() ?? `display-${index + 1}.jpg`, size: asset.fileSize ?? 0, asset }));
     if (selected.some((file) => file.size > 5 * 1024 * 1024)) { setError('Ukuran setiap foto maksimal 5 MB.'); return; }

@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { ActivityIndicator, FlatList, Image, Modal, Pressable, RefreshControl, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { MoneyInput } from './money-input';
-import { Banknote, Barcode, Check, ChefHat, ChevronLeft, ChevronRight, CircleCheck, ClipboardList, CreditCard, Landmark, Merge, Minus, Plus, Printer, QrCode, ReceiptText, Save, Search, Share2, ShoppingCart, Split, Store, Trash2, UserRound, Users, Wallet, X } from 'lucide-react-native';
+import { Banknote, Barcode, Camera, Check, ChefHat, ChevronLeft, ChevronRight, CircleCheck, ClipboardList, CreditCard, Landmark, Merge, Minus, Plus, Printer, QrCode, ReceiptText, Save, Search, Share2, ShoppingCart, Split, Store, Trash2, UserRound, Users, Wallet, X } from 'lucide-react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useResponsive } from '../lib/responsive';
 import { AppShellHeader } from './app-shell-header';
@@ -85,6 +85,10 @@ type CheckoutProps = {
   onUnitChange: (key: string, unitId: string) => void;
   canIncrease: (line: PosLine) => boolean;
   onCheckout: () => void;
+  /** Optional proof photos (local URIs) sent with the payment. */
+  paymentPhotos: string[];
+  onTakePaymentPhoto: () => void;
+  onRemovePaymentPhoto: (index: number) => void;
   onClear: () => void;
   onClose: () => void;
   submitting: boolean;
@@ -318,7 +322,7 @@ export function PosCatalogScreen(props: CatalogProps) {
     }}
   />;
 
-  const cartButton = <Pressable accessibilityRole="button" disabled={isTablet && !props.cart.length} onPress={props.onOpenCart} style={[styles.catalogCartBar, isTablet ? styles.tabletCartBar : styles.phoneCartBar, isTablet && !props.cart.length && styles.disabled]}>
+  const cartButton = <Pressable accessibilityRole="button" disabled={!props.cart.length} onPress={props.onOpenCart} style={[styles.catalogCartBar, isTablet ? styles.tabletCartBar : styles.phoneCartBar, !props.cart.length && styles.disabled]}>
     <ShoppingCart size={19} color="#fff" /><View style={styles.cartBarText}><Text style={styles.catalogCartLabel}>Pesanan ({totalItems})</Text>{isTablet ? <Text style={styles.catalogCartTotal}>{money(props.total)}</Text> : null}</View>{!isTablet ? <Text style={styles.catalogCartTotal}>{money(props.total)}</Text> : null}<ChevronRight size={18} color="#fff" />
   </Pressable>;
   const billButton = props.onOpenBills ? <Pressable accessibilityRole="button" accessibilityLabel={`Daftar open bill${props.openBillCount ? `, ${props.openBillCount} belum dibayar` : ''}`} onPress={props.onOpenBills} style={isTablet ? styles.cartPanelClear : styles.catalogBillButton}><ClipboardList size={isTablet ? 17 : 20} color="#07885b" />{props.openBillCount ? <View style={styles.billCountBadge}><Text style={styles.billCountText}>{props.openBillCount > 99 ? '99+' : props.openBillCount}</Text></View> : null}</Pressable> : null;
@@ -471,7 +475,10 @@ export function PosCheckoutFlow(props: CheckoutProps) {
   const cashShort = Math.max(0, due - received);
   const cashChange = Math.max(0, received - due);
   const depositRows = paid > 0 ? <><SummaryRow label="Total" value={money(props.total)} /><SummaryRow label="Sudah dibayar (DP)" value={`- ${money(paid)}`} /><View style={styles.summaryDivider} /><SummaryRow label="Sisa tagihan" value={money(due)} strong /></> : null;
+  // Nothing to pay for: no lines, or every line is priced at Rp 0.
+  const canPay = props.lines.length > 0 && props.total > 0;
   const continueToPayment = () => {
+    if (!canPay) { props.onError(props.lines.length ? 'Total pesanan Rp 0. Atur harga produk terlebih dahulu sebelum pembayaran.' : 'Pesanan masih kosong.'); return; }
     // A walk-in sale without a name is recorded as "Umum"; an open bill keeps its customer's name.
     if (!props.customer.trim() && props.openBill) { props.onError('Nama pelanggan wajib diisi.'); return; }
     props.onError('');
@@ -484,7 +491,7 @@ export function PosCheckoutFlow(props: CheckoutProps) {
       <Pressable accessibilityRole="button" onPress={() => props.onPaymentStepChange(false)} style={[styles.step, !props.paymentStep && styles.stepActive]}>
         <View style={[styles.stepNumber, !props.paymentStep && styles.stepNumberActive]}><Text style={[styles.stepNumberText, !props.paymentStep && styles.stepNumberTextActive]}>1</Text></View><Text style={[styles.stepLabel, !props.paymentStep && styles.stepLabelActive]}>Pesanan</Text>
       </Pressable>
-      <Pressable accessibilityRole="button" disabled={!props.lines.length} onPress={continueToPayment} style={[styles.step, props.paymentStep && styles.stepActive]}>
+      <Pressable accessibilityRole="button" disabled={!canPay} onPress={continueToPayment} style={[styles.step, props.paymentStep && styles.stepActive, !canPay && styles.disabled]}>
         <View style={[styles.stepNumber, props.paymentStep && styles.stepNumberActive]}><Text style={[styles.stepNumberText, props.paymentStep && styles.stepNumberTextActive]}>2</Text></View><Text style={[styles.stepLabel, props.paymentStep && styles.stepLabelActive]}>Pembayaran</Text>
       </Pressable>
     </View>
@@ -559,11 +566,12 @@ export function PosCheckoutFlow(props: CheckoutProps) {
         {props.onOpenPrintSettings ? <Pressable accessibilityRole="button" onPress={props.onOpenPrintSettings} style={styles.settingsLink}><Printer size={14} color="#07885b" /><Text style={styles.settingsLinkText}>Pengaturan printer tiket bar/dapur</Text><ChevronRight size={14} color="#07885b" /></Pressable> : null}
         {props.error ? <Text style={styles.errorText}>{props.error}</Text> : null}
         {props.warning ? <Text style={styles.warningText}>{props.warning}</Text> : null}
+        {props.lines.length > 0 && props.total <= 0 ? <Text style={styles.errorText}>Total pesanan Rp 0, jadi belum bisa dibayar. Atur harga produk terlebih dahulu.</Text> : null}
         {props.notice ? <View style={styles.noticeBox}><Text style={[styles.noticeText, styles.noticeBoxText]}>{props.notice}</Text>{props.noticeAction ? <Pressable accessibilityRole="button" onPress={props.noticeAction.onPress} style={styles.noticeAction}><Text style={styles.noticeActionText}>{props.noticeAction.label}</Text><ChevronRight size={14} color="#07885b" /></Pressable> : null}</View> : null}
       </KeyboardAwareScrollView>
       <View style={[styles.footer, { paddingBottom: Math.max(props.bottomInset + 8, 12) }]}>
         <Pressable accessibilityRole="button" onPress={props.onClose} style={styles.secondaryButton}><Text style={styles.secondaryText}>Kembali</Text></Pressable>
-        <Pressable accessibilityRole="button" onPress={continueToPayment} disabled={!props.lines.length} style={[styles.primaryButton, !props.lines.length && styles.disabled]}><Text style={styles.primaryText}>Lanjut ke pembayaran</Text><ChevronRight size={18} color="#fff" /></Pressable>
+        <Pressable accessibilityRole="button" onPress={continueToPayment} disabled={!canPay} style={[styles.primaryButton, !canPay && styles.disabled]}><Text style={styles.primaryText}>Lanjut ke pembayaran</Text><ChevronRight size={18} color="#fff" /></Pressable>
       </View>
     </> : <>
       <KeyboardAwareScrollView bottomOffset={96} style={styles.content} contentContainerStyle={styles.contentBody} keyboardShouldPersistTaps="handled">
@@ -616,6 +624,11 @@ export function PosCheckoutFlow(props: CheckoutProps) {
           <View style={styles.lineDetails}><Text style={styles.toggleText}>Cetak tiket bar/dapur setelah bayar</Text><Text style={styles.productSku}>Disimpan di perangkat ini.</Text></View>
           {props.onOpenPrintSettings ? <Pressable accessibilityRole="button" accessibilityLabel="Atur printer tiket" hitSlop={6} onPress={props.onOpenPrintSettings} style={styles.customerChange}><Text style={styles.customerChangeText}>Printer</Text></Pressable> : null}
         </Pressable> : null}
+        <Text style={styles.sectionLabel}>FOTO BUKTI PEMBAYARAN (OPSIONAL)</Text>
+        <View style={styles.photoRow}>
+          {props.paymentPhotos.map((uri, index) => <View key={`${uri}-${index}`}><Image source={{ uri }} style={styles.photoThumb} /><Pressable accessibilityRole="button" accessibilityLabel={`Hapus foto bukti ${index + 1}`} disabled={props.submitting} hitSlop={6} onPress={() => props.onRemovePaymentPhoto(index)} style={styles.photoRemove}><X size={12} color="#fff" /></Pressable></View>)}
+          {props.paymentPhotos.length < 8 ? <Pressable accessibilityRole="button" accessibilityLabel="Ambil foto bukti pembayaran" disabled={props.submitting} onPress={props.onTakePaymentPhoto} style={[styles.photoAdd, props.submitting && styles.disabled]}><Camera size={20} color="#07885b" /><Text style={styles.photoAddText}>Ambil foto</Text></Pressable> : null}
+        </View>
         {props.error ? <Text style={styles.errorText}>{props.error}</Text> : null}
       </KeyboardAwareScrollView>
       <KeyboardStickyView offset={{ opened: props.bottomInset }}><View style={[styles.footer, { paddingBottom: Math.max(props.bottomInset + 8, 12) }]}>
@@ -946,7 +959,8 @@ const styles = StyleSheet.create({
   lineBottom: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginTop: 7 }, quantityControl: { flexDirection: 'row', alignItems: 'center', gap: 9 }, quantityButton: { width: 36, height: 36, alignItems: 'center', justifyContent: 'center', borderRadius: 9, backgroundColor: '#e2f6ef' }, quantityButtonText: { color: '#07885b', fontSize: 17, fontWeight: '700', lineHeight: 20 }, quantityValue: { minWidth: 14, color: '#27364d', fontSize: 11, fontWeight: '800', textAlign: 'center' }, linePrice: { color: '#d72f2a', fontSize: 10, fontWeight: '900' },
   summaryCard: { padding: 13, borderRadius: 13, backgroundColor: '#fff' }, summaryRow: { minHeight: 29, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 10 }, summaryLabel: { color: '#72849a', fontSize: 10 }, summaryValue: { color: '#172338', fontSize: 10, fontWeight: '700' }, summaryStrong: { color: '#214b4a', fontSize: 12, fontWeight: '900' }, summaryTotal: { color: '#07956f', fontSize: 14, fontWeight: '900' }, summaryDivider: { height: 1, marginVertical: 5, backgroundColor: '#edf1f4' }, discountRow: { minHeight: 34, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }, discountInput: { width: 100, height: 30, paddingHorizontal: 8, borderWidth: 1, borderColor: '#e4eaee', borderRadius: 8, color: '#172338', fontSize: 10, textAlign: 'right' },
   footer: { flexDirection: 'row', gap: 8, paddingHorizontal: 13, paddingTop: 10, borderTopWidth: 1, borderTopColor: '#e8edf0', backgroundColor: '#fff' }, secondaryButton: { minHeight: 46, minWidth: 92, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 7, paddingHorizontal: 12, borderWidth: 1, borderColor: '#e1e9ee', borderRadius: 11, backgroundColor: '#fff' }, secondaryText: { color: '#53677e', fontSize: 11, fontWeight: '800' }, primaryButton: { flex: 1, minHeight: 46, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, paddingHorizontal: 12, borderRadius: 11, backgroundColor: '#07956f' }, primaryText: { color: '#fff', fontSize: 11, fontWeight: '900' }, disabled: { opacity: 0.55 }, errorText: { padding: 10, borderRadius: 9, overflow: 'hidden', color: '#a3332a', backgroundColor: '#fff1ef', fontSize: 10, lineHeight: 15 },
-  sectionLabel: { marginTop: 4, color: '#71839a', fontSize: 9, fontWeight: '900' }, methodGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 7 }, methodButton: { position: 'relative', width: '23.5%', minHeight: 68, alignItems: 'center', justifyContent: 'center', gap: 6, borderWidth: 1, borderColor: '#e7edf1', borderRadius: 11, backgroundColor: '#fff' }, methodButtonActive: { borderColor: '#07885b', backgroundColor: '#07885b' }, methodLabel: { maxWidth: '100%', color: '#63778e', fontSize: 9, fontWeight: '700' }, methodLabelActive: { color: '#fff' }, methodCheck: { position: 'absolute', top: 5, right: 5 },
+  sectionLabel: { marginTop: 4, color: '#71839a', fontSize: 9, fontWeight: '900' },
+  photoRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 }, photoThumb: { width: 68, height: 68, borderRadius: 10, backgroundColor: '#edf1ee' }, photoRemove: { position: 'absolute', top: 3, right: 3, width: 22, height: 22, alignItems: 'center', justifyContent: 'center', borderRadius: 11, backgroundColor: '#0a1729b3' }, photoAdd: { width: 68, height: 68, alignItems: 'center', justifyContent: 'center', gap: 4, borderWidth: 1, borderStyle: 'dashed', borderColor: '#9fd6bf', borderRadius: 10, backgroundColor: '#f2fbf7' }, photoAddText: { color: '#07885b', fontSize: 9, fontWeight: '800' }, methodGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 7 }, methodButton: { position: 'relative', width: '23.5%', minHeight: 68, alignItems: 'center', justifyContent: 'center', gap: 6, borderWidth: 1, borderColor: '#e7edf1', borderRadius: 11, backgroundColor: '#fff' }, methodButtonActive: { borderColor: '#07885b', backgroundColor: '#07885b' }, methodLabel: { maxWidth: '100%', color: '#63778e', fontSize: 9, fontWeight: '700' }, methodLabelActive: { color: '#fff' }, methodCheck: { position: 'absolute', top: 5, right: 5 },
   amountField: { minHeight: 43, flexDirection: 'row', alignItems: 'center', gap: 8, paddingHorizontal: 11, borderWidth: 1, borderColor: '#e3eaf0', borderRadius: 10, backgroundColor: '#fff' }, currencyPrefix: { color: '#78899c', fontSize: 10 }, amountValue: { color: '#172338', fontSize: 12, fontWeight: '800' }, receivedInput: { flex: 1, height: 40, color: '#172338', fontSize: 12, fontWeight: '700' }, cashChoices: { gap: 7, paddingVertical: 2 }, cashChip: { minHeight: 40, justifyContent: 'center', paddingHorizontal: 14, borderWidth: 1, borderColor: '#e3eaf0', borderRadius: 10, backgroundColor: '#fff' }, changeCard: { padding: 13, borderRadius: 12, backgroundColor: '#e5f8f0' }, changeLabel: { color: '#57736b', fontSize: 10 }, changeValue: { marginTop: 3, color: '#07885b', fontSize: 15, fontWeight: '900' },
   receiptHeader: { minHeight: 54, flexDirection: 'row', alignItems: 'center', gap: 10, paddingHorizontal: 13, backgroundColor: '#fff' }, receiptHeaderTitle: { flex: 1, color: '#14213a', fontSize: 15, fontWeight: '900' }, receiptContent: { padding: 13, paddingBottom: 14, gap: 9 }, successBanner: { minHeight: 58, flexDirection: 'row', alignItems: 'center', gap: 10, padding: 11, borderRadius: 12, backgroundColor: '#dff7ee' }, successTextWrap: { flex: 1 }, successTitle: { color: '#087c53', fontSize: 11, fontWeight: '900' }, successSubtitle: { marginTop: 3, color: '#588477', fontSize: 9 },
   receiptCard: { padding: 14, borderRadius: 13, backgroundColor: '#fff' }, receiptStore: { color: '#172338', fontSize: 12, fontWeight: '900', textAlign: 'center' }, receiptMeta: { marginTop: 4, color: '#74859b', fontSize: 9, lineHeight: 14 }, receiptDivider: { height: 1, marginVertical: 9, borderTopWidth: 1, borderColor: '#dce5eb', borderStyle: 'dashed' }, receiptLine: { paddingVertical: 6 }, receiptRow: { flexDirection: 'row', alignItems: 'flex-start', justifyContent: 'space-between', gap: 9 }, receiptItemName: { flex: 1, color: '#24344a', fontSize: 10, fontWeight: '800' }, receiptItemAmount: { color: '#172338', fontSize: 10, fontWeight: '800' },

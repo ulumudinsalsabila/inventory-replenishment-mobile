@@ -4,6 +4,10 @@ import RNBluetoothClassic from 'react-native-bluetooth-classic';
 import { writeBlePrinter } from './ble-printer';
 import { cancelPrinterRelease, schedulePrinterRelease } from './printer-release';
 import { customerLabel, formatDate, formatServiceType, formatStatus, type ServiceType } from './display';
+import { RECEIPT_LOGO_PREVIEW_URI, RECEIPT_LOGO_RASTER } from './receipt-logo';
+
+/** The logo printed on order receipts, for ThermalPreview. */
+export const RECEIPT_LOGO_PREVIEW = { uri: RECEIPT_LOGO_PREVIEW_URI, width: RECEIPT_LOGO_RASTER.width, height: RECEIPT_LOGO_RASTER.height };
 
 /**
  * A saved thermal printer. `transport` is how it is reached: Bluetooth Classic (paired in Android settings, the default for
@@ -39,7 +43,9 @@ export type ReceiptOrder = {
   serviceType?: ServiceType | null;
   createdAt?: string;
   completedAt?: string | null;
-  branch?: { name: string; code?: string } | null;
+  branch?: { name: string; code?: string; phone?: string | null } | null;
+  /** Who made the sale; sent by GET /orders/:id and POST /orders/:id/complete. */
+  cashierName?: string | null;
   items?: ReceiptLine[];
   /**
    * `status` and `cashClosingId` are present on order details (GET /orders/:id); only COMPLETED payments count as paid,
@@ -209,6 +215,8 @@ function receiptText(order: ReceiptOrder, width: number) {
     ...(date ? [center(formatDate(date), width)] : []),
     ...serviceLines(order.serviceType, width).map((line) => center(line, width)),
     ...customerLines(order.customerName, order.customerPhone, width),
+    ...(order.cashierName ? wrap(`Kasir: ${order.cashierName}`, width) : []),
+    ...(order.branch?.phone ? wrap(`Telp: ${order.branch.phone}`, width) : []),
     rule,
   ];
 
@@ -317,9 +325,27 @@ export function formatCashClosingReceipt(closing: CashClosingReceipt, width = 32
   return lines.join('\n');
 }
 
-async function printThermalText(text: string, printer: PairedPrinter) {
-  const payload = `${String.fromCharCode(0x1b, 0x40)}${text}\n\n\n\n${String.fromCharCode(0x1b, 0x64, 3)}`;
-  // safeText keeps receipts plain ASCII, so every character is exactly one ESC/POS byte.
+/** Rows per GS v 0 command; small bands keep the image within the input buffer of cheap printers. */
+const LOGO_BAND_ROWS = 64;
+
+/** ESC/POS commands that print the store logo centred, as a byte string (one character per byte). */
+function logoCommands() {
+  const { width, height, data } = RECEIPT_LOGO_RASTER;
+  const bitmap = atob(data);
+  const bytesPerRow = Math.ceil(width / 8);
+  let commands = String.fromCharCode(0x1b, 0x61, 1);
+  for (let top = 0; top < height; top += LOGO_BAND_ROWS) {
+    const rows = Math.min(LOGO_BAND_ROWS, height - top);
+    commands += String.fromCharCode(0x1d, 0x76, 0x30, 0, bytesPerRow & 0xff, bytesPerRow >> 8, rows & 0xff, rows >> 8);
+    commands += bitmap.slice(top * bytesPerRow, (top + rows) * bytesPerRow);
+  }
+  return `${commands}\n${String.fromCharCode(0x1b, 0x61, 0)}`;
+}
+
+/** `header` is raw ESC/POS (e.g. the logo) sent before the text; the text itself is plain ASCII. */
+async function printThermalText(text: string, printer: PairedPrinter, header = '') {
+  const payload = `${String.fromCharCode(0x1b, 0x40)}${header}${text}\n\n\n\n${String.fromCharCode(0x1b, 0x64, 3)}`;
+  // safeText keeps receipt text plain ASCII and the header is binary, so every character is exactly one ESC/POS byte.
   if (printer.transport === 'ble') { await writeBlePrinter(printer.address, printer.name, Array.from(payload, (char) => char.charCodeAt(0) & 0xff)); return; }
   await ensureAndroidBluetoothAccess();
   let paired: Awaited<ReturnType<typeof RNBluetoothClassic.getBondedDevices>>;
@@ -352,7 +378,8 @@ async function writeClassic(printer: PairedPrinter, payload: string) {
   } catch { throw new Error(`Gagal tersambung ke ${printer.name}. Pastikan printer menyala dan dekat.`); }
   if (!(await connected.isConnected())) throw new Error(`Gagal tersambung ke ${printer.name}. Pastikan printer menyala dan dekat.`);
   let written = false;
-  try { written = await connected.write(payload, 'ascii'); } catch { written = false; }
+  // latin1 sends each character as one byte, including the logo's bitmap bytes above 0x7f.
+  try { written = await connected.write(payload, 'latin1'); } catch { written = false; }
   if (!written) throw new Error('Printer tidak menerima nota. Periksa koneksi lalu coba lagi.');
 }
 
@@ -369,7 +396,7 @@ export function formatOrderReceipt(order: ReceiptOrder, width = THERMAL_WIDTH) {
 }
 
 export async function printThermalReceipt(order: ReceiptOrder, printer: PairedPrinter) {
-  await printThermalText(formatOrderReceipt(order), printer);
+  await printThermalText(formatOrderReceipt(order), printer, logoCommands());
 }
 
 /** Sends already formatted text (pre-bill, DP receipt, kitchen ticket) to the thermal printer. */

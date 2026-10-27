@@ -2,13 +2,15 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Alert, Platform } from 'react-native';
 import * as Print from 'expo-print';
+import * as ImagePicker from 'expo-image-picker';
+import { File } from 'expo-file-system';
 import { router, useLocalSearchParams } from 'expo-router';
 import { useAuth } from '../../auth/auth-provider';
 import { ApiError } from '../../lib/api';
 import { useOnRefocus } from '../../lib/use-refocus';
 import { useNotifications } from '../../notifications/notifications-provider';
 import { OpenBillListSheet, OpenBillSaveSheet, OpenBillVoidSheet, PosCatalogScreen, PosCheckoutFlow, PosReceiptScreen, PrinterPickerSheet, equalShares, isLineEditable, type OpenBillInfo, type OpenBillRow, type OpenBillVoid, type PosLine, type PosMethod, type PosProduct } from '../../components/pos-flow';
-import { formatDepositReceipt, formatKitchenTicket, formatOrderReceipt, formatPreBill, getPairedPrinters, getQuickSaleTickets, getSavedPrinter, getStationPrinter, openAndroidBluetoothSettings, paidTotalOf, printThermalReceipt, printThermalSlip, savePrinter, saveQuickSaleTickets, saveStationPrinter, stationLabel, stationTickets, type KitchenTicket, type PairedPrinter, type PreBill, type ReceiptOrder, type Station } from '../../lib/receipt-printer';
+import { RECEIPT_LOGO_PREVIEW, formatDepositReceipt, formatKitchenTicket, formatOrderReceipt, formatPreBill, getPairedPrinters, getQuickSaleTickets, getSavedPrinter, getStationPrinter, openAndroidBluetoothSettings, paidTotalOf, printThermalReceipt, printThermalSlip, savePrinter, saveQuickSaleTickets, saveStationPrinter, stationLabel, stationTickets, type KitchenTicket, type PairedPrinter, type PreBill, type ReceiptOrder, type Station } from '../../lib/receipt-printer';
 import { ThermalPreview } from '../../components/thermal-preview';
 import { CustomerPickerSheet } from '../../components/customer-picker';
 import { PrintSettingsSheet, SplitBillSheet, type SplitPart, type SplitSourceLine } from '../../components/cafe-sheets';
@@ -87,7 +89,9 @@ const isCustomerUnavailable = (error: unknown) => error instanceof ApiError && e
 const isVersionConflict = (error: unknown) => error instanceof ApiError && error.code === 'OPEN_BILL_VERSION_CONFLICT';
 const PENDING_ORDER_MESSAGE = 'Order ini sudah dibuat dan menunggu pembayaran, jadi pesanan tidak bisa diubah lagi. Selesaikan pembayaran, atau hapus pesanan untuk mulai ulang.';
 const VERSION_CONFLICT_MESSAGE = 'Bill ini sudah diubah di perangkat lain. Data terbaru sudah dimuat ulang, periksa lalu simpan lagi.';
-const VOID_BLOCKED_MESSAGE = 'Simpan perubahan bill terlebih dahulu sebelum void agar perubahan yang belum disimpan tidak hilang.';
+/** Same limit as the server accepts per payment. */
+const MAX_PAYMENT_PHOTOS = 8;
+const VOID_BLOCKED_MESSAGE ='Simpan perubahan bill terlebih dahulu sebelum void agar perubahan yang belum disimpan tidak hilang.';
 function openBillErrorMessage(error: unknown, fallback = 'Open bill gagal disimpan.') {
   if (isCustomerUnavailable(error) || (error instanceof ApiError && error.code === 'PERMISSION_DENIED')) return customerErrorMessage(error);
   if (error instanceof ApiError) {
@@ -157,6 +161,8 @@ export default function PosScreen() {
   // Dine in by default; sent with the order and restored when a bill is loaded.
   const [takeaway, setTakeaway] = useState(false);
   const [selectedDistributor, setSelectedDistributor] = useState('Semua');
+  // Optional proof photos (e.g. a transfer or QRIS screen) sent with the next payment.
+  const [paymentPhotos, setPaymentPhotos] = useState<ImagePicker.ImagePickerAsset[]>([]);
   const [displayOnly, setDisplayOnly] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [reloadKey, setReloadKey] = useState(0);
@@ -371,7 +377,34 @@ export default function PosScreen() {
 
   /** Empties the cart and forgets the loaded open bill (the bill itself stays saved on the server). */
   function resetCart() {
+    setPaymentPhotos([]);
     setCart([]); setPendingOrder(null); setOpenBill(null); setPaymentStep(false); setTakeaway(false); setCustomer(''); setCustomerPhone(''); setDiscount('0'); setSelectedCustomer(null); setDepositMode(false); setSplitMethods(null); setCashReceived('');
+  }
+
+  async function takePaymentPhoto() {
+    if (paymentPhotos.length >= MAX_PAYMENT_PHOTOS) { setError(`Maksimal ${MAX_PAYMENT_PHOTOS} foto bukti pembayaran.`); return; }
+    const permission = await ImagePicker.requestCameraPermissionsAsync();
+    if (!permission.granted) { setError('Izin kamera diperlukan untuk mengambil foto.'); return; }
+    const result = await ImagePicker.launchCameraAsync({ mediaTypes: ['images'], quality: 0.75, cameraType: ImagePicker.CameraType.back });
+    if (result.canceled || !result.assets.length) return;
+    if (result.assets.some((asset) => Number(asset.fileSize ?? 0) > 5 * 1024 * 1024)) { setError('Ukuran foto bukti maksimal 5 MB.'); return; }
+    setPaymentPhotos((current) => [...current, ...result.assets].slice(0, MAX_PAYMENT_PHOTOS));
+    setError('');
+  }
+
+  /** POST body for orders/:id/pay: JSON, or multipart (payments as a JSON string) when proof photos are attached. */
+  function payBody(payments: object[]) {
+    if (!paymentPhotos.length) return JSON.stringify({ payments });
+    const form = new FormData();
+    form.append('payments', JSON.stringify(payments));
+    paymentPhotos.forEach((asset, index) => {
+      const name = asset.fileName ?? asset.uri.split('/').pop() ?? `bukti-bayar-${index}.jpg`;
+      if (Platform.OS === 'web') {
+        if (!asset.file) throw new Error('File foto dari browser tidak tersedia.');
+        form.append('images', asset.file, name);
+      } else form.append('images', new File(asset.uri), name);
+    });
+    return form;
   }
 
   /** Attaches a registered customer; the sale is filed under its name (and phone, when it has one). */
@@ -437,8 +470,9 @@ export default function PosScreen() {
       // One cash payment records what the customer handed over, so the server stores the change; shares pay exactly.
       const received = shares.length === 1 && cashReceived ? cashReceived : null;
       const payments = shares.map((share) => ({ method: share.method, amount: String(share.amount), ...(share.method === 'CASH' ? { receivedAmount: received ?? String(share.amount) } : {}) }));
-      const paid = order.status === 'PAID' ? order : await authorizedRequest<Order>(`orders/${order.id}/pay`, { method: 'POST', body: JSON.stringify({ payments }) });
-      setPendingOrder(paid);
+      const paid = order.status === 'PAID' ? order : await authorizedRequest<Order>(`orders/${order.id}/pay`, { method: 'POST', body: payBody(payments) });
+      // The photos are stored with the payment; a retry of the completion step must not send them again.
+      setPendingOrder(paid); setPaymentPhotos([]);
       const completed = await authorizedRequest<Order>(`orders/${paid.id}/complete`, { method: 'POST' });
       setReceipt(completed); resetCart(); setCartVisible(false);
       // Stock changed on the server; reload the catalog so the next order sees current availability.
@@ -586,9 +620,9 @@ export default function PosScreen() {
       if (!saved) return;
       setWarning(stockWarningText(saved.stockWarnings));
       const payment = { method, amount: String(amount), ...(method === 'CASH' ? { receivedAmount: String(amount) } : {}) };
-      const updated = await authorizedRequest<BillOrder>(`orders/${bill.id}/pay`, { method: 'POST', body: JSON.stringify({ payments: [payment] }) });
+      const updated = await authorizedRequest<BillOrder>(`orders/${bill.id}/pay`, { method: 'POST', body: payBody([payment]) });
       const paidTotal = paidTotalOf(updated);
-      setDepositMode(false); setDepositAmount('');
+      setDepositMode(false); setDepositAmount(''); setPaymentPhotos([]);
       if (updated.status !== 'OPEN') {
         // The deposit settled the whole bill after all; it is now locked and only needs completing via "Bayar".
         settlePaidBill(updated, `DP ${money(amount)} diterima dan bill sudah lunas. Tekan Bayar untuk menyelesaikan transaksi.`);
@@ -979,6 +1013,7 @@ Barang di bill ini dikembalikan ke stok atau dicatat terbuang?`, [
     visible={previewVisible}
     title={`Nota ${receipt.orderNumber}`}
     text={formatOrderReceipt(receipt)}
+    logo={RECEIPT_LOGO_PREVIEW}
     printer={printer}
     printing={printing}
     error={printError}
@@ -1116,6 +1151,9 @@ Barang di bill ini dikembalikan ke stok atau dicatat terbuang?`, [
 
   if (cartVisible) return <><PosCheckoutFlow
     lines={cart}
+    paymentPhotos={paymentPhotos.map((asset) => asset.uri)}
+    onTakePaymentPhoto={() => void takePaymentPhoto()}
+    onRemovePaymentPhoto={(index) => setPaymentPhotos((current) => current.filter((_, position) => position !== index))}
     topInset={insets.top + 8}
     paymentStep={paymentStep}
     onPaymentStepChange={(value) => { setPaymentStep(value); if (!value) setDepositMode(false); }}

@@ -128,7 +128,7 @@ export default function TransfersScreen() {
       : await ImagePicker.requestMediaLibraryPermissionsAsync();
     if (!permission.granted) { setError(useCamera ? 'Izin kamera diperlukan untuk mengambil foto.' : 'Izin foto diperlukan untuk memilih bukti.'); return; }
     const result = useCamera
-      ? await ImagePicker.launchCameraAsync({ mediaTypes: ['images'], quality: 0.75 })
+      ? await ImagePicker.launchCameraAsync({ mediaTypes: ['images'], quality: 0.75, cameraType: ImagePicker.CameraType.back })
       : await ImagePicker.launchImageLibraryAsync({ mediaTypes: ['images'], allowsMultipleSelection: true, selectionLimit: 8, quality: 0.75 });
     if (result.canceled || !result.assets.length) return;
     setEvidenceBusy(true); setError('');

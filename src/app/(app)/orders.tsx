@@ -13,7 +13,7 @@ import { customRangeLabel, getRange, jakartaDate, rangeLabel, rangeOptions, type
 import { DateRangeSheet } from '../../components/date-range-sheet';
 import { customerLabel, formatDate, formatDateTime, formatRefundType, formatServiceType, formatStatus, defaultRefundMethod, refundMethodsFor, type OpenBillStockAction } from '../../lib/display';
 import { ApiError } from '../../lib/api';
-import { formatExchangeReceipt, formatOrderReceipt, formatPreBill, getPairedPrinters, getSavedPrinter, openAndroidBluetoothSettings, paidTotalOf, printThermalExchangeReceipt, printThermalReceipt, printThermalSlip, savePrinter, type ExchangeReceipt, type PairedPrinter, type PreBill, type ReceiptOrder } from '../../lib/receipt-printer';
+import { RECEIPT_LOGO_PREVIEW, formatExchangeReceipt, formatOrderReceipt, formatPreBill, getPairedPrinters, getSavedPrinter, openAndroidBluetoothSettings, paidTotalOf, printThermalExchangeReceipt, printThermalReceipt, printThermalSlip, savePrinter, type ExchangeReceipt, type PairedPrinter, type PreBill, type ReceiptOrder } from '../../lib/receipt-printer';
 import { receiptHtml } from '../../lib/receipt-pdf';
 import { ThermalPreview } from '../../components/thermal-preview';
 import { ExchangeSheet, type ExchangeResult } from '../../components/exchange-sheet';
@@ -314,7 +314,7 @@ export default function OrdersScreen() {
     const permission = useCamera ? await ImagePicker.requestCameraPermissionsAsync() : await ImagePicker.requestMediaLibraryPermissionsAsync();
     if (!permission.granted) { setRefundError(useCamera ? 'Izin kamera diperlukan untuk mengambil foto.' : 'Izin galeri diperlukan untuk memilih foto.'); return; }
     const result = useCamera
-      ? await ImagePicker.launchCameraAsync({ mediaTypes: ['images'], quality: 0.75 })
+      ? await ImagePicker.launchCameraAsync({ mediaTypes: ['images'], quality: 0.75, cameraType: ImagePicker.CameraType.back })
       : await ImagePicker.launchImageLibraryAsync({ mediaTypes: ['images'], allowsMultipleSelection: true, selectionLimit: 8 - refundEvidence.length, quality: 0.75 });
     if (result.canceled || !result.assets.length) return;
     if (result.assets.some((asset) => Number(asset.fileSize ?? 0) > 5 * 1024 * 1024)) { setRefundError('Ukuran setiap foto bukti maksimal 5 MB.'); return; }
@@ -436,6 +436,7 @@ export default function OrdersScreen() {
     visible={previewVisible}
     title={exchangeReceipt ? `Nota ${exchangeReceipt.exchangeNumber}` : preBill ? preBill.title : `Nota ${selected.orderNumber}`}
     text={exchangeReceipt ? formatExchangeReceipt(exchangeReceipt) : preBill ? preBill.text : formatOrderReceipt(selected)}
+    logo={exchangeReceipt || preBill ? undefined : RECEIPT_LOGO_PREVIEW}
     printer={printer}
     printing={printing}
     error={printError}
