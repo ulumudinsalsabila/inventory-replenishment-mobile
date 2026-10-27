@@ -2,8 +2,9 @@
  * Methods a cashier can pick for refunds and exchange settlements: the same five as the POS (EXCHANGE credit is applied
  * automatically).
  */
-export const refundPaymentMethods = ['CASH', 'QRIS', 'TRANSFER', 'GRAB', 'GOBIZ'];
-const platformMethods = ['GRAB', 'GOBIZ'];
+export const refundPaymentMethods = ['CASH', 'QRIS', 'TRANSFER', 'GRAB', 'GOBIZ', 'KASBON'];
+/** Offered for a refund only when the order was paid that way: platforms refund through themselves, kasbon only lowers the debt. */
+const platformMethods = ['GRAB', 'GOBIZ', 'KASBON'];
 
 /** Money can go back through any store method; platform methods only when the order was paid there (the server enforces this too). */
 export function refundMethodsFor(payments: { method: string; status: string }[] | undefined) {
@@ -37,7 +38,7 @@ const statusLabels: Record<string, string> = {
   CANCELLED: 'Dibatalkan', REFUNDED: 'Dikembalikan', PARTIALLY_REFUNDED: 'Refund sebagian', FAILED: 'Gagal', VOIDED: 'Dibatalkan',
   FORFEITED: 'Hangus', FULL: 'Penuh', PARTIAL: 'Sebagian', DEPOSIT: 'DP',
   // Payment methods
-  CASH: 'Cash', QRIS: 'QRIS', TRANSFER: 'Transfer', GRAB: 'Grab', GOBIZ: 'GoBiz', DEBIT_CARD: 'Kartu debit', CREDIT_CARD: 'Kartu kredit', EXCHANGE: 'Kredit tukar', OTHER: 'Lainnya',
+  CASH: 'Cash', QRIS: 'QRIS', TRANSFER: 'Transfer', GRAB: 'Grab', GOBIZ: 'GoBiz', DEBIT_CARD: 'Kartu debit', CREDIT_CARD: 'Kartu kredit', EXCHANGE: 'Kredit tukar', KASBON: 'Kasbon', OTHER: 'Lainnya',
   // Stock requests, transfers, opnames, purchases
   SUBMITTED: 'Diajukan', UNDER_REVIEW: 'Ditinjau', APPROVED: 'Disetujui', PARTIAL_APPROVED: 'Disetujui sebagian', REJECTED: 'Ditolak',
   PROCESSING: 'Diproses', PREPARING: 'Disiapkan', READY: 'Siap dikirim', IN_TRANSIT: 'Dalam pengiriman', RECEIVED: 'Diterima',

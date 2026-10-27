@@ -40,11 +40,11 @@ const orderStatusLabel: Record<string, string> = { COMPLETED: 'SELESAI', PARTIAL
 
 function PaymentChart({ methods }: { methods: Dashboard['salesByMethod'] }) {
   const rows = useMemo(() => {
-    // The five POS methods; anything else (older card/other sales) is grouped under Lainnya and only shown when present.
+    // The POS methods; anything else (older card/other sales) is grouped under Lainnya and only shown when present.
     const categories = [
       { label: 'Cash', methods: ['CASH'], color: '#27c993' }, { label: 'QRIS', methods: ['QRIS'], color: '#3987f5' },
       { label: 'Transfer', methods: ['TRANSFER', 'BANK_TRANSFER'], color: '#ee55aa' }, { label: 'Grab', methods: ['GRAB'], color: '#a94ee8' },
-      { label: 'GoBiz', methods: ['GOBIZ'], color: '#ff9418' },
+      { label: 'GoBiz', methods: ['GOBIZ'], color: '#ff9418' }, { label: 'Kasbon', methods: ['KASBON'], color: '#8b5a2b' },
     ];
     const known = categories.flatMap((category) => category.methods);
     const sum = (items: Dashboard['salesByMethod']) => items.reduce((total, item) => total + Number(item.amount), 0);

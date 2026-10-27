@@ -66,6 +66,8 @@ export type CashClosingReceipt = {
   gobizSales?: string;
   cardSales?: string;
   otherSales?: string;
+  /** Goods given out on kasbon (credit): not money, so outside TOTAL SALES and the expected cash. */
+  kasbonSales?: string;
   totalSales?: string;
   cashIn?: string;
   cashOut?: string;
@@ -292,22 +294,14 @@ export function formatCashClosingReceipt(closing: CashClosingReceipt, width = 32
     ['Card Refund', closing.cardRefund],
     ['Other Refund', closing.otherRefund],
   ] as [string, unknown][]).filter(([label, value]) => !['Card Refund', 'Other Refund'].includes(label) || Number(value ?? 0) !== 0);
-  // dd-mm-yyyy on the closing report header.
-  const dashed = (value: string) => value.replace(/\//g, '-');
   const lines = [
-    center('CASH CLOSING REPORT', width),
-    center(closing.closingNumber, width),
-    '',
-    ...wrap(`Period Start : ${dashed(receiptDate(closing.periodStart))}`, width),
-    ...wrap(`Period End   : ${dashed(receiptDate(closing.periodEnd))}`, width),
-    ...wrap(`Transaction  : ${closing.transactionCount}`, width),
-    ...wrap(`Created At   : ${dashed(receiptDateTime(closing.createdAt ?? closing.closedAt))}`, width),
-    rule,
+    ...closingHeaderLines(closing, width),
     'SALES',
     ...sales.map(([label, value]) => columns(label, cashRupiah(value), width)),
     rule,
     columns('TOTAL SALES', cashRupiah(closing.totalSales), width),
     rule,
+    ...(Number(closing.kasbonSales ?? 0) !== 0 ? [columns('KASBON (BUKAN UANG)', cashRupiah(closing.kasbonSales), width), rule] : []),
     'CASH MOVEMENT',
     columns('Cash In', cashRupiah(closing.cashIn), width),
     columns('Cash Out', cashRupiah(closing.cashOut), width),
@@ -324,24 +318,49 @@ export function formatCashClosingReceipt(closing: CashClosingReceipt, width = 32
     rule,
     columns('DIFFERENCE', cashRupiah(closing.difference), width),
     rule,
-    ...(closing.soldItems ? [
-      'BARANG KELUAR',
-      ...(closing.soldItems.length ? closing.soldItems.flatMap((item) => soldItemLines(item, width)) : ['Tidak ada barang terjual']),
-      rule,
-      columns('JENIS BARANG', String(closing.soldItems.length), width),
-      columns('TOTAL BARANG', cashRupiah(closing.soldItems.reduce((sum, item) => sum + Number(item.total ?? 0), 0)), width),
-      rule,
-    ] : []),
     columns('STATUS', formatStatus(closing.status).toLocaleUpperCase('id-ID'), width),
     ...wrap(`NOTE ${closing.note || '-'}`, width),
     rule,
-    '',
-    center('Prepared By', width),
-    '',
-    '',
-    center('(________________)', width),
+    ...closingFooterLines(width),
   ];
   return lines.join('\n');
+}
+
+/** Header shared by the closing report and its goods list: title, closing number and period, then a rule. */
+function closingHeaderLines(closing: CashClosingReceipt, width: number) {
+  // dd-mm-yyyy on the closing report header.
+  const dashed = (value: string) => value.replace(/\//g, '-');
+  return [
+    center('CASH CLOSING REPORT', width),
+    center(closing.closingNumber, width),
+    '',
+    ...wrap(`Period Start : ${dashed(receiptDate(closing.periodStart))}`, width),
+    ...wrap(`Period End   : ${dashed(receiptDate(closing.periodEnd))}`, width),
+    ...wrap(`Transaction  : ${closing.transactionCount}`, width),
+    ...wrap(`Created At   : ${dashed(receiptDateTime(closing.createdAt ?? closing.closedAt))}`, width),
+    '-'.repeat(width),
+  ];
+}
+
+/** Signature block that ends both closing printouts. */
+function closingFooterLines(width: number) {
+  return ['', center('Prepared By', width), '', '', center('(________________)', width)];
+}
+
+/** The goods that left with a closing's sales, printed on its own with the closing report's header and footer. */
+export function formatCashClosingItemsReceipt(closing: CashClosingReceipt, width = 32) {
+  const rule = '-'.repeat(width);
+  const items = closing.soldItems ?? [];
+  return [
+    ...closingHeaderLines(closing, width),
+    'BARANG KELUAR',
+    ...(items.length ? items.flatMap((item) => soldItemLines(item, width)) : ['Tidak ada barang terjual']),
+    rule,
+    columns('JENIS BARANG', String(items.length), width),
+    columns('TOTAL BARANG', cashRupiah(items.reduce((sum, item) => sum + Number(item.total ?? 0), 0)), width),
+    rule,
+    ...closingFooterLines(width),
+  ].join('\n');
 }
 
 async function printThermalText(text: string, printer: PairedPrinter) {

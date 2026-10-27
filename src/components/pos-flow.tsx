@@ -15,7 +15,8 @@ import type { PairedPrinter, ReceiptOrder, Station } from '../lib/receipt-printe
 import { shareReceiptPdf } from '../lib/receipt-pdf';
 import { KeyboardAvoidingView, KeyboardAwareScrollView, KeyboardStickyView } from 'react-native-keyboard-controller';
 
-export type PosMethod = 'CASH' | 'QRIS' | 'TRANSFER' | 'GRAB' | 'GOBIZ';
+/** KASBON hands the goods out on credit to a named customer: settled, but no money comes in. */
+export type PosMethod = 'CASH' | 'QRIS' | 'TRANSFER' | 'GRAB' | 'GOBIZ' | 'KASBON';
 
 export type PosProduct = {
   id: string;
@@ -136,6 +137,9 @@ type CheckoutProps = {
   /** "Bagi rata": one payment method per person, each paying an equal share of the balance; null pays with `method` alone. */
   splitMethods: PosMethod[] | null;
   onSplitMethodsChange: (value: PosMethod[] | null) => void;
+  /** "Bayar campuran": non-cash parts with typed amounts; whatever they leave of the balance is paid in cash. null = off. */
+  mixedPayments: MixedPart[] | null;
+  onMixedPaymentsChange: (value: MixedPart[] | null) => void;
   /** "Cetak tiket bar/dapur setelah bayar" for quick sales; the switch is omitted while an open bill is loaded. */
   quickSaleTickets: boolean;
   onQuickSaleTicketsChange?: (value: boolean) => void;
@@ -158,6 +162,9 @@ export function equalShares(total: number, count: number) {
   return Array.from({ length: count }, (_, index) => index === count - 1 ? Math.round((total - share * (count - 1)) * 100) / 100 : share);
 }
 const MAX_SPLIT_PEOPLE = 20;
+/** Non-cash parts a mixed payment can have next to its cash remainder. */
+const MAX_MIXED_PARTS = 4;
+export type MixedPart = { method: PosMethod; amount: string };
 
 /** Notes a customer is likely to hand over for `due`: the next round amounts above it, smallest first. */
 export function quickCashAmounts(due: number) {
@@ -183,6 +190,7 @@ const methods: { id: PosMethod; label: string; icon: typeof Banknote }[] = [
   { id: 'TRANSFER', label: 'Transfer', icon: Landmark },
   { id: 'GRAB', label: 'Grab', icon: Wallet },
   { id: 'GOBIZ', label: 'GoBiz', icon: Wallet },
+  { id: 'KASBON', label: 'Kasbon', icon: ReceiptText },
 ];
 
 type CatalogProps = {
@@ -473,10 +481,31 @@ export function PosCheckoutFlow(props: CheckoutProps) {
   // Every share must be at least Rp 1; a balance that shrank below the number of people pays in one go.
   const splitMethods = props.splitMethods && due >= props.splitMethods.length ? props.splitMethods : null;
   const maxPeople = Math.min(MAX_SPLIT_PEOPLE, Math.floor(due));
-  // Single cash payment only; "Bagi rata" and DP keep paying the exact amount.
-  const received = props.method === 'CASH' && !splitMethods && !props.depositMode && props.cashReceived ? Number(props.cashReceived) : due;
-  const cashShort = Math.max(0, due - received);
-  const cashChange = Math.max(0, received - due);
+  // Mixed payment: the typed non-cash parts come first, the rest of the balance is paid in cash.
+  const mixed = !props.depositMode && !splitMethods && props.mixedPayments ? props.mixedPayments : null;
+  const mixedNonCash = (mixed ?? []).reduce((sum, part) => sum + (Number(part.amount) || 0), 0);
+  const mixedOver = Boolean(mixed) && mixedNonCash > due;
+  const mixedInvalid = Boolean(mixed) && (mixedOver || (mixed ?? []).some((part) => !(Number(part.amount) > 0)));
+  // The cash part: the whole balance for a single cash payment, the remainder for a mixed one.
+  const cashDue = mixed ? Math.max(0, due - mixedNonCash) : due;
+  // "Bagi rata" and DP pay exact amounts; only a single cash payment or a mixed payment's cash part take money received.
+  const takesCash = !props.depositMode && !splitMethods && (Boolean(mixed) || props.method === 'CASH');
+  const received = takesCash && props.cashReceived ? Number(props.cashReceived) : cashDue;
+  const cashShort = Math.max(0, cashDue - received);
+  const cashChange = Math.max(0, received - cashDue);
+  const nonCashMethods = methods.filter((entry) => entry.id !== 'CASH');
+  const cashInput = <>
+    <Text style={styles.sectionLabel}>UANG DITERIMA</Text>
+    <View style={styles.amountField}><Text style={styles.currencyPrefix}>Rp</Text><MoneyInput accessibilityLabel="Uang diterima" value={props.cashReceived} onChangeText={props.onCashReceivedChange} placeholder={`${Math.ceil(cashDue)}`} placeholderTextColor="#8a97a8" style={styles.receivedInput} />{props.cashReceived ? <Pressable accessibilityRole="button" accessibilityLabel="Kosongkan uang diterima" hitSlop={8} onPress={() => props.onCashReceivedChange('')}><X size={17} color="#8a97a8" /></Pressable> : null}</View>
+    <ScrollView horizontal showsHorizontalScrollIndicator={false} keyboardShouldPersistTaps="handled" contentContainerStyle={styles.cashChoices}>
+      {[{ label: 'Uang pas', value: '' }, ...quickCashAmounts(cashDue).map((amount) => ({ label: money(amount), value: String(amount) }))].map((option) => {
+        const active = props.cashReceived === option.value;
+        return <Pressable key={option.label} accessibilityRole="button" accessibilityState={{ selected: active }} onPress={() => props.onCashReceivedChange(option.value)} style={[styles.cashChip, active && styles.modeButtonActive]}><Text style={[styles.modeText, active && styles.modeTextActive]}>{option.label}</Text></Pressable>;
+      })}
+    </ScrollView>
+    {cashShort > 0 ? <Text style={styles.errorText}>Uang diterima kurang {money(cashShort)}.</Text> : <View style={styles.changeCard}><Text style={styles.changeLabel}>Kembalian</Text><Text style={styles.changeValue}>{money(cashChange)}</Text></View>}
+  </>;
+  const updateMixed = (index: number, change: Partial<MixedPart>) => props.onMixedPaymentsChange((mixed ?? []).map((part, position) => position === index ? { ...part, ...change } : part));
   const depositRows = paid > 0 ? <><SummaryRow label="Total" value={money(props.total)} /><SummaryRow label="Sudah dibayar (DP)" value={`- ${money(paid)}`} /><View style={styles.summaryDivider} /><SummaryRow label="Sisa tagihan" value={money(due)} strong /></> : null;
   // Nothing to pay for: no lines, or every line is priced at Rp 0.
   const canPay = props.lines.length > 0 && props.total > 0;
@@ -598,6 +627,24 @@ export function PosCheckoutFlow(props: CheckoutProps) {
             })}</ScrollView>
           </View>)}
           <Pressable accessibilityRole="button" onPress={() => props.onSplitMethodsChange(null)} style={styles.settingsLink}><X size={14} color="#07885b" /><Text style={styles.settingsLinkText}>Batal bagi rata, bayar sekaligus</Text></Pressable>
+        </> : mixed ? <>
+          {/* "Bayar campuran": one payer, several methods. Non-cash parts are typed; the cash part is what is left. */}
+          <View style={styles.splitHeader}><Wallet size={17} color="#07885b" /><Text style={styles.splitTitle}>Bayar campuran</Text></View>
+          {mixed.map((part, index) => <View key={`mixed-${index}`} style={styles.shareRow}>
+            <View style={styles.shareTop}><Text style={styles.shareLabel}>Non-tunai {index + 1}</Text><Pressable accessibilityRole="button" accessibilityLabel={`Hapus pembayaran ${index + 1}`} hitSlop={8} onPress={() => props.onMixedPaymentsChange(mixed.length > 1 ? mixed.filter((_, position) => position !== index) : null)}><X size={16} color="#8a97a8" /></Pressable></View>
+            <ScrollView horizontal showsHorizontalScrollIndicator={false} keyboardShouldPersistTaps="handled" contentContainerStyle={styles.shareMethods}>{nonCashMethods.map(({ id, label }) => {
+              const active = part.method === id;
+              return <Pressable key={id} accessibilityRole="button" accessibilityLabel={`Pembayaran ${index + 1} lewat ${label}`} accessibilityState={{ selected: active }} onPress={() => updateMixed(index, { method: id })} style={[styles.modeButton, active && styles.modeButtonActive]}><Text style={[styles.modeText, active && styles.modeTextActive]}>{label}</Text></Pressable>;
+            })}</ScrollView>
+            <View style={styles.amountField}><Text style={styles.currencyPrefix}>Rp</Text><MoneyInput accessibilityLabel={`Nominal pembayaran ${index + 1}`} value={part.amount} onChangeText={(value) => updateMixed(index, { amount: value })} placeholder="0" placeholderTextColor="#8a97a8" style={styles.receivedInput} /></View>
+          </View>)}
+          {mixed.length < MAX_MIXED_PARTS ? <Pressable accessibilityRole="button" onPress={() => props.onMixedPaymentsChange([...mixed, { method: 'TRANSFER', amount: '' }])} style={styles.settingsLink}><Plus size={14} color="#07885b" /><Text style={styles.settingsLinkText}>Tambah metode non-tunai</Text></Pressable> : null}
+          {mixedOver ? <Text style={styles.errorText}>Total non-tunai {money(mixedNonCash)} melebihi tagihan {money(due)}.</Text> : <>
+            <Text style={styles.sectionLabel}>SISA DIBAYAR TUNAI</Text>
+            <View style={styles.amountField}><Text style={styles.currencyPrefix}>Rp</Text><Text style={styles.amountValue}>{money(cashDue).replace('Rp ', '')}</Text></View>
+            {cashDue > 0 ? cashInput : null}
+          </>}
+          <Pressable accessibilityRole="button" onPress={() => props.onMixedPaymentsChange(null)} style={styles.settingsLink}><X size={14} color="#07885b" /><Text style={styles.settingsLinkText}>Batal bayar campuran, pakai satu metode</Text></Pressable>
         </> : <>
         <Text style={styles.sectionLabel}>METODE PEMBAYARAN</Text>
         <View style={styles.methodGrid}>{methods.map(({ id, label, icon: Icon }) => <Pressable key={id} accessibilityRole="button" accessibilityState={{ selected: props.method === id }} onPress={() => props.onMethodChange(id)} style={[styles.methodButton, props.method === id && styles.methodButtonActive]}><Icon size={20} color={props.method === id ? '#fff' : '#3976a8'} /><Text numberOfLines={1} style={[styles.methodLabel, props.method === id && styles.methodLabelActive]}>{label}</Text>{props.method === id ? <Check size={13} color="#fff" style={styles.methodCheck} /> : null}</Pressable>)}</View>
@@ -606,22 +653,13 @@ export function PosCheckoutFlow(props: CheckoutProps) {
           <Text style={styles.sectionLabel}>JUMLAH DP *</Text>
           <View style={styles.amountField}><Text style={styles.currencyPrefix}>Rp</Text><MoneyInput accessibilityLabel="Jumlah DP" autoFocus value={props.depositAmount} onChangeText={props.onDepositAmountChange} placeholder="0" placeholderTextColor="#8a97a8" style={styles.receivedInput} /></View>
           <Text style={styles.sheetHint}>Lebih dari Rp 0 dan kurang dari sisa tagihan {money(due)}. Untuk melunasi, gunakan Bayar.</Text>
-        </> : !splitMethods ? <>
-          {props.method === 'CASH' && due > 0 ? <>
-            <Text style={styles.sectionLabel}>UANG DITERIMA</Text>
-            <View style={styles.amountField}><Text style={styles.currencyPrefix}>Rp</Text><MoneyInput accessibilityLabel="Uang diterima" value={props.cashReceived} onChangeText={props.onCashReceivedChange} placeholder={`${Math.ceil(due)}`} placeholderTextColor="#8a97a8" style={styles.receivedInput} />{props.cashReceived ? <Pressable accessibilityRole="button" accessibilityLabel="Kosongkan uang diterima" hitSlop={8} onPress={() => props.onCashReceivedChange('')}><X size={17} color="#8a97a8" /></Pressable> : null}</View>
-            <ScrollView horizontal showsHorizontalScrollIndicator={false} keyboardShouldPersistTaps="handled" contentContainerStyle={styles.cashChoices}>
-              {[{ label: 'Uang pas', value: '' }, ...quickCashAmounts(due).map((amount) => ({ label: money(amount), value: String(amount) }))].map((option) => {
-                const active = props.cashReceived === option.value;
-                return <Pressable key={option.label} accessibilityRole="button" accessibilityState={{ selected: active }} onPress={() => props.onCashReceivedChange(option.value)} style={[styles.cashChip, active && styles.modeButtonActive]}><Text style={[styles.modeText, active && styles.modeTextActive]}>{option.label}</Text></Pressable>;
-              })}
-            </ScrollView>
-            {cashShort > 0 ? <Text style={styles.errorText}>Uang diterima kurang {money(cashShort)}.</Text> : <View style={styles.changeCard}><Text style={styles.changeLabel}>Kembalian</Text><Text style={styles.changeValue}>{money(cashChange)}</Text></View>}
-          </> : <>
+        </> : !splitMethods && !mixed ? <>
+          {props.method === 'CASH' && due > 0 ? cashInput : <>
             <Text style={styles.sectionLabel}>JUMLAH DIBAYAR</Text>
             <View style={styles.amountField}><Text style={styles.currencyPrefix}>Rp</Text><Text style={styles.amountValue}>{money(due).replace('Rp ', '')}</Text></View>
           </>}
           {due >= 2 ? <Pressable accessibilityRole="button" accessibilityHint="Membagi sisa tagihan sama rata, tiap orang dengan metode bayarnya sendiri" onPress={() => props.onSplitMethodsChange([props.method, props.method])} style={styles.settingsLink}><Users size={14} color="#07885b" /><Text style={styles.settingsLinkText}>Bagi rata ke beberapa orang</Text><ChevronRight size={14} color="#07885b" /></Pressable> : null}
+          {due >= 2 ? <Pressable accessibilityRole="button" accessibilityHint="Sebagian dibayar non-tunai dengan nominal sendiri, sisanya tunai" onPress={() => props.onMixedPaymentsChange([{ method: props.method === 'CASH' ? 'QRIS' : props.method, amount: '' }])} style={styles.settingsLink}><Wallet size={14} color="#07885b" /><Text style={styles.settingsLinkText}>Bayar campuran (tunai + metode lain)</Text><ChevronRight size={14} color="#07885b" /></Pressable> : null}
         </> : null}
         {!props.depositMode && props.onQuickSaleTicketsChange ? <Pressable accessibilityRole="switch" accessibilityState={{ checked: props.quickSaleTickets }} onPress={() => props.onQuickSaleTicketsChange?.(!props.quickSaleTickets)} style={styles.toggleRow}>
           <View style={[styles.checkbox, props.quickSaleTickets && styles.checkboxChecked]}>{props.quickSaleTickets ? <Check size={13} color="#fff" /> : null}</View>
@@ -639,7 +677,7 @@ export function PosCheckoutFlow(props: CheckoutProps) {
         <Pressable accessibilityRole="button" onPress={() => props.onPaymentStepChange(false)} style={styles.secondaryButton}><Text style={styles.secondaryText}>Kembali</Text></Pressable>
         {props.depositMode
           ? <Pressable accessibilityRole="button" disabled={!Number(props.depositAmount) || props.submitting} onPress={props.onReceiveDeposit} style={[styles.primaryButton, (!Number(props.depositAmount) || props.submitting) && styles.disabled]}>{props.submitting ? <ActivityIndicator color="#fff" /> : <><Wallet size={17} color="#fff" /><Text style={styles.primaryText}>Terima DP {money(props.depositAmount)}</Text></>}</Pressable>
-          : <Pressable accessibilityRole="button" disabled={!props.lines.length || props.submitting || cashShort > 0} onPress={props.onCheckout} style={[styles.primaryButton, (!props.lines.length || props.submitting || cashShort > 0) && styles.disabled]}>{props.submitting ? <ActivityIndicator color="#fff" /> : <><CreditCard size={17} color="#fff" /><Text style={styles.primaryText}>{paid > 0 && due <= 0 ? 'Bayar · Selesaikan transaksi' : `Bayar ${money(due)}`}</Text></>}</Pressable>}
+          : <Pressable accessibilityRole="button" disabled={!props.lines.length || props.submitting || cashShort > 0 || mixedInvalid} onPress={props.onCheckout} style={[styles.primaryButton, (!props.lines.length || props.submitting || cashShort > 0 || mixedInvalid) && styles.disabled]}>{props.submitting ? <ActivityIndicator color="#fff" /> : <><CreditCard size={17} color="#fff" /><Text style={styles.primaryText}>{paid > 0 && due <= 0 ? 'Bayar · Selesaikan transaksi' : `Bayar ${money(due)}`}</Text></>}</Pressable>}
       </View></KeyboardStickyView>
     </>}
   </View>;

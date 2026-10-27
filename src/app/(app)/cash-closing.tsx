@@ -6,7 +6,7 @@ import { File } from 'expo-file-system';
 import * as Print from 'expo-print';
 import * as ImagePicker from 'expo-image-picker';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { Banknote, Bluetooth, CalendarDays, Camera, Check, ChevronLeft, ChevronRight, ImagePlus, Paperclip, Printer, Search, ShieldCheck, X } from 'lucide-react-native';
+import { Banknote, Bluetooth, Boxes, CalendarDays, Camera, Check, ChevronLeft, ChevronRight, ImagePlus, Paperclip, Printer, Search, ShieldCheck, X } from 'lucide-react-native';
 import { useAuth } from '../../auth/auth-provider';
 import { useBranchFilter } from '../../auth/branch-filter';
 import { ApiError } from '../../lib/api';
@@ -16,7 +16,7 @@ import { useDebouncedValue, useInfiniteList, useLoadMoreOnScroll } from '../../l
 import { useBottomGap } from '../../lib/responsive';
 import { LoadMoreFooter } from '../../components/load-more-footer';
 import { ThermalPreview } from '../../components/thermal-preview';
-import { formatCashClosingReceipt, getPairedPrinters, getSavedPrinter, openAndroidBluetoothSettings, printThermalCashClosingReceipt, savePrinter, type CashClosingReceipt, type PairedPrinter } from '../../lib/receipt-printer';
+import { formatCashClosingItemsReceipt, formatCashClosingReceipt, getPairedPrinters, getSavedPrinter, openAndroidBluetoothSettings, printThermalSlip, savePrinter, type CashClosingReceipt, type PairedPrinter } from '../../lib/receipt-printer';
 import { KeyboardAwareScrollView } from 'react-native-keyboard-controller';
 import { PreviewImage } from '../../components/image-viewer';
 import { PrinterPickerSheet } from '../../components/pos-flow';
@@ -79,6 +79,9 @@ const nonPosFields = new Set<string>(['cardSales', 'otherSales', 'cardRefund', '
 const shownRows = (rows: [string, Exclude<keyof Preview, 'openBills'>][], values: Record<string, unknown>) => rows.filter(([, field]) => !nonPosFields.has(field) || Number(values[field] ?? 0) !== 0);
 const refundRows: [string, Exclude<keyof Preview, 'openBills'>][] = [['Cash', 'cashRefund'], ['QRIS', 'qrisRefund'], ['Transfer', 'transferRefund'], ['Grab', 'grabRefund'], ['GoBiz', 'gobizRefund'], ['Kartu', 'cardRefund'], ['Lainnya', 'otherRefund']];
 
+/** The text of a closing printout: the full report, or only the goods that left with its sales. */
+const closingPrintText = (closing: CashClosingReceipt, kind: 'report' | 'items') => kind === 'items' ? formatCashClosingItemsReceipt(closing) : formatCashClosingReceipt(closing);
+
 export default function CashClosingScreen() {
   const { user, authorizedRequest } = useAuth();
   const insets = useSafeAreaInsets();
@@ -114,6 +117,8 @@ export default function CashClosingScreen() {
   const [printerDevices, setPrinterDevices] = useState<PairedPrinter[]>([]);
   const [printerLoading, setPrinterLoading] = useState(false);
   const [printing, setPrinting] = useState(false);
+  // Which printout the preview and the print buttons are for: the closing report or its goods list.
+  const [printKind, setPrintKind] = useState<'report' | 'items'>('report');
   const [printError, setPrintError] = useState('');
 
   useEffect(() => { void getSavedPrinter().then(setPrinter).catch(() => setPrinter(null)); }, []);
@@ -222,7 +227,7 @@ export default function CashClosingScreen() {
     if (!selected) return;
     setPrinting(true);
     setPrintError('');
-    try { await printThermalCashClosingReceipt(selected, target); setPreviewVisible(false); }
+    try { await printThermalSlip(closingPrintText(selected, printKind), target); setPreviewVisible(false); }
     catch (cause) { setPrintError(cause instanceof Error ? cause.message : 'Nota cash closing gagal dicetak.'); }
     finally { setPrinting(false); }
   }
@@ -240,8 +245,9 @@ export default function CashClosingScreen() {
     finally { setPrinterLoading(false); }
   }
 
-  async function printClosing() {
+  async function printClosing(kind: 'report' | 'items') {
     if (!selected || detailLoading || printing) return;
+    setPrintKind(kind);
     setPrintError('');
     if (Platform.OS === 'android') {
       if (!printer) { await showPrinterPicker(); return; }
@@ -249,7 +255,7 @@ export default function CashClosingScreen() {
       return;
     }
     setPrinting(true);
-    const receipt = formatCashClosingReceipt(selected);
+    const receipt = closingPrintText(selected, kind);
     const html = `<!doctype html><html><head><meta name="viewport" content="width=device-width, initial-scale=1"><style>@page{size:58mm auto;margin:3mm}*{box-sizing:border-box}body{width:52mm;margin:0 auto;color:#111;font:9px "Courier New",monospace}pre{white-space:pre-wrap;overflow-wrap:anywhere;line-height:1.35}</style></head><body><pre>${escapeHtml(receipt)}</pre></body></html>`;
     try { await Print.printAsync({ html }); }
     catch (cause) { setPrintError(cause instanceof Error ? cause.message : 'Nota cash closing gagal dicetak.'); }
@@ -310,8 +316,11 @@ export default function CashClosingScreen() {
         <View style={styles.detailHeader}>
           <View><Text style={styles.cardTitle}>Detail cash closing</Text><Text style={styles.muted}>{selected?.closingNumber}</Text></View>
           <View style={styles.detailActions}>
-            <Pressable accessibilityRole="button" accessibilityLabel="Cetak nota cash closing" disabled={detailLoading || printing || !selected} onPress={() => void printClosing()} style={[styles.printAction, (detailLoading || printing || !selected) && styles.disabled]}>
-              {printing ? <ActivityIndicator size="small" color="#087f5b" /> : <Printer size={18} color="#087f5b" />}
+            <Pressable accessibilityRole="button" accessibilityLabel="Cetak nota cash closing" disabled={detailLoading || printing || !selected} onPress={() => void printClosing('report')} style={[styles.printAction, (detailLoading || printing || !selected) && styles.disabled]}>
+              {printing && printKind === 'report' ? <ActivityIndicator size="small" color="#087f5b" /> : <Printer size={18} color="#087f5b" />}
+            </Pressable>
+            <Pressable accessibilityRole="button" accessibilityLabel="Cetak barang keluar" disabled={detailLoading || printing || !selected} onPress={() => void printClosing('items')} style={[styles.printAction, (detailLoading || printing || !selected) && styles.disabled]}>
+              {printing && printKind === 'items' ? <ActivityIndicator size="small" color="#087f5b" /> : <Boxes size={18} color="#087f5b" />}
             </Pressable>
             {Platform.OS === 'android' ? <Pressable accessibilityRole="button" accessibilityLabel="Pilih printer Bluetooth" onPress={() => void showPrinterPicker()} style={styles.printAction}><Bluetooth size={18} color="#087f5b" /></Pressable> : null}
             <Pressable accessibilityRole="button" accessibilityLabel="Tutup detail" onPress={() => setSelected(null)} style={styles.closeButton}><X size={19} color="#526276" /></Pressable>
@@ -367,8 +376,8 @@ export default function CashClosingScreen() {
   /> : null}
   {selected ? <ThermalPreview
     visible={previewVisible}
-    title={`Cash closing ${selected.closingNumber}`}
-    text={formatCashClosingReceipt(selected)}
+    title={printKind === 'items' ? `Barang keluar ${selected.closingNumber}` : `Cash closing ${selected.closingNumber}`}
+    text={closingPrintText(selected, printKind)}
     printer={printer}
     printing={printing}
     error={printError}

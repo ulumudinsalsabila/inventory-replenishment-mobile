@@ -9,7 +9,7 @@ import { useAuth } from '../../auth/auth-provider';
 import { ApiError } from '../../lib/api';
 import { useOnRefocus } from '../../lib/use-refocus';
 import { useNotifications } from '../../notifications/notifications-provider';
-import { OpenBillListSheet, OpenBillSaveSheet, OpenBillVoidSheet, PosCatalogScreen, PosCheckoutFlow, PosReceiptScreen, PrinterPickerSheet, equalShares, isLineEditable, type OpenBillInfo, type OpenBillRow, type OpenBillVoid, type PosLine, type PosMethod, type PosProduct } from '../../components/pos-flow';
+import { OpenBillListSheet, OpenBillSaveSheet, OpenBillVoidSheet, PosCatalogScreen, PosCheckoutFlow, PosReceiptScreen, PrinterPickerSheet, equalShares, isLineEditable, type MixedPart, type OpenBillInfo, type OpenBillRow, type OpenBillVoid, type PosLine, type PosMethod, type PosProduct } from '../../components/pos-flow';
 import { receiptStoreLines, formatDepositReceipt, formatKitchenTicket, formatOrderReceipt, formatPreBill, getPairedPrinters, getQuickSaleTickets, getSavedPrinter, getStationPrinter, openAndroidBluetoothSettings, paidTotalOf, printThermalReceipt, printThermalSlip, savePrinter, saveQuickSaleTickets, saveStationPrinter, stationLabel, stationTickets, type KitchenTicket, type PairedPrinter, type PreBill, type ReceiptOrder, type Station } from '../../lib/receipt-printer';
 import { ThermalPreview } from '../../components/thermal-preview';
 import { CustomerPickerSheet } from '../../components/customer-picker';
@@ -92,6 +92,7 @@ const isCustomerUnavailable = (error: unknown) => error instanceof ApiError && e
 const isVersionConflict = (error: unknown) => error instanceof ApiError && error.code === 'OPEN_BILL_VERSION_CONFLICT';
 const PENDING_ORDER_MESSAGE = 'Order ini sudah dibuat dan menunggu pembayaran, jadi pesanan tidak bisa diubah lagi. Selesaikan pembayaran, atau hapus pesanan untuk mulai ulang.';
 const VERSION_CONFLICT_MESSAGE = 'Bill ini sudah diubah di perangkat lain. Data terbaru sudah dimuat ulang, periksa lalu simpan lagi.';
+const KASBON_CUSTOMER_MESSAGE = 'Kasbon harus atas nama pelanggan. Isi nama pelanggan atau pilih customer terdaftar terlebih dahulu.';
 /** Same limit as the server accepts per payment. */
 const MAX_PAYMENT_PHOTOS = 8;
 const VOID_BLOCKED_MESSAGE ='Simpan perubahan bill terlebih dahulu sebelum void agar perubahan yang belum disimpan tidak hilang.';
@@ -204,6 +205,8 @@ export default function PosScreen() {
   const [quickSaleTickets, setQuickSaleTickets] = useState(false);
   // "Bagi rata": one method per person paying an equal share; null pays the whole balance with `method`.
   const [splitMethods, setSplitMethods] = useState<Method[] | null>(null);
+  // "Bayar campuran": typed non-cash parts; the rest of the balance is paid in cash.
+  const [mixedPayments, setMixedPayments] = useState<MixedPart[] | null>(null);
   // Lines of the saved bill offered in the split sheet (null = sheet closed), and the last split for "Buka bill baru".
   const [splitLines, setSplitLines] = useState<SplitSourceLine[] | null>(null);
   const [splitError, setSplitError] = useState('');
@@ -397,7 +400,7 @@ export default function PosScreen() {
   /** Empties the cart and forgets the loaded open bill (the bill itself stays saved on the server). */
   function resetCart() {
     setPaymentPhotos([]);
-    setCart([]); setPendingOrder(null); setOpenBill(null); setPaymentStep(false); setTakeaway(true); setCustomer(''); setCustomerPhone(''); setDiscount('0'); setSelectedCustomer(null); setDepositMode(false); setSplitMethods(null); setCashReceived('');
+    setCart([]); setPendingOrder(null); setOpenBill(null); setPaymentStep(false); setTakeaway(true); setCustomer(''); setCustomerPhone(''); setDiscount('0'); setSelectedCustomer(null); setDepositMode(false); setSplitMethods(null); setMixedPayments(null); setCashReceived('');
   }
 
   async function takePaymentPhoto() {
@@ -409,6 +412,11 @@ export default function PosScreen() {
     if (result.assets.some((asset) => Number(asset.fileSize ?? 0) > 5 * 1024 * 1024)) { setError('Ukuran foto bukti maksimal 5 MB.'); return; }
     setPaymentPhotos((current) => [...current, ...result.assets].slice(0, MAX_PAYMENT_PHOTOS));
     setError('');
+  }
+
+  /** Kasbon is goods on credit, so it must say who owes it: a registered customer or a typed name other than Umum (the server checks this too). */
+  function kasbonWithoutCustomer(methods: PosMethod[]) {
+    return methods.includes('KASBON') && !selectedCustomer && (!customer.trim() || customer.trim().toLowerCase() === 'umum');
   }
 
   /** POST body for orders/:id/pay: JSON, or multipart (payments as a JSON string) when proof photos are attached. */
@@ -461,6 +469,7 @@ export default function PosScreen() {
     if (!branchId || !warehouseId) return setError('Pilih cabang dan gudang terlebih dahulu.');
     // Checked before the order exists, so a user without the permission never leaves an unpaid order behind.
     if (!can('payment.create')) return setError('Akun ini tidak punya izin menerima pembayaran. Simpan sebagai open bill, lalu minta kasir lain untuk membayar.');
+    if (kasbonWithoutCustomer(splitMethods ?? (mixedPayments ? mixedPayments.map((part) => part.method) : [method]))) return setError(KASBON_CUSTOMER_MESSAGE);
     setSubmitting(true); setError(''); setNotice(''); setWarning('');
     // Station tickets after paying are only for quick sales; an open bill sends its items with "Kirim ke Dapur".
     const quickSale = !openBill;
@@ -484,10 +493,17 @@ export default function PosScreen() {
       }
       // A deposit (DP) already taken on an open bill is kept; only the remaining balance is paid now.
       const due = Math.max(0, Number(order.grandTotal) - paidTotalOf(order));
+      // "Bayar campuran": the typed non-cash parts first, then whatever is left of the balance in cash.
+      const mixedParts = !splitMethods && mixedPayments ? mixedPayments.filter((part) => Number(part.amount) > 0).map((part) => ({ method: part.method, amount: Math.round(Number(part.amount) * 100) / 100 })) : null;
+      const mixedCash = mixedParts ? Math.round((due - mixedParts.reduce((sum, part) => sum + part.amount, 0)) * 100) / 100 : 0;
+      if (mixedParts && mixedCash < 0) throw new Error(`Total non-tunai melebihi sisa tagihan ${money(due)}.`);
       // "Bagi rata" pays the same balance as one payment per person, each with its own method.
-      const shares = splitMethods && due >= splitMethods.length ? equalShares(due, splitMethods.length).map((amount, index) => ({ method: splitMethods[index], amount })) : [{ method, amount: due }];
-      // One cash payment records what the customer handed over, so the server stores the change; shares pay exactly.
-      const received = shares.length === 1 && cashReceived ? cashReceived : null;
+      const shares = splitMethods && due >= splitMethods.length
+        ? equalShares(due, splitMethods.length).map((amount, index) => ({ method: splitMethods[index], amount }))
+        : mixedParts ? [...mixedParts, ...(mixedCash > 0 ? [{ method: 'CASH' as Method, amount: mixedCash }] : [])] : [{ method, amount: due }];
+      // A single cash payment, or the cash part of a mixed one, records what the customer handed over so the server
+      // stores the change; "Bagi rata" shares pay exactly.
+      const received = (shares.length === 1 || mixedParts) && cashReceived ? cashReceived : null;
       const payments = shares.map((share) => ({ method: share.method, amount: String(share.amount), ...(share.method === 'CASH' ? { receivedAmount: received ?? String(share.amount) } : {}) }));
       const paid = order.status === 'PAID' ? order : await authorizedRequest<Order>(`orders/${order.id}/pay`, { method: 'POST', body: payBody(payments) });
       // The photos are stored with the payment; a retry of the completion step must not send them again.
@@ -632,6 +648,7 @@ export default function PosScreen() {
     const due = total - (bill.paidTotal ?? 0);
     if (amount <= 0) return setError('Jumlah DP wajib diisi dan lebih dari Rp 0.');
     if (amount >= due) return setError(`DP harus kurang dari sisa tagihan ${money(due)}. Untuk melunasi, gunakan Bayar.`);
+    if (kasbonWithoutCustomer([method])) return setError(KASBON_CUSTOMER_MESSAGE);
     setSubmitting(true); setError(''); setNotice(''); setWarning('');
     try {
       // The deposit is checked against the saved bill, so pending cart edits are saved first.
@@ -824,7 +841,7 @@ export default function PosScreen() {
     const customerId = bill.customerId ?? null;
     // Older bills have no service type; they load as Dine in, the default.
     const billTakeaway = bill.serviceType === 'TAKEAWAY';
-    setCart(lines); setDiscount(billDiscount); setCustomer(name); setCustomerPhone(bill.customerPhone ?? ''); setPendingOrder(null); setPaymentStep(false); setTakeaway(billTakeaway); setSplitMethods(null); setCashReceived('');
+    setCart(lines); setDiscount(billDiscount); setCustomer(name); setCustomerPhone(bill.customerPhone ?? ''); setPendingOrder(null); setPaymentStep(false); setTakeaway(billTakeaway); setSplitMethods(null); setMixedPayments(null); setCashReceived('');
     setSelectedCustomer(customerId ? { id: customerId, name, phone: bill.customerPhone } : null);
     setOpenBill({ id: bill.id, orderNumber: bill.orderNumber, customerName: name, customerPhone: bill.customerPhone ?? '', itemVoids: bill.itemVoids ?? [], paidTotal: paidTotalOf(bill), payments: bill.payments, customerId, version: bill.version, signature: cartSignature(lines, billDiscount, name, customerId ?? '', serviceTypeOf(billTakeaway)), savedLines: savedLinesOf(lines) });
     setError(message); setNotice(success); setCartVisible(true);
@@ -1219,7 +1236,14 @@ Barang di bill ini dikembalikan ke stok atau dicatat terbuang?`, [
     onDepositAmountChange={setDepositAmount}
     onReceiveDeposit={() => void receiveDeposit()}
     splitMethods={splitMethods}
-    onSplitMethodsChange={setSplitMethods}
+    onSplitMethodsChange={(value) => { setSplitMethods(value); if (value) setMixedPayments(null); }}
+    mixedPayments={mixedPayments}
+    onMixedPaymentsChange={(value) => {
+      // Money received belongs to whichever amount is paid in cash, which changes when mixed payment is switched on or off.
+      if ((value === null) !== (mixedPayments === null)) setCashReceived('');
+      setMixedPayments(value);
+      if (value) setSplitMethods(null);
+    }}
     quickSaleTickets={quickSaleTickets}
     // KITCHEN-HIDDEN: onQuickSaleTicketsChange={openBill ? undefined : changeQuickSaleTickets}
     // KITCHEN-HIDDEN: onOpenPrintSettings={Platform.OS === 'android' ? () => setPrintSettingsVisible(true) : undefined}
