@@ -8,7 +8,7 @@ import { AppShellHeader } from './app-shell-header';
 import { BarcodeScanner } from './barcode-scanner';
 import { LoadMoreFooter } from './load-more-footer';
 import { customerHint, type PosCustomer } from '../lib/customers';
-import { customerLabel, formatAge, formatDate, formatServiceType, formatStatus, openBillStockActions, type OpenBillStockAction, type ServiceType } from '../lib/display';
+import { customerLabel, formatAge, formatReceiptDateTime, formatServiceType, formatStatus, openBillStockActions, type OpenBillStockAction, type ServiceType } from '../lib/display';
 import { useDebouncedValue, useInfiniteList } from '../lib/infinite-list';
 import { scanBlePrinters, stopBleScan, type BlePrinter } from '../lib/ble-printer';
 import type { PairedPrinter, ReceiptOrder, Station } from '../lib/receipt-printer';
@@ -960,7 +960,7 @@ export function PosReceiptScreen(props: ReceiptScreenProps) {
       <View style={styles.successBanner}><CircleCheck size={25} color="#07885b" /><View style={styles.successTextWrap}><Text style={styles.successTitle}>Transaksi berhasil</Text><Text style={styles.successSubtitle}>Pesanan telah diselesaikan.</Text></View></View>
       <View style={styles.receiptCard}>
         <Text style={styles.receiptStore}>{props.order.branch?.name ?? 'Toko'}</Text>
-        <Text style={styles.receiptMeta}>{props.order.orderNumber}  ·  {completedAt ? formatDate(completedAt) : ''}{props.order.serviceType ? `  ·  ${formatServiceType(props.order.serviceType)}` : ''}</Text>
+        <Text style={styles.receiptMeta}>{props.order.orderNumber}  ·  {completedAt ? formatReceiptDateTime(completedAt) : ''}{props.order.serviceType ? `  ·  ${formatServiceType(props.order.serviceType)}` : ''}</Text>
         {props.order.customerName || props.order.customerPhone ? <Text style={styles.receiptMeta}>Pelanggan: {customerLabel(props.order.customerName, props.order.customerPhone)}</Text> : null}
         <Text style={styles.receiptMeta}>Kasir: {props.cashierName}</Text>
         <View style={styles.receiptDivider} />

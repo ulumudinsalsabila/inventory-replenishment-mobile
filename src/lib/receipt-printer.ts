@@ -3,7 +3,7 @@ import { PermissionsAndroid, Platform } from 'react-native';
 import RNBluetoothClassic from 'react-native-bluetooth-classic';
 import { writeBlePrinter } from './ble-printer';
 import { cancelPrinterRelease, schedulePrinterRelease } from './printer-release';
-import { customerLabel, formatDate, formatServiceType, formatStatus, type ServiceType } from './display';
+import { customerLabel, formatReceiptDateTime, formatServiceType, formatStatus, type ServiceType } from './display';
 
 /**
  * A saved thermal printer. `transport` is how it is reached: Bluetooth Classic (paired in Android settings, the default for
@@ -226,7 +226,7 @@ function receiptText(order: ReceiptOrder, width: number) {
     ...(order.branch?.phone ? [center(order.branch.phone, width)] : []),
     rule,
     center(order.orderNumber, width),
-    ...(date ? [center(formatDate(date), width)] : []),
+    ...(date ? [center(formatReceiptDateTime(date), width)] : []),
     ...serviceLines(order.serviceType, width).map((line) => center(line, width)),
     ...customerLines(order.customerName, order.customerPhone, width),
     ...(order.cashierName ? wrap(`Kasir: ${order.cashierName}`, width) : []),

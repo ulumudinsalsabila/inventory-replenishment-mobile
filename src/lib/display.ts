@@ -139,6 +139,11 @@ export function formatDateTime(value: string | number | Date) {
   return Number.isNaN(date.getTime()) ? '-' : dateTimeFormatter.format(date);
 }
 
+/** Receipt timestamp in WIB: dd/mm/yyyy HH:mm. */
+export function formatReceiptDateTime(value: string | number | Date) {
+  return formatDateTime(value).replace(',', '');
+}
+
 /** A unit a product can be counted in, with how many base units it holds (e.g. BOX = 12 BTL). */
 export type CountUnit = { code: string; conversionFactor: string | number };
 
