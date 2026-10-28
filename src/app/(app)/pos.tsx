@@ -9,7 +9,7 @@ import { useAuth } from '../../auth/auth-provider';
 import { ApiError } from '../../lib/api';
 import { useOnRefocus } from '../../lib/use-refocus';
 import { useNotifications } from '../../notifications/notifications-provider';
-import { OpenBillListSheet, OpenBillSaveSheet, OpenBillVoidSheet, PosCatalogScreen, PosCheckoutFlow, PosReceiptScreen, PrinterPickerSheet, equalShares, isLineEditable, type MixedPart, type OpenBillInfo, type OpenBillRow, type OpenBillVoid, type PosLine, type PosMethod, type PosProduct } from '../../components/pos-flow';
+import { OpenBillListSheet, OpenBillSaveSheet, OpenBillVoidSheet, PosCatalogScreen, PosCheckoutFlow, PosReceiptScreen, PrinterPickerSheet, equalShares, isLineEditable, sourceStock, type MixedPart, type PosStockSource, type OpenBillInfo, type OpenBillRow, type OpenBillVoid, type PosLine, type PosMethod, type PosProduct } from '../../components/pos-flow';
 import { receiptStoreLines, formatDepositReceipt, formatKitchenTicket, formatOrderReceipt, formatPreBill, getPairedPrinters, getQuickSaleTickets, getSavedPrinter, getStationPrinter, openAndroidBluetoothSettings, paidTotalOf, printThermalReceipt, printThermalSlip, savePrinter, saveQuickSaleTickets, saveStationPrinter, stationLabel, stationTickets, type KitchenTicket, type PairedPrinter, type PreBill, type ReceiptOrder, type Station } from '../../lib/receipt-printer';
 import { ThermalPreview } from '../../components/thermal-preview';
 import { CustomerPickerSheet } from '../../components/customer-picker';
@@ -39,6 +39,7 @@ type BillItem = {
   totalPrice: string;
   note?: string | null;
   isBonus?: boolean;
+  stockSource?: PosStockSource | null;
   sentAt?: string | null;
   unit?: { code: string } | null;
   addons?: { addonId: string; addonNameSnapshot: string; quantity: string; totalPrice: string }[];
@@ -80,7 +81,7 @@ function askReducedStockAction(names: string[]) {
   ], { cancelable: true, onDismiss: () => resolve(null) }));
 }
 /** Cart lines of the same product, unit, variant and add-ons merge; a bonus (free) line stays apart from the paid one. */
-const cartLineKey = (productId: string, unitId: string, variantId: string, addonIds: string[], isBonus = false) => `${productId}:${unitId}:${variantId}:${[...addonIds].sort().join(',')}${isBonus ? ':bonus' : ''}`;
+const cartLineKey = (productId: string, unitId: string, variantId: string, addonIds: string[], isBonus = false, source?: PosStockSource) => `${productId}:${unitId}:${variantId}:${[...addonIds].sort().join(',')}${isBonus ? ':bonus' : ''}${source ? `@${source}` : ''}`;
 const cartSignature = (lines: Line[], discount: string, customerName: string, customerId: string, serviceType: ServiceType) => JSON.stringify([lines.map((line) => [line.key, line.quantity]), Number(discount) || 0, customerName.trim(), customerId, serviceType]);
 const serviceTypeOf = (takeaway: boolean): ServiceType => takeaway ? 'TAKEAWAY' : 'DINE_IN';
 /** A printout waiting for the thermal preview; station tickets go to that station's printer. */
@@ -168,7 +169,8 @@ export default function PosScreen() {
   const [selectedDistributor, setSelectedDistributor] = useState('Semua');
   // Optional proof photos (e.g. a transfer or QRIS screen) sent with the next payment.
   const [paymentPhotos, setPaymentPhotos] = useState<ImagePicker.ImagePickerAsset[]>([]);
-  const [displayOnly, setDisplayOnly] = useState(false);
+  // Where added items are taken from: the shelf (default, customers pick from it) or the back room.
+  const [stockSource, setStockSource] = useState<PosStockSource>('DISPLAY');
   const [refreshing, setRefreshing] = useState(false);
   const [reloadKey, setReloadKey] = useState(0);
   // Stock changes elsewhere (other cashiers, display moves), so refresh the catalog when POS regains focus.
@@ -283,7 +285,7 @@ export default function PosScreen() {
   const distributors = useMemo(() => ['Semua', ...new Set(products.map((product) => product.distributor?.name).filter((name): name is string => Boolean(name)))], [products]);
   // A distributor from a previous catalog may no longer exist; fall back to "Semua" instead of showing an empty grid.
   const activeDistributor = distributors.includes(selectedDistributor) ? selectedDistributor : 'Semua';
-  const visible = useMemo(() => products.filter((p) => (!displayOnly || Number(p.displayQuantity ?? 0) > 0) && (activeDistributor === 'Semua' || p.distributor?.name === activeDistributor) && `${p.name} ${p.sku} ${p.barcode ?? ''} ${p.distributor?.name ?? ''}`.toLowerCase().includes(search.toLowerCase())), [activeDistributor, displayOnly, products, search]);
+  const visible = useMemo(() => products.filter((p) => (stockSource !== 'DISPLAY' || Number(p.displayQuantity ?? 0) > 0) && (activeDistributor === 'Semua' || p.distributor?.name === activeDistributor) && `${p.name} ${p.sku} ${p.barcode ?? ''} ${p.distributor?.name ?? ''}`.toLowerCase().includes(search.toLowerCase())), [activeDistributor, stockSource, products, search]);
   // Add-ons loaded from a bill keep their stored quantity; add-ons picked in the POS count once per item.
   const addonQuantity = (line: Line, addonId: string) => Number(line.bill?.addons.find((addon) => addon.addonId === addonId)?.quantity ?? 1);
   // A bill line left unchanged keeps its stored price on the server; anything else is priced from the catalog.
@@ -295,17 +297,20 @@ export default function PosScreen() {
   function conversionFactor(product: Product, unitId: string) {
     return Number(product.sellingUnits.find((unit) => unit.unitId === unitId)?.conversionFactor ?? 1);
   }
-  function canAddUnit(product: Product, unitId = product.unit?.id ?? product.sellingUnits[0]?.unitId ?? '') {
-    if (!product.trackInventory) return true;
-    const usedBaseQuantity = cart.filter((line) => line.product.id === product.id).reduce((sum, line) => sum + line.quantity * conversionFactor(product, line.unitId), 0);
-    return usedBaseQuantity + conversionFactor(product, unitId) <= Math.max(Number(product.available) || 0, 0) + 0.000001;
+  /** Base quantity the cart already takes from one source of a product (lines of older bills count as the given source). */
+  function usedFromSource(product: Product, source: PosStockSource, exceptKey?: string) {
+    return cart.filter((line) => line.product.id === product.id && line.key !== exceptKey && (line.stockSource ?? source) === source)
+      .reduce((sum, line) => sum + line.quantity * conversionFactor(product, line.unitId), 0);
   }
-  function reportStockLimit(product: Product, unitId: string) {
-    const usedBaseQuantity = cart.filter((line) => line.product.id === product.id).reduce((sum, line) => sum + line.quantity * conversionFactor(product, line.unitId), 0);
-    const remainingBaseQuantity = Math.max(Number(product.available) - usedBaseQuantity, 0);
+  function canAddUnit(product: Product, unitId = product.unit?.id ?? product.sellingUnits[0]?.unitId ?? '', source: PosStockSource = stockSource) {
+    if (!product.trackInventory) return true;
+    return usedFromSource(product, source) + conversionFactor(product, unitId) <= sourceStock(product, source) + 0.000001;
+  }
+  function reportStockLimit(product: Product, unitId: string, source: PosStockSource = stockSource) {
+    const remainingBaseQuantity = Math.max(sourceStock(product, source) - usedFromSource(product, source), 0);
     const maxUnitQuantity = remainingBaseQuantity / conversionFactor(product, unitId);
     const unit = product.sellingUnits.find((entry) => entry.unitId === unitId)?.unit.code ?? product.unit?.code ?? '';
-    setError(`Stok ${product.name} tidak cukup. Sisa maksimal ${maxUnitQuantity.toLocaleString('id-ID', { maximumFractionDigits: 3 })} ${unit}.`);
+    setError(`Stok ${source === 'DISPLAY' ? 'display' : 'gudang'} ${product.name} tidak cukup. Sisa maksimal ${maxUnitQuantity.toLocaleString('id-ID', { maximumFractionDigits: 3 })} ${unit}.`);
   }
 
   /**
@@ -333,20 +338,20 @@ export default function PosScreen() {
     const line = cart.find((entry) => entry.key === lineKey);
     if (!line || line.unitId === unitId || !isLineEditable(line)) return;
     const { product } = line;
+    const source = line.stockSource ?? stockSource;
     if (product.trackInventory) {
-      const otherBaseQuantity = cart.filter((entry) => entry.product.id === product.id && entry.key !== lineKey).reduce((sum, entry) => sum + entry.quantity * conversionFactor(product, entry.unitId), 0);
-      if (otherBaseQuantity + line.quantity * conversionFactor(product, unitId) > Math.max(Number(product.available) || 0, 0) + 0.000001) {
+      if (usedFromSource(product, source, lineKey) + line.quantity * conversionFactor(product, unitId) > sourceStock(product, source) + 0.000001) {
         const unit = product.sellingUnits.find((entry) => entry.unitId === unitId)?.unit.code ?? '';
         setError(`Stok ${product.name} tidak cukup untuk ${line.quantity} ${unit}.`);
         return;
       }
     }
-    const key = cartLineKey(product.id, unitId, line.variantId, line.addonIds, line.isBonus);
+    const key = cartLineKey(product.id, unitId, line.variantId, line.addonIds, line.isBonus, line.stockSource);
     setError('');
     setCart((current) => {
       const target = current.find((entry) => entry.key === key);
       // An unsent bill line that changes unit loses its bill link: it is saved as a new line and the server drops the old one.
-      const moved = { key, product, unitId, quantity: line.quantity + (target?.quantity ?? 0), variantId: line.variantId, addonIds: line.addonIds, isBonus: line.isBonus };
+      const moved = { key, product, unitId, quantity: line.quantity + (target?.quantity ?? 0), variantId: line.variantId, addonIds: line.addonIds, isBonus: line.isBonus, stockSource: line.stockSource };
       return current.flatMap((entry) => entry.key === lineKey ? (target ? [] : [moved]) : entry.key === key ? [moved] : [entry]);
     });
   }
@@ -356,23 +361,23 @@ export default function PosScreen() {
     const line = cart.find((entry) => entry.key === lineKey);
     if (!line || !isLineEditable(line)) return;
     const isBonus = !line.isBonus;
-    const key = cartLineKey(line.product.id, line.unitId, line.variantId, line.addonIds, isBonus);
+    const key = cartLineKey(line.product.id, line.unitId, line.variantId, line.addonIds, isBonus, line.stockSource);
     setError('');
     setCart((current) => {
       const target = current.find((entry) => entry.key === key);
       // An unsent bill line loses its bill link here too: it is saved as a new line and the server drops the old one.
-      const moved = { key, product: line.product, unitId: line.unitId, quantity: line.quantity + (target?.quantity ?? 0), variantId: line.variantId, addonIds: line.addonIds, isBonus };
+      const moved = { key, product: line.product, unitId: line.unitId, quantity: line.quantity + (target?.quantity ?? 0), variantId: line.variantId, addonIds: line.addonIds, isBonus, stockSource: line.stockSource };
       return current.flatMap((entry) => entry.key === lineKey ? (target ? [] : [moved]) : entry.key === key ? [moved] : [entry]);
     });
   }
   function addConfigured(product: Product, unitId: string, variantId: string, addonIds: string[]) {
     if (lockedByPendingOrder()) return;
     if (!canAddUnit(product, unitId)) { reportStockLimit(product, unitId); return; }
-    const key = cartLineKey(product.id, unitId, variantId, addonIds);
+    const key = cartLineKey(product.id, unitId, variantId, addonIds, false, stockSource);
     setError(''); setNotice('');
     setCart((current) => {
       const found = current.find((line) => line.key === key);
-      return found ? current.map((line) => line.key === key ? { ...line, quantity: line.quantity + 1 } : line) : [...current, { key, product, unitId, quantity: 1, variantId, addonIds }];
+      return found ? current.map((line) => line.key === key ? { ...line, quantity: line.quantity + 1 } : line) : [...current, { key, product, unitId, quantity: 1, variantId, addonIds, stockSource }];
     });
   }
   function quantity(lineKey: string, delta: number) {
@@ -380,7 +385,7 @@ export default function PosScreen() {
     const line = cart.find((entry) => entry.key === lineKey);
     if (line?.bill?.sentAt) { setError(`${line.product.name} sudah dikirim ke dapur sehingga tidak bisa diubah. Tambahkan sebagai item baru, atau void untuk mengurangi.`); return; }
     if (line?.bill?.missing && line.quantity + delta > 0) { setError(`${line.product.name} tidak ada di katalog gudang ini; jumlahnya tidak bisa diubah, hanya bisa dihapus.`); return; }
-    if (delta > 0 && line && !canAddUnit(line.product, line.unitId)) { reportStockLimit(line.product, line.unitId); return; }
+    if (delta > 0 && line && !canAddUnit(line.product, line.unitId, line.stockSource ?? stockSource)) { reportStockLimit(line.product, line.unitId, line.stockSource ?? stockSource); return; }
     setError('');
     setCart((current) => current.flatMap((line) => line.key !== lineKey ? [line] : line.quantity + delta <= 0 ? [] : [{ ...line, quantity: line.quantity + delta }]));
   }
@@ -394,6 +399,7 @@ export default function PosScreen() {
     ...(line.bill?.note ? { note: line.bill.note } : {}),
     addons: line.bill ? line.bill.addons : line.addonIds.map((addonId) => ({ addonId, quantity: '1' })),
     ...(line.isBonus ? { isBonus: true } : {}),
+    ...(line.stockSource ? { stockSource: line.stockSource } : {}),
   }));
   const serviceType = serviceTypeOf(takeaway);
   const openBillDirty = Boolean(openBill) && cartSignature(cart, discount, customer, selectedCustomer?.id ?? '', serviceType) !== openBill?.signature;
@@ -834,7 +840,7 @@ export default function PosScreen() {
       const lineQuantity = Number(item.inputQuantity ?? item.quantity);
       const addons = (item.addons ?? []).map((addon) => ({ addonId: addon.addonId, quantity: String(Number(addon.quantity)) }));
       return {
-        key: `bill:${item.id}`, product: product ?? offCatalogProduct(item), unitId: item.unitId ?? '', quantity: lineQuantity, variantId: item.variantId ?? '', addonIds: addons.map((addon) => addon.addonId), isBonus: Boolean(item.isBonus),
+        key: `bill:${item.id}`, product: product ?? offCatalogProduct(item), unitId: item.unitId ?? '', quantity: lineQuantity, variantId: item.variantId ?? '', addonIds: addons.map((addon) => addon.addonId), isBonus: Boolean(item.isBonus), stockSource: item.stockSource ?? undefined,
         bill: { orderItemId: item.id, quantity: lineQuantity, note: item.note ?? null, addons, total: Number(item.totalPrice), variantName: item.variantNameSnapshot ?? null, sentAt: item.sentAt ?? null, missing: !product },
       };
     });
@@ -1208,7 +1214,7 @@ Barang di bill ini dikembalikan ke stok atau dicatat terbuang?`, [
     onQuantity={quantity}
     onUnitChange={changeUnit}
     onToggleBonus={toggleBonus}
-    canIncrease={(line) => canAddUnit(line.product, line.unitId)}
+    canIncrease={(line) => canAddUnit(line.product, line.unitId, line.stockSource ?? stockSource)}
     onCheckout={() => void checkout()}
     onClear={() => { resetCart(); setDepositAmount(''); setError(''); setNotice(''); setWarning(''); }}
     onClose={() => { setCartVisible(false); setPaymentStep(false); setDepositMode(false); }}
@@ -1264,7 +1270,7 @@ Barang di bill ini dikembalikan ke stok atau dicatat terbuang?`, [
       products={products}
       distributors={distributors}
       selectedDistributor={activeDistributor}
-      displayOnly={displayOnly}
+      stockSource={stockSource}
       search={search}
       visibleProducts={visible}
       cart={cart}
@@ -1282,11 +1288,11 @@ Barang di bill ini dikembalikan ke stok atau dicatat terbuang?`, [
       onBranchChange={(id) => { if (id !== branchId) switchLocation(() => setBranchId(id)); }}
       onWarehouseChange={(id) => { if (id !== warehouseId) switchLocation(() => setWarehouseId(id)); }}
       onDistributorChange={setSelectedDistributor}
-      onDisplayOnlyChange={setDisplayOnly}
+      onStockSourceChange={setStockSource}
       onSearchChange={setSearch}
       onAdd={add}
       onQuantity={quantity}
-      canAdd={(product, unitId) => canAddUnit(product as Product, unitId)}
+      canAdd={(product, unitId, source) => canAddUnit(product as Product, unitId, source)}
       priceFor={priceFor}
       onOpenCart={() => { setPaymentStep(false); setCartVisible(true); }}
       onClear={() => { resetCart(); setDepositAmount(''); setError(''); setNotice(''); setWarning(''); }}

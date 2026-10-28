@@ -138,3 +138,29 @@ export function formatDateTime(value: string | number | Date) {
   const date = value instanceof Date ? value : new Date(value);
   return Number.isNaN(date.getTime()) ? '-' : dateTimeFormatter.format(date);
 }
+
+/** A unit a product can be counted in, with how many base units it holds (e.g. BOX = 12 BTL). */
+export type CountUnit = { code: string; conversionFactor: string | number };
+
+/**
+ * Splits a base quantity over the product's larger units, biggest first: 29 BTL with BOX = 12 reads "2 BOX 5 BTL".
+ * Products without larger units, or a quantity smaller than the smallest of them, keep the plain base quantity.
+ */
+export function mixedQuantity(baseQuantity: number, baseCode: string, units: CountUnit[] = []) {
+  const plain = `${baseQuantity.toLocaleString('id-ID', { maximumFractionDigits: 3 })} ${baseCode}`.trim();
+  const larger = units
+    .map((unit) => ({ code: unit.code, factor: Number(unit.conversionFactor) }))
+    .filter((unit) => unit.factor > 1 && unit.code !== baseCode)
+    .sort((a, b) => b.factor - a.factor);
+  if (!larger.length || baseQuantity < larger[larger.length - 1].factor) return plain;
+  let rest = baseQuantity;
+  const parts: string[] = [];
+  for (const unit of larger) {
+    const count = Math.floor(rest / unit.factor + 0.000001);
+    if (count <= 0) continue;
+    parts.push(`${count.toLocaleString('id-ID')} ${unit.code}`);
+    rest = Math.round((rest - count * unit.factor) * 1000) / 1000;
+  }
+  if (rest > 0) parts.push(`${rest.toLocaleString('id-ID', { maximumFractionDigits: 3 })} ${baseCode}`);
+  return parts.join(' ');
+}
