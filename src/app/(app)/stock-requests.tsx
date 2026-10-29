@@ -23,7 +23,8 @@ type RequestOptions = { branches: NamedOption[]; sourceWarehouses: NamedOption[]
 type Actor = { id: string; name: string };
 type StockRequest = {
   id: string; requestNumber: string; status: string; note: string | null; reviewNote?: string | null; createdAt: string;
-  branch: { name: string }; sourceWarehouse: { id: string; name: string }; destinationWarehouse: { id: string; name: string };
+  // Distributor requests have no source warehouse; the distributor is the source instead.
+  branch: { name: string }; sourceType?: 'WAREHOUSE' | 'DISTRIBUTOR'; sourceWarehouse: { id: string; name: string } | null; distributor?: { id: string; name: string } | null; destinationWarehouse: { id: string; name: string };
   _count: { items: number; transfers: number }; availableActions: string[];
   requestedBy?: Actor | null; reviewedBy?: Actor | null;
 };
@@ -37,7 +38,10 @@ type RequestItem = { productId: string; unitId?: string; requestedQty: string; n
 type Selector = 'branch' | 'source' | 'destination' | 'product' | null;
 
 const WORKFLOW = ['SUBMITTED', 'PROCESSING', 'IN_TRANSIT', 'RECEIVED'] as const;
-const STATUS_LABEL: Record<string, string> = { SUBMITTED: 'Pengajuan masuk', PROCESSING: 'Diproses', IN_TRANSIT: 'Dikirim', RECEIVED: 'Diterima' };
+// Distributor requests are approved into a purchase, then received; they never travel between warehouses.
+const DISTRIBUTOR_WORKFLOW = ['SUBMITTED', 'APPROVED', 'PROCESSING', 'RECEIVED'] as const;
+const STATUS_LABEL: Record<string, string> = { SUBMITTED: 'Pengajuan masuk', APPROVED: 'Disetujui', PROCESSING: 'Diproses', IN_TRANSIT: 'Dikirim', RECEIVED: 'Diterima', REJECTED: 'Ditolak', CANCELLED: 'Dibatalkan' };
+const sourceName = (request: Pick<StockRequest, 'sourceType' | 'sourceWarehouse' | 'distributor'>) => request.sourceType === 'DISTRIBUTOR' ? `Distributor ${request.distributor?.name ?? ''}`.trim() : request.sourceWarehouse?.name ?? '-';
 // READY is the step name recorded for requests created before the four-step workflow.
 const HISTORY_LABEL: Record<string, string> = { SUBMITTED: 'Pengajuan masuk', READY: 'Pengajuan masuk', PROCESSED: 'Diproses', SENT: 'Dikirim', RECEIVED: 'Diterima' };
 const ACTION_COPY: Record<RequestAction, { button: string; done: string }> = {
@@ -304,8 +308,8 @@ export default function StockRequestsScreen() {
         {list.loading && requests.length === 0 ? <ActivityIndicator style={styles.loader} color="#c70d17" size="large" /> : null}
         {canRead && !list.loading && !pageError && requests.length === 0 ? <View style={styles.empty}><Text style={styles.emptyTitle}>Belum ada pengajuan</Text><Text style={styles.emptyText}>{canCreate ? 'Buat pengajuan pertama untuk mengisi ulang stok cabang.' : 'Pengajuan stok akan tampil di sini.'}</Text></View> : null}
         {requests.map((request) => <View key={request.id} style={styles.requestCard}>
-          <View style={styles.requestTop}><View style={styles.requestTitle}><Text style={styles.requestNumber}>{request.requestNumber}</Text><Text style={styles.requestDate}>{formatDate(request.createdAt)} · {request._count.items} produk</Text></View><Text style={[styles.status, request.status === 'RECEIVED' ? styles.statusSuccess : request.status === 'SUBMITTED' ? styles.statusPending : styles.statusActive]}>{STATUS_LABEL[request.status] ?? formatStatus(request.status)}</Text></View>
-          <Text style={styles.route}>{request.branch.name} · {request.sourceWarehouse.name} → {request.destinationWarehouse.name}</Text>
+          <View style={styles.requestTop}><View style={styles.requestTitle}><Text style={styles.requestNumber}>{request.requestNumber}</Text><Text style={styles.requestDate}>{formatDate(request.createdAt)} · {request._count.items} produk</Text></View><Text style={[styles.status, request.status === 'RECEIVED' ? styles.statusSuccess : request.status === 'SUBMITTED' ? styles.statusPending : request.status === 'REJECTED' || request.status === 'CANCELLED' ? styles.statusMuted : styles.statusActive]}>{STATUS_LABEL[request.status] ?? formatStatus(request.status)}</Text></View>
+          <Text style={styles.route}>{request.branch.name} · {sourceName(request)} → {request.destinationWarehouse.name}</Text>
           <Text style={styles.actorLine}>Pemohon: {request.requestedBy?.name ?? '-'} · Diproses oleh: {request.reviewedBy?.name ?? '-'}</Text>
           <View style={styles.actions}>{(() => {
             const next = (['PROCESS', 'SEND', 'RECEIVE'] as const).find((name) => request.availableActions?.includes(name));
@@ -364,16 +368,20 @@ export default function StockRequestsScreen() {
         <View style={styles.modalScreen}>
           <View style={[styles.modalHeader, { paddingTop: insets.top + 8, minHeight: 66 + insets.top }]}><Pressable accessibilityRole="button" disabled={actionSaving} onPress={closeDetail} style={styles.headerAction}><X size={19} color="#c70d17" /><Text style={styles.backText}>Tutup</Text></Pressable><Text style={styles.modalTitle}>Detail pengajuan</Text><View style={{ width: 46 }} /></View>
           {detailLoading || !detail ? <ActivityIndicator style={styles.loader} color="#c70d17" size="large" /> : (() => {
-            const currentStep = WORKFLOW.indexOf(detail.status as (typeof WORKFLOW)[number]);
+            const fromDistributor = detail.sourceType === 'DISTRIBUTOR';
+            const workflow: readonly string[] = fromDistributor ? DISTRIBUTOR_WORKFLOW : WORKFLOW;
+            const currentStep = workflow.indexOf(detail.status);
             const nextAction = (['PROCESS', 'SEND', 'RECEIVE'] as const).find((name) => detail.availableActions.includes(name));
             const savedPhotos = detail.evidenceImages ?? [];
             const canAddPhoto = Boolean(nextAction) && savedPhotos.length + photos.length < MAX_PHOTOS;
             return <>
               <KeyboardAwareScrollView bottomOffset={24} contentContainerStyle={styles.formPage} keyboardShouldPersistTaps="handled">
                 <Text style={styles.requestNumber}>{detail.requestNumber}</Text>
-                <Text style={styles.route}>{detail.branch.name} · {detail.sourceWarehouse.name} → {detail.destinationWarehouse.name}</Text>
+                <Text style={styles.route}>{detail.branch.name} · {sourceName(detail)} → {detail.destinationWarehouse.name}</Text>
+                {/* The mobile app only runs the warehouse steps; distributor approval and receipt happen on the web. */}
+                {fromDistributor && detail.status !== 'RECEIVED' && detail.status !== 'REJECTED' && detail.status !== 'CANCELLED' ? <Text style={styles.detailNote}>Permintaan ke distributor diproses dan diterima melalui web admin.</Text> : null}
 
-                <View accessibilityLabel={`Tahap: ${STATUS_LABEL[detail.status] ?? detail.status}`} style={styles.stepper}>{WORKFLOW.map((step, index) => {
+                <View accessibilityLabel={`Tahap: ${STATUS_LABEL[detail.status] ?? detail.status}`} style={styles.stepper}>{workflow.map((step, index) => {
                   const done = index < currentStep || (index === currentStep && step === 'RECEIVED');
                   const active = index === currentStep && !done;
                   return <View key={step} style={styles.step}>
@@ -404,7 +412,7 @@ export default function StockRequestsScreen() {
                   <Pressable accessibilityRole="button" disabled={actionSaving} onPress={() => void pickPhotos(true)} style={styles.photoButton}><Camera size={17} color="#087f5b" /><Text style={styles.photoButtonText}>Kamera</Text></Pressable>
                   <AdminOnly><Pressable accessibilityRole="button" disabled={actionSaving} onPress={() => void pickPhotos(false)} style={styles.photoButton}><ImagePlus size={17} color="#087f5b" /><Text style={styles.photoButtonText}>Galeri</Text></Pressable></AdminOnly>
                 </View> : null}
-                {nextAction && photos.length ? <Text style={styles.formHint}>Foto disimpan sebagai bukti tahap {STATUS_LABEL[WORKFLOW[currentStep + 1] ?? detail.status]}.</Text> : null}
+                {nextAction && photos.length ? <Text style={styles.formHint}>Foto disimpan sebagai bukti tahap {STATUS_LABEL[workflow[currentStep + 1] ?? detail.status]}.</Text> : null}
 
                 {detail.history?.length ? <><Text style={styles.fieldLabel}>Riwayat</Text>{detail.history.map((entry) => <View key={entry.id} style={styles.historyRow}><View style={styles.historyDot} /><View style={styles.reviewProduct}><Text style={styles.historyAction}>{HISTORY_LABEL[entry.action] ?? formatStatus(entry.action)}</Text><Text style={styles.sku}>{entry.actor?.name ?? 'Sistem'} · {formatDate(entry.createdAt)}</Text></View></View>)}</> : null}
                 {actionError ? <Text accessibilityRole="alert" style={[styles.errorText, styles.actionError]}>{actionError}</Text> : null}
